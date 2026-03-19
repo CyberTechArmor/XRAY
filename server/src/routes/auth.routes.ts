@@ -1,9 +1,59 @@
-import { Router } from 'express';
+import { Router, Response } from 'express';
 import { authenticateJWT } from '../middleware/auth';
 import { validateBody, signupSchema, verifySchema, verifyTokenSchema, loginBeginSchema, magicLinkSchema } from '../lib/validation';
+import { hashRefreshToken } from '../lib/crypto';
+import { config } from '../config';
 import * as authService from '../services/auth.service';
 
 const router = Router();
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function setRefreshCookie(res: Response, refreshToken: string) {
+  res.cookie('refresh_token', refreshToken, {
+    httpOnly: true,
+    secure: config.nodeEnv === 'production',
+    sameSite: 'lax',
+    path: '/api/auth',
+    maxAge: config.jwt.refreshTokenExpiry,
+  });
+}
+
+function sendTokenPair(res: Response, tokens: { accessToken: string; refreshToken: string; sessionId: string }, req: any) {
+  setRefreshCookie(res, tokens.refreshToken);
+  res.json({
+    ok: true,
+    data: { accessToken: tokens.accessToken, sessionId: tokens.sessionId },
+    meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+  });
+}
+
+// ─── GET /setup - check if first-boot setup is needed (no auth) ──────────────
+
+router.get('/setup', async (_req, res, next) => {
+  try {
+    const status = await authService.getSetupStatus();
+    res.json({
+      ok: true,
+      data: status,
+      meta: { timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── POST /setup - first-boot admin provisioning, bypasses email (no auth) ───
+
+router.post('/setup', async (req, res, next) => {
+  try {
+    const data = validateBody(signupSchema, req.body);
+    const tokens = await authService.firstBootSetup(data);
+    sendTokenPair(res, tokens, req);
+  } catch (err) {
+    next(err);
+  }
+});
 
 // POST /signup - initiate signup (no auth)
 router.post('/signup', async (req, res, next) => {
@@ -24,12 +74,14 @@ router.post('/signup', async (req, res, next) => {
 router.post('/verify', async (req, res, next) => {
   try {
     const data = validateBody(verifySchema, req.body);
-    const result = await authService.verifyCode(data);
-    res.json({
-      ok: true,
-      data: result,
-      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
-    });
+    const magicLink = await authService.verifyCode(data);
+    let tokens;
+    if (magicLink.purpose === 'signup') {
+      tokens = await authService.completeSignup(magicLink);
+    } else {
+      tokens = await authService.completeLogin(magicLink);
+    }
+    sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
   }
@@ -39,12 +91,14 @@ router.post('/verify', async (req, res, next) => {
 router.post('/verify-token', async (req, res, next) => {
   try {
     const data = validateBody(verifyTokenSchema, req.body);
-    const result = await authService.verifyToken(data.token);
-    res.json({
-      ok: true,
-      data: result,
-      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
-    });
+    const magicLink = await authService.verifyToken(data.token);
+    let tokens;
+    if (magicLink.purpose === 'signup') {
+      tokens = await authService.completeSignup(magicLink);
+    } else {
+      tokens = await authService.completeLogin(magicLink);
+    }
+    sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
   }
@@ -69,12 +123,9 @@ router.post('/login/begin', async (req, res, next) => {
 router.post('/login/complete', async (req, res, next) => {
   try {
     const data = validateBody(verifySchema, req.body);
-    const result = await authService.verifyCode(data);
-    res.json({
-      ok: true,
-      data: result,
-      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
-    });
+    const magicLink = await authService.verifyCode(data);
+    const tokens = await authService.completeLogin(magicLink);
+    sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
   }
@@ -113,13 +164,13 @@ router.post('/recover', async (req, res, next) => {
 // POST /refresh - refresh session (cookie-based)
 router.post('/refresh', async (req, res, next) => {
   try {
-    const refreshToken = req.cookies?.refresh_token;
-    const result = await authService.refreshSession(refreshToken);
-    res.json({
-      ok: true,
-      data: result,
-      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
-    });
+    const rawToken = req.cookies?.refresh_token;
+    if (!rawToken) {
+      return res.status(401).json({ ok: false, error: { code: 'NO_TOKEN', message: 'No refresh token' } });
+    }
+    const tokenHash = hashRefreshToken(rawToken);
+    const tokens = await authService.refreshSession(tokenHash);
+    sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
   }
@@ -129,6 +180,7 @@ router.post('/refresh', async (req, res, next) => {
 router.post('/logout', authenticateJWT, async (req, res, next) => {
   try {
     await authService.logout(req.user!.sub);
+    res.clearCookie('refresh_token', { path: '/api/auth' });
     res.json({
       ok: true,
       data: { message: 'Logged out successfully' },

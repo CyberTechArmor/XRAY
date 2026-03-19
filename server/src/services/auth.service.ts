@@ -73,6 +73,124 @@ async function createMagicLink(
   return { code, token };
 }
 
+// ─── First-boot setup ───────────────────────────────────────────────────────
+
+export async function getSetupStatus(): Promise<{ setupRequired: boolean }> {
+  return withClient(async (client) => {
+    const result = await client.query('SELECT COUNT(*) FROM platform.users');
+    const count = parseInt(result.rows[0].count, 10);
+    return { setupRequired: count === 0 };
+  });
+}
+
+export async function firstBootSetup(input: {
+  email: string;
+  name: string;
+  tenantName: string;
+}): Promise<TokenPair> {
+  return withTransaction(async (client) => {
+    // Only allowed when zero users exist
+    const countResult = await client.query('SELECT COUNT(*) FROM platform.users');
+    if (parseInt(countResult.rows[0].count, 10) > 0) {
+      throw new AppError(403, 'SETUP_COMPLETE', 'Platform is already set up');
+    }
+
+    // Get platform_admin role
+    const roleResult = await client.query(
+      "SELECT id FROM platform.roles WHERE slug = 'platform_admin'"
+    );
+    if (roleResult.rows.length === 0) {
+      throw new AppError(500, 'ROLE_NOT_FOUND', "Role 'platform_admin' not found");
+    }
+    const roleId = roleResult.rows[0].id;
+
+    // Create tenant
+    const slug = input.tenantName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    const tenantResult = await client.query(
+      `INSERT INTO platform.tenants (name, slug) VALUES ($1, $2) RETURNING *`,
+      [input.tenantName, slug]
+    );
+    const tenant = tenantResult.rows[0];
+
+    // Create user
+    const userResult = await client.query(
+      `INSERT INTO platform.users (tenant_id, email, name, role_id, is_owner, status)
+       VALUES ($1, $2, $3, $4, true, 'active')
+       RETURNING *`,
+      [tenant.id, input.email, input.name, roleId]
+    );
+    const user = userResult.rows[0];
+
+    // Link owner to tenant
+    await client.query(
+      'UPDATE platform.tenants SET owner_user_id = $1 WHERE id = $2',
+      [user.id, tenant.id]
+    );
+
+    // Create billing state
+    await client.query(
+      `INSERT INTO platform.billing_state (tenant_id, plan_tier, dashboard_limit, payment_status)
+       VALUES ($1, 'free', 0, 'none')`,
+      [tenant.id]
+    );
+
+    // Create warehouse schema
+    const schemaName = `tn_${tenant.id.replace(/-/g, '')}`;
+    await client.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+
+    // Get permissions
+    const permResult = await client.query(
+      `SELECT p.key FROM platform.permissions p
+       JOIN platform.role_permissions rp ON rp.permission_id = p.id
+       WHERE rp.role_id = $1`,
+      [roleId]
+    );
+    const permissions = permResult.rows.map((r: { key: string }) => r.key);
+
+    // Create session
+    const refreshToken = signRefreshToken();
+    const refreshTokenHash = hashRefreshToken(refreshToken);
+    const expiresAt = new Date(Date.now() + config.jwt.refreshTokenExpiry);
+
+    const sessionResult = await client.query(
+      `INSERT INTO platform.user_sessions (user_id, tenant_id, refresh_token_hash, expires_at)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [user.id, tenant.id, refreshTokenHash, expiresAt]
+    );
+
+    const accessToken = signAccessToken({
+      sub: user.id,
+      tid: tenant.id,
+      role: 'platform_admin',
+      permissions,
+      is_owner: true,
+      is_platform_admin: true,
+    });
+
+    auditService.log({
+      tenantId: tenant.id,
+      userId: user.id,
+      action: 'user.setup',
+      resourceType: 'user',
+      resourceId: user.id,
+      metadata: { is_platform_admin: true, first_boot: true },
+    });
+
+    console.log(`[SETUP] Platform admin created: ${input.email}`);
+
+    return {
+      accessToken,
+      refreshToken,
+      sessionId: sessionResult.rows[0].id,
+    };
+  });
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 export async function initiateSignup(input: {

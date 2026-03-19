@@ -160,6 +160,26 @@ input, select, textarea { font-family: var(--font); }
       <div class="auth-toggle">Already have an account? <a id="show-login">Sign in</a></div>
     </div>
 
+    <!-- First-boot setup form -->
+    <div id="auth-setup" class="auth-card" style="display:none">
+      <h2>Platform setup</h2>
+      <div class="sub">Create the first admin account. No email verification required.</div>
+      <div id="setup-err" class="auth-err"></div>
+      <div class="auth-fg">
+        <label>Full name</label>
+        <input type="text" id="setup-name" placeholder="Your name" autocomplete="name">
+      </div>
+      <div class="auth-fg">
+        <label>Admin email</label>
+        <input type="email" id="setup-email" placeholder="admin@company.com" autocomplete="email">
+      </div>
+      <div class="auth-fg">
+        <label>Organization name</label>
+        <input type="text" id="setup-org" placeholder="Acme Inc.">
+      </div>
+      <button class="btn primary" id="btn-setup">Create admin account</button>
+    </div>
+
     <!-- Verification form -->
     <div id="auth-verify" class="auth-card" style="display:none">
       <h2>Check your email</h2>
@@ -289,6 +309,7 @@ input, select, textarea { font-family: var(--font); }
   function showForm(name) {
     document.getElementById('auth-login').style.display = name === 'login' ? '' : 'none';
     document.getElementById('auth-signup').style.display = name === 'signup' ? '' : 'none';
+    document.getElementById('auth-setup').style.display = name === 'setup' ? '' : 'none';
     document.getElementById('auth-verify').style.display = name === 'verify' ? '' : 'none';
   }
 
@@ -335,6 +356,23 @@ input, select, textarea { font-family: var(--font); }
       document.getElementById('verify-sub').textContent = 'We sent a 6-digit code to ' + email;
       showForm('verify');
     }).catch(function() { btn.disabled = false; showAuthErr('signup-err', 'Network error.'); });
+  };
+
+  // First-boot setup
+  document.getElementById('btn-setup').onclick = function() {
+    var name = document.getElementById('setup-name').value.trim();
+    var email = document.getElementById('setup-email').value.trim();
+    var org = document.getElementById('setup-org').value.trim();
+    if (!name || !email || !org) { showAuthErr('setup-err', 'All fields are required.'); return; }
+    showAuthErr('setup-err', '');
+    this.disabled = true;
+    var btn = this;
+    api.post('/api/auth/setup', { name: name, email: email, tenantName: org }).then(function(d) {
+      btn.disabled = false;
+      if (!d.ok) { showAuthErr('setup-err', (d.error && d.error.message) || 'Setup failed.'); return; }
+      accessToken = d.data.accessToken;
+      enterApp();
+    }).catch(function() { btn.disabled = false; showAuthErr('setup-err', 'Network error.'); });
   };
 
   // Verify
@@ -520,13 +558,20 @@ input, select, textarea { font-family: var(--font); }
     if (hash && hash !== currentView) navigateTo(hash);
   };
 
-  // ── Init: try to resume session ──
+  // ── Init: try to resume session, or show setup if first boot ──
   function init() {
     if (checkUrlToken()) return;
     api.refresh().then(function(ok) {
       if (ok) {
         enterApp();
+        return;
       }
+      // Check if platform needs first-boot setup
+      fetch('/api/auth/setup').then(function(r) { return r.json(); }).then(function(d) {
+        if (d.ok && d.data && d.data.setupRequired) {
+          showForm('setup');
+        }
+      }).catch(function() {});
     });
   }
 
