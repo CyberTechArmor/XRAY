@@ -4,7 +4,7 @@ services:
   server:
     build: ./server
     ports:
-      - "127.0.0.1:${APP_PORT:-3200}:3000"
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
     environment:
       - DATABASE_URL=postgresql://${DB_USER:-xray}:${DB_PASSWORD}@${DB_HOST:-postgres}:5432/${DB_NAME:-xray}
       - JWT_SECRET=${JWT_SECRET}

@@ -68,11 +68,15 @@ The API will be available at `http://localhost:3000`.
 
 ## Production Deployment
 
-### One-Command Install
+### Pull from GitHub and Install
 
 ```bash
+git clone https://github.com/CyberTechArmor/XRAY.git
+cd XRAY
 sudo bash install.sh
 ```
+
+The installer is interactive and will prompt for your domain, email, and port. Everything else is automatic.
 
 The install script handles everything:
 
@@ -108,7 +112,7 @@ cp .env.example .env
 docker compose up -d --build
 
 # Check health
-curl http://localhost:3200/api/health
+curl http://localhost:3000/api/health
 ```
 
 ## Project Structure
@@ -326,7 +330,7 @@ All tenant-scoped tables enforce Row-Level Security via `current_setting('app.cu
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `APP_PORT` | No | Server port (default: 3200) |
+| `APP_PORT` | No | Server port (default: 3000) |
 | `JWT_SECRET` | Yes | JWT signing secret (64+ chars) |
 | `ENCRYPTION_KEY` | Yes | 256-bit hex string (64 hex chars) for AES-256-GCM |
 | `DB_HOST` | No | PostgreSQL host (default: postgres) |
