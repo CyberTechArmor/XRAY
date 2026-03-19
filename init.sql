@@ -247,6 +247,43 @@ CREATE TABLE platform.email_templates (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- API Keys (for external integrations like n8n)
+CREATE TABLE platform.api_keys (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID REFERENCES platform.tenants(id),
+    name            TEXT NOT NULL,
+    key_prefix      TEXT NOT NULL,
+    key_hash        TEXT UNIQUE NOT NULL,
+    scopes          TEXT[] NOT NULL DEFAULT '{}',
+    created_by      UUID NOT NULL REFERENCES platform.users(id),
+    is_active       BOOLEAN NOT NULL DEFAULT true,
+    last_used_at    TIMESTAMPTZ,
+    expires_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_api_keys_hash ON platform.api_keys(key_hash) WHERE is_active;
+
+-- Webhooks (inbound endpoints per connection)
+CREATE TABLE platform.webhooks (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    connection_id   UUID NOT NULL REFERENCES platform.connections(id) ON DELETE CASCADE,
+    tenant_id       UUID NOT NULL REFERENCES platform.tenants(id),
+    name            TEXT NOT NULL,
+    url_token       TEXT UNIQUE NOT NULL,
+    secret          TEXT,
+    events          TEXT[] NOT NULL DEFAULT '{data.push}',
+    is_active       BOOLEAN NOT NULL DEFAULT true,
+    last_triggered_at TIMESTAMPTZ,
+    failure_count   INTEGER NOT NULL DEFAULT 0,
+    created_by      UUID NOT NULL REFERENCES platform.users(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_webhooks_url_token ON platform.webhooks(url_token) WHERE is_active;
+CREATE INDEX idx_webhooks_connection ON platform.webhooks(connection_id);
+
 -- Audit Log
 CREATE TABLE platform.audit_log (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -277,6 +314,8 @@ ALTER TABLE platform.user_passkeys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.user_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.dashboard_embeds ENABLE ROW LEVEL SECURITY;
+ALTER TABLE platform.api_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE platform.webhooks ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies: tenant isolation
 CREATE POLICY tenant_isolation ON platform.users USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
@@ -291,6 +330,8 @@ CREATE POLICY tenant_isolation ON platform.user_passkeys USING (tenant_id = curr
 CREATE POLICY tenant_isolation ON platform.user_sessions USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
 CREATE POLICY tenant_isolation ON platform.audit_log USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
 CREATE POLICY tenant_isolation ON platform.dashboard_embeds USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
+CREATE POLICY tenant_isolation ON platform.api_keys USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
+CREATE POLICY tenant_isolation ON platform.webhooks USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
 
 -- RLS Policies: platform admin bypass
 CREATE POLICY platform_admin_bypass ON platform.users USING (current_setting('app.is_platform_admin', true)::boolean = true);
@@ -305,3 +346,5 @@ CREATE POLICY platform_admin_bypass ON platform.user_passkeys USING (current_set
 CREATE POLICY platform_admin_bypass ON platform.user_sessions USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.audit_log USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.dashboard_embeds USING (current_setting('app.is_platform_admin', true)::boolean = true);
+CREATE POLICY platform_admin_bypass ON platform.api_keys USING (current_setting('app.is_platform_admin', true)::boolean = true);
+CREATE POLICY platform_admin_bypass ON platform.webhooks USING (current_setting('app.is_platform_admin', true)::boolean = true);

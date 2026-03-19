@@ -21,6 +21,8 @@ import invitationRoutes from './routes/invitation.routes';
 import embedRoutes from './routes/embed.routes';
 import adminRoutes from './routes/admin.routes';
 import auditRoutes from './routes/audit.routes';
+import apikeyRoutes from './routes/apikey.routes';
+import webhookRoutes from './routes/webhook.routes';
 
 const app = express();
 
@@ -76,6 +78,8 @@ app.use('/api/invitations', invitationRoutes);
 app.use('/api/embed', embedRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/audit', auditRoutes);
+app.use('/api/api-keys', apikeyRoutes);
+app.use('/api/webhooks', webhookRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);

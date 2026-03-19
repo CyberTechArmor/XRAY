@@ -134,6 +134,25 @@ export const auditQuerySchema = z.object({
   resourceType: z.string().optional(),
 });
 
+export const apiKeyCreateSchema = z.object({
+  name: nameSchema,
+  scopes: z.array(z.string().min(1)).min(1),
+  tenantId: uuidSchema.optional(),
+  expiresAt: z.string().datetime().optional(),
+});
+
+export const webhookCreateSchema = z.object({
+  connectionId: uuidSchema,
+  name: nameSchema,
+  events: z.array(z.string().min(1)).optional().default(['data.push']),
+});
+
+export const webhookUpdateSchema = z.object({
+  name: nameSchema.optional(),
+  events: z.array(z.string().min(1)).optional(),
+  isActive: z.boolean().optional(),
+});
+
 export function validateBody<T>(schema: z.ZodSchema<T>, data: unknown): T {
   return schema.parse(data);
 }

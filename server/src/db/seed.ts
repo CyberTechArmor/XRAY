@@ -22,7 +22,8 @@ async function seed() {
         ('account.view',          'View own account',           'account'),
         ('account.edit',          'Edit own profile',           'account'),
         ('audit.view',            'View audit log',             'audit'),
-        ('platform.admin',        'Platform admin access',      'platform')
+        ('platform.admin',        'Platform admin access',      'platform'),
+        ('webhook.ingest',        'Push data via webhooks',     'webhooks')
       ON CONFLICT (key) DO NOTHING;
     `);
 
