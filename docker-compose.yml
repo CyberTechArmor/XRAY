@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  server:
+    build: ./server
+    ports:
+      - "127.0.0.1:${APP_PORT:-3200}:3000"
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-xray}:${DB_PASSWORD}@${DB_HOST:-postgres}:5432/${DB_NAME:-xray}
+      - JWT_SECRET=${JWT_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - WEBAUTHN_RP_NAME=${RP_NAME:-XRay BI}
+      - WEBAUTHN_RP_ID=${RP_ID:-localhost}
+      - WEBAUTHN_ORIGIN=${ORIGIN:-http://localhost:3000}
+      - NODE_ENV=${NODE_ENV:-production}
+      # Fallback SMTP for first boot (before admin UI config)
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=${DB_NAME:-xray}
+      - POSTGRES_USER=${DB_USER:-xray}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-xray}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pg_data:
