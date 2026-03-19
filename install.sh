@@ -95,8 +95,8 @@ while [ -z "$ADMIN_EMAIL" ]; do
   read -rp "  Admin email cannot be empty: " ADMIN_EMAIL
 done
 
-read -rp "  Application port [3200]: " APP_PORT
-APP_PORT="${APP_PORT:-3200}"
+read -rp "  Application port [3000]: " APP_PORT
+APP_PORT="${APP_PORT:-3000}"
 
 read -rp "  Embed subdomain (e.g. embed.xray.example.com) [embed.${DOMAIN}]: " EMBED_DOMAIN
 EMBED_DOMAIN="${EMBED_DOMAIN:-embed.${DOMAIN}}"
