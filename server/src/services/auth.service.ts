@@ -95,6 +95,56 @@ export async function firstBootSetup(input: {
       throw new AppError(403, 'SETUP_COMPLETE', 'Platform is already set up');
     }
 
+    // Seed roles if they don't exist (handles pre-existing DB without seed data)
+    const roleCheck = await client.query("SELECT id FROM platform.roles WHERE slug = 'platform_admin'");
+    if (roleCheck.rows.length === 0) {
+      await client.query(`
+        INSERT INTO platform.roles (name, slug, description, is_system, is_platform) VALUES
+          ('Platform Admin', 'platform_admin', 'Full platform access', true, true),
+          ('Owner',          'owner',          'Tenant owner',          true, false),
+          ('Admin',          'admin',          'Tenant admin',          true, false),
+          ('Member',         'member',         'Standard member',       true, false),
+          ('Viewer',         'viewer',         'View-only access',      true, false)
+        ON CONFLICT (slug) DO NOTHING
+      `);
+
+      // Seed permissions
+      await client.query(`
+        INSERT INTO platform.permissions (key, label, category, description) VALUES
+          ('platform.admin',      'Platform admin',     'platform',    'Full platform administration'),
+          ('account.view',        'View account',       'account',     'View own profile and sessions'),
+          ('account.edit',        'Edit account',       'account',     'Edit own profile'),
+          ('users.view',          'View users',         'users',       'View team members'),
+          ('users.manage',        'Manage users',       'users',       'Invite and manage users'),
+          ('dashboards.view',     'View dashboards',    'dashboards',  'View dashboards'),
+          ('dashboards.manage',   'Manage dashboards',  'dashboards',  'Create and edit dashboards'),
+          ('connections.view',    'View connections',    'connections', 'View data connections'),
+          ('connections.manage',  'Manage connections',  'connections', 'Manage data connections'),
+          ('billing.view',        'View billing',       'billing',     'View plan and invoices'),
+          ('billing.manage',      'Manage billing',     'billing',     'Change plan'),
+          ('audit.view',          'View audit log',     'audit',       'View audit log')
+        ON CONFLICT (key) DO NOTHING
+      `);
+
+      // platform_admin gets all permissions
+      await client.query(`
+        INSERT INTO platform.role_permissions (role_id, permission_id)
+          SELECT r.id, p.id FROM platform.roles r CROSS JOIN platform.permissions p
+          WHERE r.slug = 'platform_admin'
+        ON CONFLICT DO NOTHING
+      `);
+
+      // owner gets everything except platform.admin
+      await client.query(`
+        INSERT INTO platform.role_permissions (role_id, permission_id)
+          SELECT r.id, p.id FROM platform.roles r CROSS JOIN platform.permissions p
+          WHERE r.slug = 'owner' AND p.key != 'platform.admin'
+        ON CONFLICT DO NOTHING
+      `);
+
+      console.log('[SETUP] Seeded roles and permissions');
+    }
+
     // Get platform_admin role
     const roleResult = await client.query(
       "SELECT id FROM platform.roles WHERE slug = 'platform_admin'"
