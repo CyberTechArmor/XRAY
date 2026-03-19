@@ -36,6 +36,21 @@ fail() { echo -e "  ${RED}✗${NC} $1"; exit 1; }
 
 banner
 
+# ── Helper: find first available port starting from a given number ──
+find_available_port() {
+  local port="${1:-3000}"
+  while [ "$port" -le 65535 ]; do
+    if ! ss -tlnH "sport = :$port" 2>/dev/null | grep -q ":${port}\b" \
+       && ! ss -ulnH "sport = :$port" 2>/dev/null | grep -q ":${port}\b"; then
+      echo "$port"
+      return 0
+    fi
+    port=$((port + 1))
+  done
+  echo "$1"  # fallback to the starting port if nothing found
+  return 1
+}
+
 # ── Prerequisites ──────────────────────────────────────────
 if [ "$(id -u)" -ne 0 ]; then
   fail "This script must be run as root. Use: sudo bash install.sh"
@@ -95,8 +110,9 @@ while [ -z "$ADMIN_EMAIL" ]; do
   read -rp "  Admin email cannot be empty: " ADMIN_EMAIL
 done
 
-read -rp "  Application port [3000]: " APP_PORT
-APP_PORT="${APP_PORT:-3000}"
+DEFAULT_PORT=$(find_available_port 3000)
+read -rp "  Application port [${DEFAULT_PORT}]: " APP_PORT
+APP_PORT="${APP_PORT:-$DEFAULT_PORT}"
 
 read -rp "  Embed subdomain (e.g. embed.xray.example.com) [embed.${DOMAIN}]: " EMBED_DOMAIN
 EMBED_DOMAIN="${EMBED_DOMAIN:-embed.${DOMAIN}}"
