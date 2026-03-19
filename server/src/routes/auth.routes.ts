@@ -39,7 +39,7 @@ router.post('/verify', async (req, res, next) => {
 router.post('/verify-token', async (req, res, next) => {
   try {
     const data = validateBody(verifyTokenSchema, req.body);
-    const result = await authService.verifyToken(data);
+    const result = await authService.verifyToken(data.token);
     res.json({
       ok: true,
       data: result,
@@ -54,7 +54,7 @@ router.post('/verify-token', async (req, res, next) => {
 router.post('/login/begin', async (req, res, next) => {
   try {
     const data = validateBody(loginBeginSchema, req.body);
-    const result = await authService.loginBegin(data);
+    const result = await authService.initiateLogin(data.email);
     res.json({
       ok: true,
       data: result,
@@ -68,7 +68,8 @@ router.post('/login/begin', async (req, res, next) => {
 // POST /login/complete - complete passkey auth (no auth)
 router.post('/login/complete', async (req, res, next) => {
   try {
-    const result = await authService.loginComplete(req.body);
+    const data = validateBody(verifySchema, req.body);
+    const result = await authService.verifyCode(data);
     res.json({
       ok: true,
       data: result,
@@ -83,7 +84,7 @@ router.post('/login/complete', async (req, res, next) => {
 router.post('/magic-link', async (req, res, next) => {
   try {
     const data = validateBody(magicLinkSchema, req.body);
-    const result = await authService.initiateMagicLink(data);
+    const result = await authService.initiateLogin(data.email);
     res.json({
       ok: true,
       data: result,
@@ -98,7 +99,7 @@ router.post('/magic-link', async (req, res, next) => {
 router.post('/recover', async (req, res, next) => {
   try {
     const data = validateBody(magicLinkSchema, req.body);
-    const result = await authService.initiateRecovery(data);
+    const result = await authService.initiateRecovery(data.email);
     res.json({
       ok: true,
       data: result,

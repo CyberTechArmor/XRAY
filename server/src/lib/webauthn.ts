@@ -34,8 +34,7 @@ export async function generateRegOptions(
     userName,
     attestationType: 'none',
     excludeCredentials: existingPasskeys.map((pk) => ({
-      id: pk.credentialId,
-      type: 'public-key',
+      id: pk.credentialId.toString('base64url'),
       transports: pk.transports as AuthenticatorTransportFuture[],
     })),
     authenticatorSelection: {
@@ -63,8 +62,7 @@ export async function generateAuthOptions(
   return generateAuthenticationOptions({
     rpID,
     allowCredentials: allowCredentials.map((c) => ({
-      id: c.id,
-      type: 'public-key',
+      id: c.id.toString('base64url'),
       transports: c.transports as AuthenticatorTransportFuture[],
     })),
     userVerification: 'preferred',
@@ -74,18 +72,18 @@ export async function generateAuthOptions(
 export async function verifyAuthResponse(
   response: AuthenticationResponseJSON,
   expectedChallenge: string,
-  credential: StoredPasskey
+  storedCredential: StoredPasskey
 ) {
   return verifyAuthenticationResponse({
     response,
     expectedChallenge,
     expectedOrigin: origin,
     expectedRPID: rpID,
-    credential: {
-      id: credential.credentialId,
-      publicKey: credential.publicKey,
-      counter: credential.counter,
-      transports: credential.transports as AuthenticatorTransportFuture[],
+    authenticator: {
+      credentialID: storedCredential.credentialId.toString('base64url'),
+      credentialPublicKey: new Uint8Array(storedCredential.publicKey),
+      counter: storedCredential.counter,
+      transports: storedCredential.transports as AuthenticatorTransportFuture[],
     },
   });
 }

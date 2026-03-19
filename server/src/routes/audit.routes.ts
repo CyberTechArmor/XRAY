@@ -9,8 +9,8 @@ const router = Router();
 // GET / - query audit log (JWT, audit.view)
 router.get('/', authenticateJWT, requirePermission('audit.view'), async (req, res, next) => {
   try {
-    const query = validateQuery(auditQuerySchema, req.query);
-    const result = await auditService.queryAuditLog(req.user!.tid, query);
+    const params = validateQuery(auditQuerySchema, req.query);
+    const result = await auditService.query({ tenantId: req.user!.tid, ...params });
     res.json({
       ok: true,
       data: result,

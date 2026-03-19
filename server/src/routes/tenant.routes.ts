@@ -9,7 +9,7 @@ const router = Router();
 // GET /current - get current tenant (JWT)
 router.get('/current', authenticateJWT, async (req, res, next) => {
   try {
-    const result = await tenantService.getCurrentTenant(req.user!.tid);
+    const result = await tenantService.getTenant(req.user!.tid);
     res.json({
       ok: true,
       data: result,
@@ -24,7 +24,7 @@ router.get('/current', authenticateJWT, async (req, res, next) => {
 router.patch('/current', authenticateJWT, requirePermission('billing.manage'), async (req, res, next) => {
   try {
     const data = validateBody(tenantUpdateSchema, req.body);
-    const result = await tenantService.updateCurrentTenant(req.user!.tid, data);
+    const result = await tenantService.updateTenant(req.user!.tid, data);
     res.json({
       ok: true,
       data: result,

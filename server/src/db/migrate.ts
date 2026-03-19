@@ -11,9 +11,6 @@ async function migrate() {
     const initSql = readFileSync(join(__dirname, '../../../init.sql'), 'utf-8');
     await client.query(initSql);
     console.log('Database schema created successfully');
-
-    // Run seed
-    const { seed } = await import('./seed');
   } catch (err) {
     console.error('Migration failed:', err);
     throw err;

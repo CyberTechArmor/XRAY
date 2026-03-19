@@ -33,8 +33,8 @@ export async function withTenantContext<T>(
   fn: (client: PoolClient) => Promise<T>
 ): Promise<T> {
   return withClient(async (client) => {
-    await client.query(`SET LOCAL app.current_tenant = '${tenantId}'`);
-    await client.query(`SET LOCAL app.is_platform_admin = '${isPlatformAdmin}'`);
+    await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
+    await client.query(`SELECT set_config('app.is_platform_admin', $1, true)`, [String(isPlatformAdmin)]);
     return fn(client);
   });
 }

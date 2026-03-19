@@ -1,0 +1,242 @@
+import { withClient, withTransaction } from '../db/connection';
+import { AppError } from '../middleware/error-handler';
+import { encrypt } from '../lib/crypto';
+import * as auditService from './audit.service';
+
+// ─── Tenants ──────────────────────────────────────────────
+
+export async function listAllTenants(query: { page: number; limit: number }) {
+  return withClient(async (client) => {
+    const offset = (query.page - 1) * query.limit;
+    const countResult = await client.query('SELECT COUNT(*) FROM platform.tenants');
+    const total = parseInt(countResult.rows[0].count, 10);
+    const result = await client.query(
+      'SELECT * FROM platform.tenants ORDER BY created_at DESC LIMIT $1 OFFSET $2',
+      [query.limit, offset]
+    );
+    return { data: result.rows, total, page: query.page, limit: query.limit };
+  });
+}
+
+export async function createTenant(input: { name: string; slug: string }) {
+  return withTransaction(async (client) => {
+    const result = await client.query(
+      `INSERT INTO platform.tenants (name, slug) VALUES ($1, $2) RETURNING *`,
+      [input.name, input.slug]
+    );
+    const tenant = result.rows[0];
+    const schemaName = `tn_${tenant.id.replace(/-/g, '')}`;
+    await client.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await client.query(
+      `INSERT INTO platform.billing_state (tenant_id, plan_tier, dashboard_limit, payment_status)
+       VALUES ($1, 'free', 0, 'none')`,
+      [tenant.id]
+    );
+    return tenant;
+  });
+}
+
+export async function getTenantDetail(tenantId: string) {
+  return withClient(async (client) => {
+    const tenantResult = await client.query('SELECT * FROM platform.tenants WHERE id = $1', [tenantId]);
+    if (tenantResult.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Tenant not found');
+    const tenant = tenantResult.rows[0];
+    const [uc, dc, cc, bs] = await Promise.all([
+      client.query('SELECT COUNT(*) FROM platform.users WHERE tenant_id = $1', [tenantId]),
+      client.query('SELECT COUNT(*) FROM platform.dashboards WHERE tenant_id = $1', [tenantId]),
+      client.query('SELECT COUNT(*) FROM platform.connections WHERE tenant_id = $1', [tenantId]),
+      client.query('SELECT * FROM platform.billing_state WHERE tenant_id = $1', [tenantId]),
+    ]);
+    return {
+      ...tenant,
+      user_count: parseInt(uc.rows[0].count, 10),
+      dashboard_count: parseInt(dc.rows[0].count, 10),
+      connection_count: parseInt(cc.rows[0].count, 10),
+      billing_state: bs.rows[0] || null,
+    };
+  });
+}
+
+// ─── Dashboards ───────────────────────────────────────────
+
+export async function createDashboard(input: {
+  tenantId: string; name: string; description?: string;
+  viewHtml?: string; viewCss?: string; viewJs?: string;
+}) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `INSERT INTO platform.dashboards (tenant_id, name, description, view_html, view_css, view_js)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [input.tenantId, input.name, input.description || null, input.viewHtml || null, input.viewCss || null, input.viewJs || null]
+    );
+    return result.rows[0];
+  });
+}
+
+export async function updateDashboard(dashboardId: string, updates: Record<string, unknown>) {
+  return withClient(async (client) => {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    let idx = 1;
+    const allowedKeys: Record<string, string> = {
+      name: 'name', description: 'description', viewHtml: 'view_html',
+      viewCss: 'view_css', viewJs: 'view_js', status: 'status',
+    };
+    for (const [key, value] of Object.entries(updates)) {
+      const col = allowedKeys[key];
+      if (col && value !== undefined) {
+        fields.push(`${col} = $${idx}`);
+        values.push(value);
+        idx++;
+      }
+    }
+    if (fields.length === 0) throw new AppError(400, 'NO_UPDATES', 'No fields to update');
+    fields.push('updated_at = now()');
+    values.push(dashboardId);
+    const result = await client.query(
+      `UPDATE platform.dashboards SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
+    return result.rows[0];
+  });
+}
+
+// ─── Connections ──────────────────────────────────────────
+
+export async function createConnection(input: {
+  tenantId: string; name: string; sourceType: string;
+  sourceDetail?: string; pipelineRef?: string;
+}) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `INSERT INTO platform.connections (tenant_id, name, source_type, source_detail, pipeline_ref)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [input.tenantId, input.name, input.sourceType, input.sourceDetail || null, input.pipelineRef || null]
+    );
+    return result.rows[0];
+  });
+}
+
+export async function updateConnection(connectionId: string, updates: Record<string, unknown>) {
+  return withClient(async (client) => {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    let idx = 1;
+    const allowedKeys: Record<string, string> = {
+      name: 'name', status: 'status', pipelineRef: 'pipeline_ref',
+    };
+    for (const [key, value] of Object.entries(updates)) {
+      const col = allowedKeys[key];
+      if (col && value !== undefined) {
+        fields.push(`${col} = $${idx}`);
+        values.push(value);
+        idx++;
+      }
+    }
+    if (fields.length === 0) throw new AppError(400, 'NO_UPDATES', 'No fields to update');
+    fields.push('updated_at = now()');
+    values.push(connectionId);
+    const result = await client.query(
+      `UPDATE platform.connections SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
+    return result.rows[0];
+  });
+}
+
+export async function registerTable(connectionId: string, input: { tableName: string; description?: string }) {
+  return withClient(async (client) => {
+    const conn = await client.query('SELECT tenant_id FROM platform.connections WHERE id = $1', [connectionId]);
+    if (conn.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
+    const result = await client.query(
+      `INSERT INTO platform.connection_tables (connection_id, tenant_id, table_name, description)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [connectionId, conn.rows[0].tenant_id, input.tableName, input.description || null]
+    );
+    return result.rows[0];
+  });
+}
+
+// ─── Settings ─────────────────────────────────────────────
+
+export async function getAllSettings() {
+  return withClient(async (client) => {
+    const result = await client.query(
+      'SELECT key, value, is_secret, updated_at FROM platform.platform_settings ORDER BY key'
+    );
+    return result.rows.map((r: { key: string; value: string | null; is_secret: boolean; updated_at: string }) => ({
+      key: r.key,
+      value: r.is_secret ? '••••••••' : r.value,
+      is_secret: r.is_secret,
+      updated_at: r.updated_at,
+    }));
+  });
+}
+
+export async function updateSettings(updates: Record<string, string | null>) {
+  return withClient(async (client) => {
+    for (const [key, value] of Object.entries(updates)) {
+      const existing = await client.query(
+        'SELECT is_secret FROM platform.platform_settings WHERE key = $1', [key]
+      );
+      const isSecret = existing.rows.length > 0 ? existing.rows[0].is_secret : false;
+      const storedValue = value !== null && isSecret ? encrypt(value) : value;
+      await client.query(
+        `INSERT INTO platform.platform_settings (key, value, updated_at)
+         VALUES ($1, $2, now())
+         ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()`,
+        [key, storedValue]
+      );
+    }
+    return { updated: Object.keys(updates).length };
+  });
+}
+
+// ─── Email Templates ─────────────────────────────────────
+
+export async function listEmailTemplates() {
+  return withClient(async (client) => {
+    const result = await client.query(
+      'SELECT template_key, subject, variables, description, updated_at FROM platform.email_templates ORDER BY template_key'
+    );
+    return result.rows;
+  });
+}
+
+export async function updateEmailTemplate(templateKey: string, updates: {
+  subject?: string; bodyHtml?: string; bodyText?: string;
+}) {
+  return withClient(async (client) => {
+    const fields: string[] = ['updated_at = now()'];
+    const values: unknown[] = [];
+    let idx = 1;
+    if (updates.subject !== undefined) { fields.push(`subject = $${idx}`); values.push(updates.subject); idx++; }
+    if (updates.bodyHtml !== undefined) { fields.push(`body_html = $${idx}`); values.push(updates.bodyHtml); idx++; }
+    if (updates.bodyText !== undefined) { fields.push(`body_text = $${idx}`); values.push(updates.bodyText); idx++; }
+    values.push(templateKey);
+    const result = await client.query(
+      `UPDATE platform.email_templates SET ${fields.join(', ')} WHERE template_key = $${idx} RETURNING *`,
+      values
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Template not found');
+    return result.rows[0];
+  });
+}
+
+export async function sendTestEmail(templateKey: string, userId: string) {
+  const { sendTemplateEmail } = await import('./email.service');
+  const user = await withClient(async (client) => {
+    const result = await client.query('SELECT email, name FROM platform.users WHERE id = $1', [userId]);
+    return result.rows[0];
+  });
+  if (!user) throw new AppError(404, 'NOT_FOUND', 'User not found');
+  await sendTemplateEmail(templateKey, user.email, {
+    code: '123456', verify_url: 'https://example.com/verify',
+    platform_name: 'XRay BI', name: user.name, email: user.email,
+    tenant_name: 'Test Tenant', inviter_name: 'Test', invite_url: 'https://example.com/invite',
+    recovery_url: 'https://example.com/recover',
+  });
+  return { sent: true, to: user.email };
+}

@@ -8,11 +8,11 @@ const router = Router();
 router.get('/:dashboardId/:sourceKey', authenticateJWT, async (req, res, next) => {
   try {
     const { dashboardId, sourceKey } = req.params;
-    const result = await dataService.queryData(
-      req.user!.tid,
-      req.user!.sub,
+    const result = await dataService.queryDashboardSource(
       dashboardId,
       sourceKey,
+      req.user!.tid,
+      req.user!.sub,
     );
     res.json({
       ok: true,

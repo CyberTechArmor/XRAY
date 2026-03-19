@@ -7,10 +7,9 @@ import * as roleService from '../services/role.service';
 const router = Router();
 
 // GET /assignable - get assignable roles (JWT, users.manage)
-// Defined before /:id to avoid route conflict
 router.get('/assignable', authenticateJWT, requirePermission('users.manage'), async (req, res, next) => {
   try {
-    const result = await roleService.getAssignableRoles(req.user!.tid);
+    const result = await roleService.getAssignableRoles();
     res.json({
       ok: true,
       data: result,

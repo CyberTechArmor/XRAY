@@ -1,4 +1,4 @@
-import { randomBytes, createHash, createCipheriv, createDecipheriv, scryptSync } from 'crypto';
+import { randomBytes, createHash, createCipheriv, createDecipheriv } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config';
 

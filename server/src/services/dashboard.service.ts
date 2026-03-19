@@ -33,8 +33,8 @@ export async function listDashboards(
   hasManagePermission: boolean
 ): Promise<Dashboard[]> {
   return withClient(async (client) => {
-    await client.query(`SET LOCAL app.current_tenant = '${tenantId}'`);
-    await client.query(`SET LOCAL app.is_platform_admin = 'false'`);
+    await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
+    await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
 
     if (hasManagePermission) {
       const result = await client.query(
@@ -279,6 +279,19 @@ export async function createEmbed(
   });
 
   return { embedToken, id: result.rows[0].id };
+}
+
+export async function revokeEmbed(
+  embedId: string,
+  dashboardId: string,
+  tenantId: string
+): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(
+      'UPDATE platform.dashboard_embeds SET is_active = false WHERE id = $1 AND dashboard_id = $2 AND tenant_id = $3',
+      [embedId, dashboardId, tenantId]
+    );
+  });
 }
 
 export async function getEmbedDashboard(

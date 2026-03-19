@@ -1,7 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { generateToken } from '../lib/crypto';
-import type { JWTPayload } from '../middleware/auth';
 
 interface AccessTokenInput {
   sub: string;
@@ -13,13 +12,13 @@ interface AccessTokenInput {
 }
 
 export function signAccessToken(payload: AccessTokenInput): string {
-  return jwt.sign(payload, config.jwtSecret, {
-    expiresIn: config.jwt.accessTokenExpiry,
-  });
+  return jwt.sign({ ...payload } as object, config.jwtSecret, {
+    expiresIn: config.jwt.accessTokenExpiry as string,
+  } as jwt.SignOptions);
 }
 
-export function verifyAccessToken(token: string): JWTPayload {
-  return jwt.verify(token, config.jwtSecret) as JWTPayload;
+export function verifyAccessToken(token: string) {
+  return jwt.verify(token, config.jwtSecret);
 }
 
 export function signRefreshToken(): string {

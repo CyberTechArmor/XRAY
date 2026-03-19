@@ -1,11 +1,6 @@
 import { withClient } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 
-interface CadenceCheck {
-  allowed: boolean;
-  retryAfter?: number; // seconds until next allowed request
-}
-
 const CADENCE_INTERVALS: Record<string, number> = {
   realtime: 0,
   '5min': 5 * 60,
@@ -16,23 +11,6 @@ const CADENCE_INTERVALS: Record<string, number> = {
 // In-memory tracking of last request times per user+source
 const lastRequestTimes = new Map<string, number>();
 
-export function checkCadence(
-  dashboardId: string,
-  sourceKey: string,
-  userId: string
-): CadenceCheck {
-  const cacheKey = `${userId}:${dashboardId}:${sourceKey}`;
-  const lastTime = lastRequestTimes.get(cacheKey);
-
-  if (!lastTime) {
-    return { allowed: true };
-  }
-
-  // Look up cadence from the source (we use a default of hourly if unknown)
-  // The actual cadence check uses the interval stored by the caller
-  return { allowed: true };
-}
-
 export async function queryDashboardSource(
   dashboardId: string,
   sourceKey: string,
@@ -40,9 +18,9 @@ export async function queryDashboardSource(
   userId: string
 ): Promise<{ data: Record<string, unknown>[]; source: Record<string, unknown> }> {
   return withClient(async (client) => {
-    // Set tenant context for RLS
-    await client.query(`SET LOCAL app.current_tenant = '${tenantId}'`);
-    await client.query(`SET LOCAL app.is_platform_admin = 'false'`);
+    // Set tenant context for RLS (parameterized via SELECT to avoid interpolation)
+    await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
+    await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
 
     // Look up the dashboard source
     const sourceResult = await client.query(
@@ -93,19 +71,27 @@ export async function queryDashboardSource(
     // Query the tenant warehouse schema
     const schemaName = `tn_${tenantId.replace(/-/g, '')}`;
 
-    let query: string;
-    if (source.query_template) {
-      // Use the predefined query template
-      query = source.query_template;
-    } else {
-      // Default: select all from the table
-      query = `SELECT * FROM "${schemaName}"."${source.table_name}"`;
+    // Validate schema and table names contain only safe characters
+    if (!/^tn_[a-f0-9]+$/.test(schemaName)) {
+      throw new AppError(400, 'INVALID_SCHEMA', 'Invalid tenant schema name');
+    }
+    if (source.table_name && !/^[a-z_][a-z0-9_]*$/.test(source.table_name)) {
+      throw new AppError(400, 'INVALID_TABLE', 'Invalid table name');
     }
 
-    // Set search path to tenant schema for query execution
-    await client.query(`SET search_path = "${schemaName}", public`);
+    // Set search path using parameterized set_config
+    await client.query(`SELECT set_config('search_path', $1 || ', public', true)`, [schemaName]);
 
-    const dataResult = await client.query(query);
+    let dataResult;
+    if (source.query_template) {
+      // Query templates are admin-defined; execute with parameterized LIMIT for safety
+      dataResult = await client.query(source.query_template + ' LIMIT 10000');
+    } else {
+      // Default: select all from the table (identifier already validated above)
+      dataResult = await client.query(
+        `SELECT * FROM "${schemaName}"."${source.table_name}" LIMIT 10000`
+      );
+    }
 
     return {
       data: dataResult.rows,

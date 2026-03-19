@@ -19,7 +19,7 @@ export const apiRateLimit = rateLimit({
 export const magicLinkRateLimit = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 3,
-  keyGenerator: (req) => req.body?.email || req.ip || 'unknown',
+  keyGenerator: (req) => req.body?.email || req.ip || req.socket.remoteAddress || 'no-ip',
   standardHeaders: true,
   legacyHeaders: false,
   message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many code requests. Please try again later.' } },

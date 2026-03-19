@@ -62,17 +62,17 @@ export const dashboardCreateSchema = z.object({
   tenantId: uuidSchema,
   name: nameSchema,
   description: z.string().max(1000).optional(),
-  viewHtml: z.string().optional(),
-  viewCss: z.string().optional(),
-  viewJs: z.string().optional(),
+  viewHtml: z.string().max(500_000).optional(),
+  viewCss: z.string().max(200_000).optional(),
+  viewJs: z.string().max(500_000).optional(),
 });
 
 export const dashboardUpdateSchema = z.object({
   name: nameSchema.optional(),
   description: z.string().max(1000).optional(),
-  viewHtml: z.string().optional(),
-  viewCss: z.string().optional(),
-  viewJs: z.string().optional(),
+  viewHtml: z.string().max(500_000).optional(),
+  viewCss: z.string().max(200_000).optional(),
+  viewJs: z.string().max(500_000).optional(),
   status: z.enum(['draft', 'active', 'archived']).optional(),
 });
 
@@ -124,7 +124,7 @@ export const embedCreateSchema = z.object({
 export const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-});
+}) as unknown as z.ZodType<{ page: number; limit: number }>;
 
 export const auditQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -153,10 +153,10 @@ export const webhookUpdateSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-export function validateBody<T>(schema: z.ZodSchema<T>, data: unknown): T {
+export function validateBody<T>(schema: z.ZodType<T>, data: unknown): T {
   return schema.parse(data);
 }
 
-export function validateQuery<T>(schema: z.ZodSchema<T>, data: unknown): T {
+export function validateQuery<T>(schema: z.ZodType<T>, data: unknown): T {
   return schema.parse(data);
 }

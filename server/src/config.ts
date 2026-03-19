@@ -20,7 +20,13 @@ export const config = {
   nodeEnv: getEnv('NODE_ENV', 'development'),
   databaseUrl: getEnvRequired('DATABASE_URL'),
   jwtSecret: getEnvRequired('JWT_SECRET'),
-  encryptionKey: getEnvRequired('ENCRYPTION_KEY'),
+  encryptionKey: (() => {
+    const key = getEnvRequired('ENCRYPTION_KEY');
+    if (!/^[a-f0-9]{64}$/i.test(key)) {
+      throw new Error('ENCRYPTION_KEY must be a 64-character hex string (256-bit key)');
+    }
+    return key;
+  })(),
   stripeWebhookSecret: getEnv('STRIPE_WEBHOOK_SECRET'),
   webauthn: {
     rpName: getEnv('WEBAUTHN_RP_NAME', 'XRay BI'),

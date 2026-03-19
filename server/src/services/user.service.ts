@@ -1,0 +1,195 @@
+import { withClient } from '../db/connection';
+import { AppError } from '../middleware/error-handler';
+import * as webauthn from '../lib/webauthn';
+
+export async function getProfile(userId: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
+              u.created_at, r.name as role_name, r.slug as role_slug
+       FROM platform.users u
+       JOIN platform.roles r ON r.id = u.role_id
+       WHERE u.id = $1`,
+      [userId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
+    return result.rows[0];
+  });
+}
+
+export async function updateProfile(userId: string, updates: { name?: string }) {
+  return withClient(async (client) => {
+    if (!updates.name) throw new AppError(400, 'NO_UPDATES', 'No fields to update');
+    const result = await client.query(
+      `UPDATE platform.users SET name = $1, updated_at = now() WHERE id = $2 RETURNING id, name, email`,
+      [updates.name, userId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
+    return result.rows[0];
+  });
+}
+
+export async function listPasskeys(userId: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `SELECT id, device_name, backed_up, last_used_at, created_at
+       FROM platform.user_passkeys WHERE user_id = $1 ORDER BY created_at DESC`,
+      [userId]
+    );
+    return result.rows;
+  });
+}
+
+export async function registerPasskey(userId: string) {
+  return withClient(async (client) => {
+    const userResult = await client.query(
+      'SELECT id, email, name FROM platform.users WHERE id = $1', [userId]
+    );
+    if (userResult.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
+    const user = userResult.rows[0];
+
+    const existingPasskeys = await client.query(
+      'SELECT credential_id, public_key, counter, transports FROM platform.user_passkeys WHERE user_id = $1',
+      [userId]
+    );
+
+    const options = await webauthn.generateRegOptions(
+      user.id,
+      user.email,
+      existingPasskeys.rows.map((p: { credential_id: Buffer; public_key: Buffer; counter: number; transports: string[] }) => ({
+        credentialId: p.credential_id,
+        publicKey: p.public_key,
+        counter: p.counter,
+        transports: p.transports,
+      }))
+    );
+
+    return options;
+  });
+}
+
+export async function verifyPasskeyRegistration(userId: string, body: unknown) {
+  return withClient(async (client) => {
+    // Retrieve the pending challenge for this user
+    const challengeResult = await client.query(
+      `SELECT challenge FROM platform.user_sessions
+       WHERE user_id = $1 AND device_info = 'passkey_registration'
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+
+    if (challengeResult.rows.length === 0) {
+      throw new AppError(400, 'NO_CHALLENGE', 'No pending registration challenge found. Please start registration again.');
+    }
+
+    const expectedChallenge = challengeResult.rows[0].challenge;
+    const verification = await webauthn.verifyRegResponse(
+      body as import('@simplewebauthn/server/script/deps').RegistrationResponseJSON,
+      expectedChallenge
+    );
+
+    if (!verification.verified || !verification.registrationInfo) {
+      throw new AppError(400, 'VERIFICATION_FAILED', 'Passkey verification failed');
+    }
+
+    const { credentialID, credentialPublicKey, counter, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+
+    // Store the new passkey
+    await client.query(
+      `INSERT INTO platform.user_passkeys
+         (user_id, credential_id, public_key, counter, device_type, backed_up)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        userId,
+        Buffer.from(credentialID, 'base64url'),
+        Buffer.from(credentialPublicKey),
+        counter,
+        credentialDeviceType,
+        credentialBackedUp,
+      ]
+    );
+
+    // Clean up the registration challenge
+    await client.query(
+      `DELETE FROM platform.user_sessions WHERE user_id = $1 AND device_info = 'passkey_registration'`,
+      [userId]
+    );
+
+    return { verified: true };
+  });
+}
+
+export async function revokePasskey(userId: string, passkeyId: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      'DELETE FROM platform.user_passkeys WHERE id = $1 AND user_id = $2 RETURNING id',
+      [passkeyId, userId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Passkey not found');
+  });
+}
+
+export async function listSessions(userId: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `SELECT id, device_info, last_active_at, created_at, expires_at
+       FROM platform.user_sessions WHERE user_id = $1 ORDER BY last_active_at DESC`,
+      [userId]
+    );
+    return result.rows;
+  });
+}
+
+export async function revokeSession(userId: string, sessionId: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      'DELETE FROM platform.user_sessions WHERE id = $1 AND user_id = $2 RETURNING id',
+      [sessionId, userId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Session not found');
+  });
+}
+
+export async function listUsers(tenantId: string, query: { page: number; limit: number }) {
+  return withClient(async (client) => {
+    const offset = (query.page - 1) * query.limit;
+    const result = await client.query(
+      `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
+              r.name as role_name, r.slug as role_slug
+       FROM platform.users u
+       JOIN platform.roles r ON r.id = u.role_id
+       WHERE u.tenant_id = $1
+       ORDER BY u.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [tenantId, query.limit, offset]
+    );
+    return result.rows;
+  });
+}
+
+export async function updateUser(
+  tenantId: string,
+  userId: string,
+  updates: { name?: string; roleId?: string; status?: string }
+) {
+  return withClient(async (client) => {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    let idx = 1;
+
+    if (updates.name !== undefined) { fields.push(`name = $${idx}`); values.push(updates.name); idx++; }
+    if (updates.roleId !== undefined) { fields.push(`role_id = $${idx}`); values.push(updates.roleId); idx++; }
+    if (updates.status !== undefined) { fields.push(`status = $${idx}`); values.push(updates.status); idx++; }
+
+    if (fields.length === 0) throw new AppError(400, 'NO_UPDATES', 'No fields to update');
+    fields.push('updated_at = now()');
+    values.push(userId, tenantId);
+
+    const result = await client.query(
+      `UPDATE platform.users SET ${fields.join(', ')} WHERE id = $${idx} AND tenant_id = $${idx + 1} RETURNING *`,
+      values
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
+    return result.rows[0];
+  });
+}
