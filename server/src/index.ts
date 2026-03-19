@@ -23,6 +23,7 @@ import adminRoutes from './routes/admin.routes';
 import auditRoutes from './routes/audit.routes';
 import apikeyRoutes from './routes/apikey.routes';
 import webhookRoutes from './routes/webhook.routes';
+import meetRoutes from './routes/meet.routes';
 
 const app = express();
 
@@ -80,6 +81,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/audit', auditRoutes);
 app.use('/api/api-keys', apikeyRoutes);
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/meet', meetRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);

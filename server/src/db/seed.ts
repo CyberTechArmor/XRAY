@@ -99,7 +99,9 @@ async function seed() {
         ('stripe.pricing_table_id', NULL, false),
         ('platform.name',           'XRay BI', false),
         ('platform.support_email',  NULL, false),
-        ('platform.domain',         NULL, false)
+        ('platform.domain',         NULL, false),
+        ('meet_server_url',         NULL, false),
+        ('meet_api_key',            NULL, true)
       ON CONFLICT (key) DO NOTHING;
     `);
 
