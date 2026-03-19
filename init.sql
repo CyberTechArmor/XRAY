@@ -333,6 +333,100 @@ CREATE POLICY tenant_isolation ON platform.dashboard_embeds USING (tenant_id = c
 CREATE POLICY tenant_isolation ON platform.api_keys USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
 CREATE POLICY tenant_isolation ON platform.webhooks USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
 
+-- ─── Seed: Roles ────────────────────────────────────────────────────────────
+INSERT INTO platform.roles (name, slug, description, is_system, is_platform) VALUES
+  ('Platform Admin', 'platform_admin', 'Full platform access — manages all tenants and settings', true, true),
+  ('Owner',          'owner',          'Tenant owner — full access within their organization',     true, false),
+  ('Admin',          'admin',          'Tenant admin — manages users, dashboards, connections',    true, false),
+  ('Member',         'member',         'Standard member — views dashboards, limited config',       true, false),
+  ('Viewer',         'viewer',         'View-only access to assigned dashboards',                  true, false);
+
+-- ─── Seed: Permissions ──────────────────────────────────────────────────────
+INSERT INTO platform.permissions (key, label, category, description) VALUES
+  -- Platform
+  ('platform.admin',      'Platform admin',     'platform', 'Full platform administration'),
+  -- Account
+  ('account.view',        'View account',       'account',  'View own profile and sessions'),
+  ('account.edit',        'Edit account',       'account',  'Edit own profile, register passkeys'),
+  -- Users / Team
+  ('users.view',          'View users',         'users',    'View team members and invitations'),
+  ('users.manage',        'Manage users',       'users',    'Invite, edit roles, suspend users'),
+  -- Dashboards
+  ('dashboards.view',     'View dashboards',    'dashboards', 'View assigned dashboards'),
+  ('dashboards.manage',   'Manage dashboards',  'dashboards', 'Create, edit, delete dashboards'),
+  -- Connections
+  ('connections.view',    'View connections',    'connections', 'View data connections'),
+  ('connections.manage',  'Manage connections',  'connections', 'Create, edit, delete connections'),
+  -- Billing
+  ('billing.view',        'View billing',       'billing',  'View plan and invoices'),
+  ('billing.manage',      'Manage billing',     'billing',  'Change plan, update payment method'),
+  -- Audit
+  ('audit.view',          'View audit log',     'audit',    'View tenant audit log');
+
+-- ─── Seed: Role → Permission mappings ───────────────────────────────────────
+-- platform_admin gets everything
+INSERT INTO platform.role_permissions (role_id, permission_id)
+  SELECT r.id, p.id FROM platform.roles r CROSS JOIN platform.permissions p
+  WHERE r.slug = 'platform_admin';
+
+-- owner gets everything except platform.admin
+INSERT INTO platform.role_permissions (role_id, permission_id)
+  SELECT r.id, p.id FROM platform.roles r CROSS JOIN platform.permissions p
+  WHERE r.slug = 'owner' AND p.key != 'platform.admin';
+
+-- admin gets most things except billing.manage and platform.admin
+INSERT INTO platform.role_permissions (role_id, permission_id)
+  SELECT r.id, p.id FROM platform.roles r CROSS JOIN platform.permissions p
+  WHERE r.slug = 'admin' AND p.key NOT IN ('platform.admin', 'billing.manage');
+
+-- member gets view permissions + account
+INSERT INTO platform.role_permissions (role_id, permission_id)
+  SELECT r.id, p.id FROM platform.roles r CROSS JOIN platform.permissions p
+  WHERE r.slug = 'member' AND p.key IN (
+    'account.view', 'account.edit', 'dashboards.view', 'connections.view',
+    'users.view', 'billing.view', 'audit.view'
+  );
+
+-- viewer gets minimal access
+INSERT INTO platform.role_permissions (role_id, permission_id)
+  SELECT r.id, p.id FROM platform.roles r CROSS JOIN platform.permissions p
+  WHERE r.slug = 'viewer' AND p.key IN ('account.view', 'account.edit', 'dashboards.view');
+
+-- ─── Seed: Email Templates ──────────────────────────────────────────────────
+INSERT INTO platform.email_templates (template_key, subject, body_html, body_text, variables, description) VALUES
+(
+  'signup_verification',
+  'Verify your XRay account',
+  '<h2>Welcome to XRay!</h2><p>Hi {{name}},</p><p>Your verification code is:</p><h1 style="letter-spacing:.2em;font-size:32px;text-align:center">{{code}}</h1><p>Or click the link below:</p><p><a href="{{link}}">Complete signup</a></p><p>This code expires in 10 minutes.</p>',
+  'Hi {{name}}, your verification code is: {{code}}. Or visit: {{link}}. Expires in 10 minutes.',
+  ARRAY['name', 'code', 'link'],
+  'Sent when a new user signs up'
+),
+(
+  'login_code',
+  'Your XRay sign-in code',
+  '<h2>Sign in to XRay</h2><p>Hi {{name}},</p><p>Your sign-in code is:</p><h1 style="letter-spacing:.2em;font-size:32px;text-align:center">{{code}}</h1><p>Or click the link below:</p><p><a href="{{link}}">Sign in</a></p><p>This code expires in 10 minutes.</p>',
+  'Hi {{name}}, your sign-in code is: {{code}}. Or visit: {{link}}. Expires in 10 minutes.',
+  ARRAY['name', 'code', 'link'],
+  'Sent when a user requests a magic link login'
+),
+(
+  'account_recovery',
+  'XRay account recovery',
+  '<h2>Account recovery</h2><p>Hi {{name}},</p><p>Your recovery code is:</p><h1 style="letter-spacing:.2em;font-size:32px;text-align:center">{{code}}</h1><p>Or click the link below:</p><p><a href="{{link}}">Recover account</a></p><p>This code expires in 10 minutes.</p>',
+  'Hi {{name}}, your recovery code is: {{code}}. Or visit: {{link}}. Expires in 10 minutes.',
+  ARRAY['name', 'code', 'link'],
+  'Sent when a user requests account recovery'
+),
+(
+  'invitation',
+  'You''re invited to join {{tenant_name}} on XRay',
+  '<h2>You''re invited!</h2><p>Hi,</p><p>{{inviter_name}} has invited you to join <strong>{{tenant_name}}</strong> on XRay BI.</p><p><a href="{{link}}">Accept invitation</a></p><p>This invitation expires in 7 days.</p>',
+  '{{inviter_name}} has invited you to join {{tenant_name}} on XRay BI. Visit: {{link}}. Expires in 7 days.',
+  ARRAY['inviter_name', 'tenant_name', 'link'],
+  'Sent when a team member is invited'
+);
+
 -- RLS Policies: platform admin bypass
 CREATE POLICY platform_admin_bypass ON platform.users USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.dashboards USING (current_setting('app.is_platform_admin', true)::boolean = true);
