@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XRay BI</title>
+<style>
+:root {
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, monospace;
+  --bg1: #0f0f14; --bg2: #1a1a24; --bg3: #22222e; --bg4: #2a2a3a;
+  --t1: #e2e2e8; --t2: #9394a3; --t3: #5c5d6e;
+  --bdr: #2a2a3a; --acc: #6366f1; --acc-dim: rgba(99,102,241,.15);
+  --danger: #ef4444; --success: #22c55e;
+  --header-h: 56px; --sidebar-w: 240px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font); background: var(--bg1); color: var(--t1); line-height: 1.5; min-height: 100vh; }
+a { color: var(--acc); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button { font-family: var(--font); cursor: pointer; }
+input, select, textarea { font-family: var(--font); }
+
+/* ── Buttons ── */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 9px 18px; font-size: 14px; font-weight: 500; border-radius: 8px; border: 1px solid var(--bdr); background: var(--bg3); color: var(--t1); transition: all .15s; }
+.btn:hover { background: var(--bg4); }
+.btn.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+.btn.danger:hover { background: rgba(239,68,68,.1); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── Cards ── */
+.card { background: var(--bg2); border: 1px solid var(--bdr); border-radius: 12px; padding: 20px; }
+.card-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.card-desc { font-size: 14px; color: var(--t2); margin-bottom: 14px; }
+
+/* ── Section headings ── */
+.sec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.sec-title { font-size: 20px; font-weight: 600; }
+.sec-actions { display: flex; gap: 8px; }
+
+/* ── Tables ── */
+.tbl-wrap { overflow-x: auto; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+.tbl th { text-align: left; padding: 10px 14px; font-weight: 500; color: var(--t2); border-bottom: 1px solid var(--bdr); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.tbl td { padding: 10px 14px; border-bottom: 1px solid var(--bdr); }
+.tbl tr:hover td { background: var(--bg3); }
+
+/* ── Modal ── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 8000; }
+.modal { background: var(--bg2); border: 1px solid var(--bdr); border-radius: 14px; width: 480px; max-width: 95vw; max-height: 90vh; overflow-y: auto; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--bdr); }
+.modal-title { font-size: 16px; font-weight: 600; }
+.modal-close { background: none; border: none; color: var(--t2); font-size: 22px; cursor: pointer; line-height: 1; }
+.modal-body { padding: 20px; }
+.modal-body .fg { margin-bottom: 14px; }
+.modal-body .fg label { display: block; font-size: 13px; color: var(--t2); margin-bottom: 5px; }
+.modal-body .fg input, .modal-body .fg select, .modal-body .fg textarea { width: 100%; padding: 10px 14px; font-size: 14px; color: var(--t1); background: var(--bg4); border: 1px solid var(--bdr); border-radius: 8px; outline: 0; transition: border-color .2s; }
+.modal-body .fg input:focus, .modal-body .fg select:focus, .modal-body .fg textarea:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-dim); }
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 20px; border-top: 1px solid var(--bdr); }
+
+/* ── Auth screen ── */
+#auth-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+.auth-box { width: 400px; max-width: 100%; }
+.auth-logo { text-align: center; margin-bottom: 32px; }
+.auth-logo h1 { font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
+.auth-logo p { color: var(--t2); font-size: 14px; margin-top: 4px; }
+.auth-card { background: var(--bg2); border: 1px solid var(--bdr); border-radius: 14px; padding: 28px; }
+.auth-card h2 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.auth-card .sub { font-size: 14px; color: var(--t2); margin-bottom: 20px; }
+.auth-fg { margin-bottom: 16px; }
+.auth-fg label { display: block; font-size: 13px; color: var(--t2); margin-bottom: 6px; }
+.auth-fg input { width: 100%; padding: 11px 14px; font-size: 14px; color: var(--t1); background: var(--bg4); border: 1px solid var(--bdr); border-radius: 8px; outline: 0; transition: all .2s; }
+.auth-fg input:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-dim); }
+.auth-card .btn { width: 100%; justify-content: center; padding: 12px; font-size: 15px; }
+.auth-card .btn + .btn { margin-top: 8px; }
+.auth-err { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: var(--danger); margin-bottom: 14px; display: none; }
+.auth-info { background: rgba(99,102,241,.1); border: 1px solid rgba(99,102,241,.3); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: var(--acc); margin-bottom: 14px; display: none; }
+.auth-toggle { text-align: center; margin-top: 16px; font-size: 13px; color: var(--t2); }
+.auth-toggle a { cursor: pointer; }
+
+/* ── App layout ── */
+#app-shell { display: none; height: 100vh; overflow: hidden; }
+#app-header { height: var(--header-h); background: var(--bg2); border-bottom: 1px solid var(--bdr); display: flex; align-items: center; padding: 0 20px; gap: 16px; z-index: 100; }
+#app-header .logo { font-size: 18px; font-weight: 700; letter-spacing: -.02em; flex-shrink: 0; }
+#app-header .spacer { flex: 1; }
+#app-header .user-menu { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--t2); }
+#app-header .user-menu button { background: none; border: none; color: var(--t2); font-size: 13px; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+#app-header .user-menu button:hover { color: var(--t1); background: var(--bg4); }
+
+#app-body { display: flex; height: calc(100vh - var(--header-h)); }
+#sidebar { width: var(--sidebar-w); background: var(--bg2); border-right: 1px solid var(--bdr); overflow-y: auto; flex-shrink: 0; padding: 12px 0; }
+#sidebar .nav-section { padding: 6px 16px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--t3); margin-top: 12px; }
+#sidebar .nav-section:first-child { margin-top: 0; }
+#sidebar .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 16px; font-size: 14px; color: var(--t2); cursor: pointer; transition: all .12s; border-radius: 0; }
+#sidebar .nav-item:hover { background: var(--bg3); color: var(--t1); }
+#sidebar .nav-item.active { background: var(--acc-dim); color: var(--acc); }
+#sidebar .nav-item svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+
+#main-content { flex: 1; overflow-y: auto; padding: 28px 32px; }
+#view-container { max-width: 960px; }
+
+/* ── Loading ── */
+.spinner { width: 20px; height: 20px; border: 2px solid var(--bdr); border-top-color: var(--acc); border-radius: 50%; animation: spin .6s linear infinite; display: inline-block; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-view { display: flex; align-items: center; justify-content: center; padding: 80px 0; color: var(--t2); gap: 10px; font-size: 14px; }
+
+/* ── Toast ── */
+#toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 10000; display: flex; flex-direction: column; gap: 8px; }
+.toast { padding: 12px 18px; border-radius: 10px; font-size: 14px; color: #fff; animation: toast-in .25s ease; max-width: 360px; }
+.toast.success { background: #059669; }
+.toast.error { background: #dc2626; }
+.toast.info { background: #6366f1; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+
+<!-- ── Auth Screen ── -->
+<div id="auth-screen">
+  <div class="auth-box">
+    <div class="auth-logo">
+      <h1>XRay BI</h1>
+      <p>Business intelligence platform</p>
+    </div>
+
+    <!-- Sign-in form -->
+    <div id="auth-login" class="auth-card">
+      <h2>Sign in</h2>
+      <div class="sub">Enter your email to receive a sign-in code.</div>
+      <div id="login-err" class="auth-err"></div>
+      <div id="login-info" class="auth-info"></div>
+      <div class="auth-fg">
+        <label>Email address</label>
+        <input type="email" id="login-email" placeholder="you@company.com" autocomplete="email">
+      </div>
+      <button class="btn primary" id="btn-login">Send sign-in code</button>
+      <div class="auth-toggle">Don't have an account? <a id="show-signup">Sign up</a></div>
+    </div>
+
+    <!-- Signup form -->
+    <div id="auth-signup" class="auth-card" style="display:none">
+      <h2>Create account</h2>
+      <div class="sub">Set up your organization on XRay.</div>
+      <div id="signup-err" class="auth-err"></div>
+      <div class="auth-fg">
+        <label>Full name</label>
+        <input type="text" id="signup-name" placeholder="Your name" autocomplete="name">
+      </div>
+      <div class="auth-fg">
+        <label>Email address</label>
+        <input type="email" id="signup-email" placeholder="you@company.com" autocomplete="email">
+      </div>
+      <div class="auth-fg">
+        <label>Organization name</label>
+        <input type="text" id="signup-org" placeholder="Acme Inc.">
+      </div>
+      <button class="btn primary" id="btn-signup">Create account</button>
+      <div class="auth-toggle">Already have an account? <a id="show-login">Sign in</a></div>
+    </div>
+
+    <!-- Verification form -->
+    <div id="auth-verify" class="auth-card" style="display:none">
+      <h2>Check your email</h2>
+      <div class="sub" id="verify-sub">We sent a 6-digit code to your email.</div>
+      <div id="verify-err" class="auth-err"></div>
+      <div class="auth-fg">
+        <label>Verification code</label>
+        <input type="text" id="verify-code" placeholder="000000" maxlength="6" autocomplete="one-time-code" inputmode="numeric" style="text-align:center;font-size:24px;letter-spacing:.3em">
+      </div>
+      <button class="btn primary" id="btn-verify">Verify</button>
+      <div class="auth-toggle"><a id="verify-back">Back</a></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── App Shell ── -->
+<div id="app-shell">
+  <div id="app-header">
+    <div class="logo">XRay BI</div>
+    <div class="spacer"></div>
+    <div class="user-menu">
+      <span id="user-name"></span>
+      <button id="btn-logout">Sign out</button>
+    </div>
+  </div>
+  <div id="app-body">
+    <nav id="sidebar"></nav>
+    <main id="main-content">
+      <div id="view-container"></div>
+    </main>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ── State ──
+  var accessToken = null;
+  var currentUser = null;
+  var bundle = null;
+  var currentView = null;
+  var pendingEmail = null;
+  var pendingFlow = null; // 'login' | 'signup'
+
+  // ── Icons (simple SVG paths) ──
+  var icons = {
+    grid: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
+    plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+    users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    'credit-card': '<rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>',
+    'file-text': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+    shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+    mail: '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>',
+    package: '<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
+    key: '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+    video: '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>'
+  };
+
+  function iconSvg(name) {
+    var paths = icons[name] || icons.grid;
+    return '<svg viewBox="0 0 24 24">' + paths + '</svg>';
+  }
+
+  // ── API helper ──
+  var api = {
+    _fetch: function(method, url, body) {
+      var opts = {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
+      };
+      if (accessToken) opts.headers['Authorization'] = 'Bearer ' + accessToken;
+      if (body) opts.body = JSON.stringify(body);
+      return fetch(url, opts).then(function(r) {
+        if (r.status === 401 && accessToken) {
+          return api.refresh().then(function(ok) {
+            if (!ok) { logout(); return { ok: false, error: { message: 'Session expired' } }; }
+            opts.headers['Authorization'] = 'Bearer ' + accessToken;
+            return fetch(url, opts).then(function(r2) { return r2.json().catch(function() { return { ok: false }; }); });
+          });
+        }
+        return r.json().catch(function() { return { ok: r.ok }; });
+      });
+    },
+    get: function(url) { return api._fetch('GET', url); },
+    post: function(url, body) { return api._fetch('POST', url, body); },
+    patch: function(url, body) { return api._fetch('PATCH', url, body); },
+    put: function(url, body) { return api._fetch('PUT', url, body); },
+    delete: function(url, body) { return api._fetch('DELETE', url, body); },
+    refresh: function() {
+      return fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.ok && d.data && d.data.accessToken) {
+            accessToken = d.data.accessToken;
+            return true;
+          }
+          return false;
+        })
+        .catch(function() { return false; });
+    }
+  };
+
+  // ── Toast ──
+  function toast(msg, type) {
+    type = type || 'info';
+    var el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.textContent = msg;
+    document.getElementById('toast-container').appendChild(el);
+    setTimeout(function() { el.remove(); }, 4000);
+  }
+
+  // ── Auth UI ──
+  function showAuthErr(formId, msg) {
+    var el = document.getElementById(formId);
+    el.textContent = msg;
+    el.style.display = msg ? '' : 'none';
+  }
+
+  function showForm(name) {
+    document.getElementById('auth-login').style.display = name === 'login' ? '' : 'none';
+    document.getElementById('auth-signup').style.display = name === 'signup' ? '' : 'none';
+    document.getElementById('auth-verify').style.display = name === 'verify' ? '' : 'none';
+  }
+
+  document.getElementById('show-signup').onclick = function(e) { e.preventDefault(); showForm('signup'); };
+  document.getElementById('show-login').onclick = function(e) { e.preventDefault(); showForm('login'); };
+  document.getElementById('verify-back').onclick = function(e) { e.preventDefault(); showForm(pendingFlow || 'login'); };
+
+  // Login
+  document.getElementById('btn-login').onclick = function() {
+    var email = document.getElementById('login-email').value.trim();
+    if (!email) { showAuthErr('login-err', 'Email is required.'); return; }
+    showAuthErr('login-err', '');
+    this.disabled = true;
+    var btn = this;
+    api.post('/api/auth/magic-link', { email: email }).then(function(d) {
+      btn.disabled = false;
+      if (!d.ok) { showAuthErr('login-err', (d.error && d.error.message) || 'Failed to send code.'); return; }
+      pendingEmail = email;
+      pendingFlow = 'login';
+      document.getElementById('verify-sub').textContent = 'We sent a 6-digit code to ' + email;
+      showForm('verify');
+    }).catch(function() { btn.disabled = false; showAuthErr('login-err', 'Network error.'); });
+  };
+
+  // Enter key on email input triggers login
+  document.getElementById('login-email').onkeydown = function(e) {
+    if (e.key === 'Enter') document.getElementById('btn-login').click();
+  };
+
+  // Signup
+  document.getElementById('btn-signup').onclick = function() {
+    var name = document.getElementById('signup-name').value.trim();
+    var email = document.getElementById('signup-email').value.trim();
+    var org = document.getElementById('signup-org').value.trim();
+    if (!name || !email || !org) { showAuthErr('signup-err', 'All fields are required.'); return; }
+    showAuthErr('signup-err', '');
+    this.disabled = true;
+    var btn = this;
+    api.post('/api/auth/signup', { name: name, email: email, tenantName: org }).then(function(d) {
+      btn.disabled = false;
+      if (!d.ok) { showAuthErr('signup-err', (d.error && d.error.message) || 'Signup failed.'); return; }
+      pendingEmail = email;
+      pendingFlow = 'signup';
+      document.getElementById('verify-sub').textContent = 'We sent a 6-digit code to ' + email;
+      showForm('verify');
+    }).catch(function() { btn.disabled = false; showAuthErr('signup-err', 'Network error.'); });
+  };
+
+  // Verify
+  document.getElementById('btn-verify').onclick = function() {
+    var code = document.getElementById('verify-code').value.trim();
+    if (!code) { showAuthErr('verify-err', 'Enter the 6-digit code.'); return; }
+    showAuthErr('verify-err', '');
+    this.disabled = true;
+    var btn = this;
+    api.post('/api/auth/verify', { email: pendingEmail, code: code }).then(function(d) {
+      btn.disabled = false;
+      if (!d.ok) { showAuthErr('verify-err', (d.error && d.error.message) || 'Invalid code.'); return; }
+      accessToken = d.data.accessToken;
+      enterApp();
+    }).catch(function() { btn.disabled = false; showAuthErr('verify-err', 'Network error.'); });
+  };
+
+  document.getElementById('verify-code').onkeydown = function(e) {
+    if (e.key === 'Enter') document.getElementById('btn-verify').click();
+  };
+
+  // ── Check magic link token in URL ──
+  function checkUrlToken() {
+    var params = new URLSearchParams(window.location.search);
+    var token = params.get('token');
+    if (!token) return false;
+    // Clean the URL
+    window.history.replaceState({}, '', window.location.pathname);
+    api.post('/api/auth/verify-token', { token: token }).then(function(d) {
+      if (d.ok && d.data && d.data.accessToken) {
+        accessToken = d.data.accessToken;
+        enterApp();
+      }
+    });
+    return true;
+  }
+
+  // ── Enter app ──
+  function enterApp() {
+    document.getElementById('auth-screen').style.display = 'none';
+    document.getElementById('app-shell').style.display = '';
+
+    // Load user profile
+    api.get('/api/users/me').then(function(d) {
+      if (!d.ok) { logout(); return; }
+      currentUser = d.data;
+      document.getElementById('user-name').textContent = currentUser.name || currentUser.email;
+      buildSidebar();
+      loadBundle();
+    });
+  }
+
+  // ── Logout ──
+  function logout() {
+    if (accessToken) api.post('/api/auth/logout').catch(function() {});
+    accessToken = null;
+    currentUser = null;
+    currentView = null;
+    document.getElementById('auth-screen').style.display = '';
+    document.getElementById('app-shell').style.display = 'none';
+    showForm('login');
+  }
+  document.getElementById('btn-logout').onclick = logout;
+  window.logout = logout;
+
+  // ── Build sidebar ──
+  function buildSidebar() {
+    if (!bundle || !bundle.nav) return;
+    var sidebar = document.getElementById('sidebar');
+    sidebar.innerHTML = '';
+    var sections = {};
+    var userPerms = [];
+    if (currentUser && currentUser.permissions) userPerms = currentUser.permissions;
+    // Platform admins see everything
+    var isAdmin = currentUser && currentUser.is_platform_admin;
+
+    bundle.nav.forEach(function(item) {
+      if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
+      var sec = item.section || 'main';
+      if (!sections[sec]) sections[sec] = [];
+      sections[sec].push(item);
+    });
+
+    var sectionLabels = {
+      main: '', manage: 'Manage', account: 'Account', platform: 'Platform', config: 'Configuration', system: 'System'
+    };
+    var order = ['main', 'manage', 'account', 'platform', 'config', 'system'];
+
+    order.forEach(function(sec) {
+      if (!sections[sec] || sections[sec].length === 0) return;
+      if (sectionLabels[sec]) {
+        var label = document.createElement('div');
+        label.className = 'nav-section';
+        label.textContent = sectionLabels[sec];
+        sidebar.appendChild(label);
+      }
+      sections[sec].forEach(function(item) {
+        var el = document.createElement('div');
+        el.className = 'nav-item';
+        el.setAttribute('data-view', item.view);
+        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>';
+        el.onclick = function() { navigateTo(item.view); };
+        sidebar.appendChild(el);
+      });
+    });
+  }
+
+  // ── Load bundle ──
+  function loadBundle() {
+    if (bundle) { onBundleReady(); return; }
+    fetch('/bundles/general.json').then(function(r) { return r.json(); })
+      .then(function(d) { bundle = d; buildSidebar(); onBundleReady(); })
+      .catch(function() { toast('Failed to load UI bundle', 'error'); });
+  }
+
+  function onBundleReady() {
+    // Default view
+    var hash = window.location.hash.replace('#', '');
+    navigateTo(hash || 'account');
+  }
+
+  // ── Navigate to view ──
+  function navigateTo(viewName) {
+    if (!bundle) return;
+    currentView = viewName;
+    window.location.hash = viewName;
+
+    // Update sidebar active
+    var items = document.querySelectorAll('#sidebar .nav-item');
+    items.forEach(function(el) {
+      el.classList.toggle('active', el.getAttribute('data-view') === viewName);
+    });
+
+    var container = document.getElementById('view-container');
+    var viewDef = bundle.views[viewName];
+    if (!viewDef) {
+      container.innerHTML = '<div class="loading-view">View "' + viewName + '" is not available in this bundle.</div>';
+      return;
+    }
+
+    // Inject HTML
+    container.innerHTML = viewDef.html;
+
+    // Inject CSS
+    var oldStyle = document.getElementById('view-style');
+    if (oldStyle) oldStyle.remove();
+    if (viewDef.css) {
+      var style = document.createElement('style');
+      style.id = 'view-style';
+      style.textContent = viewDef.css;
+      document.head.appendChild(style);
+    }
+
+    // Execute JS
+    if (viewDef.js) {
+      try {
+        var fn = new Function('container', 'api', 'user', viewDef.js + '\n' + getInitCall(viewName));
+        fn(container, api, currentUser);
+      } catch (e) {
+        console.error('View JS error:', e);
+      }
+    }
+  }
+
+  function getInitCall(viewName) {
+    var fnMap = {
+      account: 'if(typeof initAccount==="function")initAccount(container,api,user);',
+      billing: 'if(typeof initBilling==="function")initBilling(container,api,user);',
+      team: 'if(typeof initTeam==="function")initTeam(container,api,user);',
+      admin_builder: 'if(typeof initBuilder==="function")initBuilder(container,api,user);',
+      admin_settings: 'if(typeof initSettings==="function")initSettings(container,api,user);',
+      admin_apikeys: 'if(typeof initApiKeys==="function")initApiKeys(container,api,user);',
+      admin_meet: 'if(typeof initAdminMeet==="function")initAdminMeet(container,api,user);',
+      admin_webhooks: 'if(typeof initWebhooks==="function")initWebhooks(container,api,user);'
+    };
+    return fnMap[viewName] || '';
+  }
+
+  // ── Hash routing ──
+  window.onhashchange = function() {
+    if (!accessToken) return;
+    var hash = window.location.hash.replace('#', '');
+    if (hash && hash !== currentView) navigateTo(hash);
+  };
+
+  // ── Init: try to resume session ──
+  function init() {
+    if (checkUrlToken()) return;
+    api.refresh().then(function(ok) {
+      if (ok) {
+        enterApp();
+      }
+    });
+  }
+
+  // ── Meet widget loader ──
+  function initMeetWidget() {
+    if (!bundle || !bundle.views.meet_widget) return;
+    var view = bundle.views.meet_widget;
+    if (view.css) {
+      var s = document.createElement('style');
+      s.id = 'meet-widget-style';
+      s.textContent = view.css;
+      document.head.appendChild(s);
+    }
+    if (view.js) {
+      try {
+        var fn = new Function('api', 'user', view.js + '\nif(typeof initMeetWidget==="function")initMeetWidget(api,user);');
+        fn(api, currentUser);
+      } catch (e) { console.error('Meet widget error:', e); }
+    }
+  }
+
+  // Patch enterApp to also init meet widget after bundle loads
+  var _origOnBundleReady = onBundleReady;
+  onBundleReady = function() {
+    _origOnBundleReady();
+    initMeetWidget();
+  };
+
+  init();
+})();
+</script>
+</body>
+</html>

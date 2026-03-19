@@ -200,10 +200,10 @@ else
   HAS_CERTS=false
 fi
 
-# Copy SSL params
+# Copy SSL params (ensure snippets dir exists — template references this path)
 if [ -f "$SCRIPT_DIR/nginx/ssl-params.conf" ]; then
-  cp "$SCRIPT_DIR/nginx/ssl-params.conf" /etc/nginx/snippets/ssl-params.conf 2>/dev/null || \
-    cp "$SCRIPT_DIR/nginx/ssl-params.conf" /etc/nginx/ssl-params.conf
+  mkdir -p /etc/nginx/snippets
+  cp "$SCRIPT_DIR/nginx/ssl-params.conf" /etc/nginx/snippets/ssl-params.conf
   ok "SSL hardening params installed"
 fi
 
