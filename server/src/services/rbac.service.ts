@@ -109,6 +109,7 @@ export async function updateRolePermissions(
 
 export async function deleteRole(roleId: string): Promise<void> {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const roleResult = await client.query(
       'SELECT is_system FROM platform.roles WHERE id = $1',
       [roleId]

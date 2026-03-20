@@ -387,6 +387,7 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
   }
 
   return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     // Check if this is the first user on the platform (platform admin bootstrap)
     const userCountResult = await client.query('SELECT COUNT(*) FROM platform.users');
     const isFirstUser = parseInt(userCountResult.rows[0].count, 10) === 0;
@@ -501,6 +502,7 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
 
 export async function completeLogin(magicLink: MagicLink): Promise<TokenPair> {
   return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const userResult = await client.query(
       `SELECT u.*, r.slug as role_slug
        FROM platform.users u
@@ -600,6 +602,9 @@ export async function initiateRecovery(email: string): Promise<{ message: string
 
 export async function refreshSession(refreshTokenHash: string): Promise<TokenPair> {
   return withTransaction(async (client) => {
+    // Bypass RLS — refresh is cookie-based, no JWT context available yet
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+
     // Find existing session
     const sessionResult = await client.query(
       `SELECT s.*, u.role_id, u.is_owner, u.email, u.tenant_id, r.slug as role_slug
@@ -657,6 +662,7 @@ export async function refreshSession(refreshTokenHash: string): Promise<TokenPai
 
 export async function logout(sessionId: string): Promise<void> {
   await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     await client.query(
       'DELETE FROM platform.user_sessions WHERE id = $1',
       [sessionId]
@@ -670,6 +676,7 @@ export async function createSession(
   deviceInfo?: Record<string, unknown>
 ): Promise<TokenPair> {
   return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const userResult = await client.query(
       `SELECT u.*, r.slug as role_slug
        FROM platform.users u

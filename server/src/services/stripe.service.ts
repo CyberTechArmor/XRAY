@@ -60,6 +60,7 @@ export async function handleCheckoutCompleted(
   }
 
   await withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
     const subscriptionId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
 
@@ -94,6 +95,7 @@ export async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> 
   if (!customerId) return;
 
   await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const tenantResult = await client.query(
       'SELECT id FROM platform.tenants WHERE stripe_customer_id = $1',
       [customerId]
@@ -123,6 +125,7 @@ export async function handleInvoiceFailed(invoice: Stripe.Invoice): Promise<void
   if (!customerId) return;
 
   await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const tenantResult = await client.query(
       'SELECT id FROM platform.tenants WHERE stripe_customer_id = $1',
       [customerId]
@@ -156,6 +159,7 @@ export async function handleSubscriptionUpdated(
   if (!customerId) return;
 
   await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const tenantResult = await client.query(
       'SELECT id FROM platform.tenants WHERE stripe_customer_id = $1',
       [customerId]
@@ -205,6 +209,7 @@ export async function handleSubscriptionDeleted(
   if (!customerId) return;
 
   await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const tenantResult = await client.query(
       'SELECT id FROM platform.tenants WHERE stripe_customer_id = $1',
       [customerId]
@@ -240,6 +245,7 @@ export async function handlePaymentSucceeded(
   const resourceName = paymentIntent.metadata?.resource_name;
 
   await withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     if (resourceType === 'connection') {
       await client.query(
         `INSERT INTO platform.connections (tenant_id, name, source_type, stripe_payment_id, status)

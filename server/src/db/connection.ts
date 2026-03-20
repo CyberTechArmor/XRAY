@@ -1,4 +1,5 @@
 import { Pool, PoolClient } from 'pg';
+export type { PoolClient } from 'pg';
 import { config } from '../config';
 
 let pool: Pool;
