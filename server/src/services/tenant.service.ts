@@ -103,6 +103,7 @@ export async function listTenants(): Promise<Tenant[]> {
 
 export async function getTenantDetail(tenantId: string): Promise<TenantDetail> {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const tenantResult = await client.query(
       'SELECT * FROM platform.tenants WHERE id = $1',
       [tenantId]

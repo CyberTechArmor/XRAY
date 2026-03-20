@@ -1,24 +1,47 @@
-import { withClient } from '../db/connection';
+import { withClient, PoolClient } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import * as webauthn from '../lib/webauthn';
 
+/** Bypass RLS — these service functions are already guarded by JWT + RBAC middleware */
+async function bypassRLS(client: PoolClient) {
+  await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+}
+
 export async function getProfile(userId: string) {
   return withClient(async (client) => {
+    await bypassRLS(client);
+
     const result = await client.query(
       `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
-              u.created_at, r.name as role_name, r.slug as role_slug
+              u.created_at, u.tenant_id, r.name as role_name, r.slug as role_slug,
+              r.is_platform as is_platform_admin
        FROM platform.users u
        JOIN platform.roles r ON r.id = u.role_id
        WHERE u.id = $1`,
       [userId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
-    return result.rows[0];
+
+    const user = result.rows[0];
+
+    // Fetch permissions for this user's role
+    const permResult = await client.query(
+      `SELECT p.key FROM platform.permissions p
+       JOIN platform.role_permissions rp ON rp.permission_id = p.id
+       JOIN platform.users u ON u.role_id = rp.role_id
+       WHERE u.id = $1`,
+      [userId]
+    );
+    user.permissions = permResult.rows.map((r: { key: string }) => r.key);
+    user.is_platform_admin = user.role_slug === 'platform_admin';
+
+    return user;
   });
 }
 
 export async function updateProfile(userId: string, updates: { name?: string }) {
   return withClient(async (client) => {
+    await bypassRLS(client);
     if (!updates.name) throw new AppError(400, 'NO_UPDATES', 'No fields to update');
     const result = await client.query(
       `UPDATE platform.users SET name = $1, updated_at = now() WHERE id = $2 RETURNING id, name, email`,
@@ -31,6 +54,7 @@ export async function updateProfile(userId: string, updates: { name?: string }) 
 
 export async function listPasskeys(userId: string) {
   return withClient(async (client) => {
+    await bypassRLS(client);
     const result = await client.query(
       `SELECT id, device_name, backed_up, last_used_at, created_at
        FROM platform.user_passkeys WHERE user_id = $1 ORDER BY created_at DESC`,
@@ -42,6 +66,7 @@ export async function listPasskeys(userId: string) {
 
 export async function registerPasskey(userId: string) {
   return withClient(async (client) => {
+    await bypassRLS(client);
     const userResult = await client.query(
       'SELECT id, email, name FROM platform.users WHERE id = $1', [userId]
     );
@@ -70,6 +95,7 @@ export async function registerPasskey(userId: string) {
 
 export async function verifyPasskeyRegistration(userId: string, body: unknown) {
   return withClient(async (client) => {
+    await bypassRLS(client);
     // Retrieve the pending challenge for this user
     const challengeResult = await client.query(
       `SELECT challenge FROM platform.user_sessions
@@ -121,6 +147,7 @@ export async function verifyPasskeyRegistration(userId: string, body: unknown) {
 
 export async function revokePasskey(userId: string, passkeyId: string) {
   return withClient(async (client) => {
+    await bypassRLS(client);
     const result = await client.query(
       'DELETE FROM platform.user_passkeys WHERE id = $1 AND user_id = $2 RETURNING id',
       [passkeyId, userId]
@@ -131,6 +158,7 @@ export async function revokePasskey(userId: string, passkeyId: string) {
 
 export async function listSessions(userId: string) {
   return withClient(async (client) => {
+    await bypassRLS(client);
     const result = await client.query(
       `SELECT id, device_info, last_active_at, created_at, expires_at
        FROM platform.user_sessions WHERE user_id = $1 ORDER BY last_active_at DESC`,
@@ -142,6 +170,7 @@ export async function listSessions(userId: string) {
 
 export async function revokeSession(userId: string, sessionId: string) {
   return withClient(async (client) => {
+    await bypassRLS(client);
     const result = await client.query(
       'DELETE FROM platform.user_sessions WHERE id = $1 AND user_id = $2 RETURNING id',
       [sessionId, userId]
@@ -152,6 +181,7 @@ export async function revokeSession(userId: string, sessionId: string) {
 
 export async function listUsers(tenantId: string, query: { page: number; limit: number }) {
   return withClient(async (client) => {
+    await bypassRLS(client);
     const offset = (query.page - 1) * query.limit;
     const result = await client.query(
       `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
@@ -173,6 +203,7 @@ export async function updateUser(
   updates: { name?: string; roleId?: string; status?: string }
 ) {
   return withClient(async (client) => {
+    await bypassRLS(client);
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;

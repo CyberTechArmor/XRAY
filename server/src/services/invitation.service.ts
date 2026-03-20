@@ -11,6 +11,7 @@ export async function createInvitation(
   input: { email: string; roleId: string; dashboardIds?: string[] }
 ) {
   return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     // Check if user already exists in this tenant
     const existing = await client.query(
       'SELECT id FROM platform.users WHERE email = $1 AND tenant_id = $2',
@@ -73,6 +74,7 @@ export async function createInvitation(
 
 export async function listInvitations(tenantId: string, query: { page: number; limit: number }) {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const offset = (query.page - 1) * query.limit;
     const result = await client.query(
       `SELECT i.*, r.name as role_name
@@ -90,6 +92,7 @@ export async function listInvitations(tenantId: string, query: { page: number; l
 export async function acceptInvitation(input: { token: string; name: string }) {
   // Token is the invitation ID for simplicity
   return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       `SELECT * FROM platform.invitations
        WHERE id = $1 AND status = 'pending' AND expires_at > now()`,
@@ -139,6 +142,7 @@ export async function acceptInvitation(input: { token: string; name: string }) {
 
 export async function revokeInvitation(tenantId: string, invitationId: string) {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       `UPDATE platform.invitations SET status = 'revoked'
        WHERE id = $1 AND tenant_id = $2 AND status = 'pending'

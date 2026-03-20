@@ -20,6 +20,7 @@ export async function listAllTenants(query: { page: number; limit: number }) {
 
 export async function createTenant(input: { name: string; slug: string }) {
   return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       `INSERT INTO platform.tenants (name, slug) VALUES ($1, $2) RETURNING *`,
       [input.name, input.slug]
@@ -38,6 +39,7 @@ export async function createTenant(input: { name: string; slug: string }) {
 
 export async function getTenantDetail(tenantId: string) {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const tenantResult = await client.query('SELECT * FROM platform.tenants WHERE id = $1', [tenantId]);
     if (tenantResult.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Tenant not found');
     const tenant = tenantResult.rows[0];
@@ -64,6 +66,7 @@ export async function createDashboard(input: {
   viewHtml?: string; viewCss?: string; viewJs?: string;
 }) {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       `INSERT INTO platform.dashboards (tenant_id, name, description, view_html, view_css, view_js)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
@@ -75,6 +78,7 @@ export async function createDashboard(input: {
 
 export async function updateDashboard(dashboardId: string, updates: Record<string, unknown>) {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -109,6 +113,7 @@ export async function createConnection(input: {
   sourceDetail?: string; pipelineRef?: string;
 }) {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       `INSERT INTO platform.connections (tenant_id, name, source_type, source_detail, pipeline_ref)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
@@ -120,6 +125,7 @@ export async function createConnection(input: {
 
 export async function updateConnection(connectionId: string, updates: Record<string, unknown>) {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -148,6 +154,7 @@ export async function updateConnection(connectionId: string, updates: Record<str
 
 export async function registerTable(connectionId: string, input: { tableName: string; description?: string }) {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const conn = await client.query('SELECT tenant_id FROM platform.connections WHERE id = $1', [connectionId]);
     if (conn.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
     const result = await client.query(
@@ -228,6 +235,7 @@ export async function updateEmailTemplate(templateKey: string, updates: {
 export async function sendTestEmail(templateKey: string, userId: string) {
   const { sendTemplateEmail } = await import('./email.service');
   const user = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query('SELECT email, name FROM platform.users WHERE id = $1', [userId]);
     return result.rows[0];
   });

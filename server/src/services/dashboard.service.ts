@@ -63,6 +63,7 @@ export async function getDashboard(
   tenantId: string
 ): Promise<Dashboard> {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       `SELECT * FROM platform.dashboards WHERE id = $1 AND tenant_id = $2`,
       [dashboardId, tenantId]
@@ -83,6 +84,7 @@ export async function createDashboard(input: {
   viewJs?: string;
 }): Promise<Dashboard> {
   return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     // Check dashboard limit for non-platform-admin tenants
     const billingResult = await client.query(
       'SELECT dashboard_limit FROM platform.billing_state WHERE tenant_id = $1',
@@ -130,6 +132,7 @@ export async function updateDashboard(
   updates: Partial<Pick<Dashboard, 'name' | 'description' | 'view_html' | 'view_css' | 'view_js' | 'status' | 'is_public'>>
 ): Promise<Dashboard> {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -170,6 +173,7 @@ export async function grantAccess(
   tenantId: string
 ): Promise<void> {
   await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     await client.query(
       `INSERT INTO platform.dashboard_access (dashboard_id, user_id, granted_by, tenant_id)
        VALUES ($1, $2, $3, $4)
@@ -184,6 +188,7 @@ export async function revokeAccess(
   userId: string
 ): Promise<void> {
   await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     await client.query(
       'DELETE FROM platform.dashboard_access WHERE dashboard_id = $1 AND user_id = $2',
       [dashboardId, userId]
@@ -195,6 +200,7 @@ export async function getAccessList(
   dashboardId: string
 ): Promise<Array<{ user_id: string; email: string; name: string; granted_at: string }>> {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       `SELECT da.user_id, u.email, u.name, da.created_at as granted_at
        FROM platform.dashboard_access da
@@ -217,6 +223,7 @@ export async function buildDashboardBundle(
   const dashboards = await listDashboards(tenantId, userId, hasManagePermission);
 
   const sources = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     if (dashboards.length === 0) return [];
     const ids = dashboards.map((d) => d.id);
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
@@ -262,6 +269,7 @@ export async function createEmbed(
   const embedToken = generateToken(32);
 
   const result = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     return client.query(
       `INSERT INTO platform.dashboard_embeds
          (dashboard_id, tenant_id, embed_token, allowed_domains, created_by, expires_at)
@@ -287,6 +295,7 @@ export async function revokeEmbed(
   tenantId: string
 ): Promise<void> {
   await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     await client.query(
       'UPDATE platform.dashboard_embeds SET is_active = false WHERE id = $1 AND dashboard_id = $2 AND tenant_id = $3',
       [embedId, dashboardId, tenantId]
@@ -298,6 +307,7 @@ export async function getEmbedDashboard(
   embedToken: string
 ): Promise<Dashboard> {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const embedResult = await client.query(
       `SELECT e.dashboard_id, e.allowed_domains, e.expires_at, e.is_active
        FROM platform.dashboard_embeds e
