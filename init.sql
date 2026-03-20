@@ -150,11 +150,27 @@ CREATE TABLE platform.dashboards (
     view_html       TEXT,
     view_css        TEXT,
     view_js         TEXT,
+    fetch_url       TEXT,
+    fetch_method    TEXT DEFAULT 'GET' CHECK (fetch_method IN ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')),
+    fetch_headers   JSONB DEFAULT '{}',
+    fetch_body      JSONB,
     is_public       BOOLEAN DEFAULT false,
-    status          TEXT NOT NULL DEFAULT 'active'
+    status          TEXT NOT NULL DEFAULT 'draft'
                     CHECK (status IN ('draft', 'active', 'archived')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Connection templates for reusable HTTP request patterns
+CREATE TABLE platform.connection_templates (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            TEXT NOT NULL,
+    description     TEXT,
+    fetch_method    TEXT DEFAULT 'GET',
+    fetch_url       TEXT,
+    fetch_headers   JSONB DEFAULT '{}',
+    fetch_body      JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Dashboard Access

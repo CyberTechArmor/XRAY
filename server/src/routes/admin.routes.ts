@@ -10,6 +10,7 @@ import {
   connectionCreateSchema,
   connectionUpdateSchema,
   connectionTableCreateSchema,
+  connectionTemplateCreateSchema,
   settingsUpdateSchema,
   emailTemplateUpdateSchema,
   paginationSchema,
@@ -87,6 +88,35 @@ router.patch('/tenants/:id/plan', async (req, res, next) => {
   }
 });
 
+// GET /dashboards - list all dashboards
+router.get('/dashboards', async (req, res, next) => {
+  try {
+    const query = validateQuery(paginationSchema, req.query);
+    const result = await adminService.listAllDashboards(query);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /dashboards/:id - get dashboard detail
+router.get('/dashboards/:id', async (req, res, next) => {
+  try {
+    const result = await adminService.getDashboardDetail(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /dashboards - create dashboard
 router.post('/dashboards', async (req, res, next) => {
   try {
@@ -117,6 +147,21 @@ router.patch('/dashboards/:id', async (req, res, next) => {
   }
 });
 
+// GET /connections - list all connections
+router.get('/connections', async (req, res, next) => {
+  try {
+    const query = validateQuery(paginationSchema, req.query);
+    const result = await adminService.listAllConnections(query);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /connections - create connection
 router.post('/connections', async (req, res, next) => {
   try {
@@ -137,6 +182,63 @@ router.patch('/connections/:id', async (req, res, next) => {
   try {
     const data = validateBody(connectionUpdateSchema, req.body);
     const result = await adminService.updateConnection(req.params.id, data);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /dashboards/:id/fetch - proxy fetch dashboard content from connection
+router.post('/dashboards/:id/fetch', async (req, res, next) => {
+  try {
+    const result = await adminService.fetchDashboardContent(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /connection-templates - list connection templates
+router.get('/connection-templates', async (req, res, next) => {
+  try {
+    const result = await adminService.listConnectionTemplates();
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /connection-templates - create connection template
+router.post('/connection-templates', async (req, res, next) => {
+  try {
+    const data = validateBody(connectionTemplateCreateSchema, req.body);
+    const result = await adminService.createConnectionTemplate(data);
+    res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /connection-templates/:id - delete connection template
+router.delete('/connection-templates/:id', async (req, res, next) => {
+  try {
+    const result = await adminService.deleteConnectionTemplate(req.params.id);
     res.json({
       ok: true,
       data: result,

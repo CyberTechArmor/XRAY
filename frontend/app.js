@@ -360,7 +360,7 @@
   }
 
   function onBundleReady() {
-    var hash = window.location.hash.replace('#', '');
+    var hash = window.location.hash.replace('#', '').split('?')[0];
     navigateTo(hash || 'dashboard_list');
   }
 
@@ -368,7 +368,10 @@
   function navigateTo(viewName) {
     if (!bundle) return;
     currentView = viewName;
-    window.location.hash = viewName;
+    // Preserve existing query params in hash if navigating to same view
+    if (window.location.hash.split('?')[0].replace('#', '') !== viewName) {
+      window.location.hash = viewName;
+    }
 
     var items = document.querySelectorAll('#sidebar .nav-item');
     items.forEach(function(el) {
@@ -431,7 +434,7 @@
   // ── Hash routing ──
   window.onhashchange = function() {
     if (!accessToken) return;
-    var hash = window.location.hash.replace('#', '');
+    var hash = window.location.hash.replace('#', '').split('?')[0];
     if (hash && hash !== currentView) navigateTo(hash);
   };
 
