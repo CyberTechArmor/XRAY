@@ -470,6 +470,20 @@ router.get('/email-templates', async (req, res, next) => {
   }
 });
 
+// GET /email-templates/:key - get single email template with full body
+router.get('/email-templates/:key', async (req, res, next) => {
+  try {
+    const result = await adminService.getEmailTemplate(req.params.key);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PATCH /email-templates/:key - update email template
 router.patch('/email-templates/:key', async (req, res, next) => {
   try {

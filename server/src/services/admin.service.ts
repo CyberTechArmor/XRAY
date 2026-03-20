@@ -523,6 +523,17 @@ export async function listEmailTemplates() {
   });
 }
 
+export async function getEmailTemplate(templateKey: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      'SELECT * FROM platform.email_templates WHERE template_key = $1',
+      [templateKey]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Template not found');
+    return result.rows[0];
+  });
+}
+
 export async function updateEmailTemplate(templateKey: string, updates: {
   subject?: string; bodyHtml?: string; bodyText?: string;
 }) {

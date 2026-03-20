@@ -293,6 +293,7 @@
       currentUser = d.data;
       document.getElementById('user-name').textContent = currentUser.name || currentUser.email;
       buildSidebar();
+      buildMobileNav();
       loadBundle();
     });
   }
@@ -383,6 +384,87 @@
     }
   }
 
+  // ── Mobile nav ──
+  function buildMobileNav() {
+    if (!bundle || !bundle.nav) return;
+    var drawerNav = document.getElementById('mob-drawer-nav');
+    var overlay = document.getElementById('mobile-menu-overlay');
+    var drawer = document.getElementById('mobile-menu-drawer');
+    if (!drawerNav) return;
+
+    // Populate drawer with full nav
+    drawerNav.innerHTML = '';
+    var sections = {};
+    var userPerms = (currentUser && currentUser.permissions) || [];
+    var isAdmin = currentUser && currentUser.is_platform_admin;
+    bundle.nav.forEach(function(item) {
+      if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
+      var sec = item.section || 'main';
+      if (!sections[sec]) sections[sec] = [];
+      sections[sec].push(item);
+    });
+    var sectionLabels = { main: '', manage: 'Manage', account: 'Account', platform: 'Platform', config: 'Configuration' };
+    var order = ['main', 'manage', 'account', 'platform', 'config', 'system'];
+    order.forEach(function(sec) {
+      if (!sections[sec] || !sections[sec].length) return;
+      if (sectionLabels[sec]) {
+        var lbl = document.createElement('div');
+        lbl.className = 'nav-section';
+        lbl.textContent = sectionLabels[sec];
+        drawerNav.appendChild(lbl);
+      }
+      sections[sec].forEach(function(item) {
+        var el = document.createElement('div');
+        el.className = 'nav-item';
+        el.setAttribute('data-view', item.view);
+        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>';
+        el.onclick = function() { closeMobileMenu(); navigateTo(item.view); };
+        drawerNav.appendChild(el);
+      });
+    });
+
+    // User name in drawer
+    var mobName = document.getElementById('mob-user-name');
+    if (mobName && currentUser) mobName.textContent = currentUser.name || currentUser.email;
+    var mobLogout = document.getElementById('mob-logout');
+    if (mobLogout) mobLogout.onclick = function() { closeMobileMenu(); logout(); };
+
+    // Mobile nav buttons
+    var mobDash = document.getElementById('mob-dashboards');
+    if (mobDash) mobDash.onclick = function() { closeMobileMenu(); navigateTo('dashboard_list'); };
+
+    var mobMeet = document.getElementById('mob-meet');
+    if (mobMeet) mobMeet.onclick = function() {
+      var fab = document.getElementById('xray-meet-fab');
+      if (fab) fab.click();
+    };
+
+    var mobMenu = document.getElementById('mob-menu');
+    if (mobMenu) mobMenu.onclick = function() {
+      overlay.classList.add('open');
+      drawer.classList.add('open');
+    };
+
+    // Close drawer
+    var closeBtn = document.getElementById('mob-drawer-close');
+    if (closeBtn) closeBtn.onclick = closeMobileMenu;
+    if (overlay) overlay.onclick = closeMobileMenu;
+
+    function closeMobileMenu() {
+      overlay.classList.remove('open');
+      drawer.classList.remove('open');
+    }
+    window._closeMobileMenu = closeMobileMenu;
+  }
+
+  // Update mobile drawer active state on navigation
+  function updateMobileActive(viewName) {
+    var items = document.querySelectorAll('#mob-drawer-nav .nav-item');
+    items.forEach(function(el) {
+      el.classList.toggle('active', el.getAttribute('data-view') === viewName);
+    });
+  }
+
   // ── Load bundle ──
   function loadBundle() {
     if (bundle) { onBundleReady(); return; }
@@ -415,6 +497,7 @@
     items.forEach(function(el) {
       el.classList.toggle('active', el.getAttribute('data-view') === viewName);
     });
+    updateMobileActive(viewName);
 
     var container = document.getElementById('view-container');
     var viewDef = bundle.views[viewName];

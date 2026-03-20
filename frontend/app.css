@@ -124,3 +124,67 @@ input, select, textarea { font-family: var(--font); }
 .toast.error { background: #dc2626; }
 .toast.info { background: #6366f1; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ── Mobile bottom nav ── */
+#mobile-nav { display: none; }
+.mob-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 9000; }
+.mob-overlay.open { display: block; }
+.mob-drawer { position: fixed; top: 0; right: -280px; width: 280px; height: 100vh; background: var(--bg2); border-left: 1px solid var(--bdr); z-index: 9001; transition: right .25s ease; overflow-y: auto; display: flex; flex-direction: column; }
+.mob-drawer.open { right: 0; }
+.mob-drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--bdr); font-size: 16px; font-weight: 600; }
+.mob-drawer-head button { background: none; border: none; color: var(--t2); font-size: 24px; cursor: pointer; line-height: 1; }
+#mob-drawer-nav { flex: 1; padding: 8px 0; overflow-y: auto; }
+#mob-drawer-nav .nav-section { padding: 8px 20px 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--t3); }
+#mob-drawer-nav .nav-item { display: flex; align-items: center; gap: 10px; padding: 12px 20px; font-size: 15px; color: var(--t2); cursor: pointer; }
+#mob-drawer-nav .nav-item:hover { background: var(--bg3); color: var(--t1); }
+#mob-drawer-nav .nav-item.active { color: var(--acc); background: var(--acc-dim); }
+#mob-drawer-nav .nav-item svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.5; flex-shrink: 0; }
+.mob-drawer-foot { padding: 16px 20px; border-top: 1px solid var(--bdr); display: flex; align-items: center; justify-content: space-between; font-size: 14px; color: var(--t2); }
+.mob-drawer-foot button { background: none; border: none; color: var(--t2); font-size: 13px; cursor: pointer; }
+
+/* ── Mobile responsive ── */
+@media (max-width: 768px) {
+  :root { --header-h: 48px; --sidebar-w: 0px; }
+  #app-header { padding: 0 12px; gap: 8px; }
+  #app-header .logo { font-size: 16px; }
+  #app-header .user-menu { display: none; }
+  #sidebar { display: none !important; }
+  #main-content { padding: 16px 12px 80px; }
+  #view-container { max-width: 100%; }
+  #mobile-nav {
+    display: flex; position: fixed; bottom: 0; left: 0; right: 0;
+    height: 64px; background: var(--bg2); border-top: 1px solid var(--bdr);
+    align-items: center; justify-content: space-around; z-index: 8500;
+    padding: 0 8px; padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  .mob-nav-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    background: none; border: none; color: var(--t3); font-size: 10px;
+    padding: 6px 12px; border-radius: 8px; cursor: pointer; min-width: 60px;
+  }
+  .mob-nav-btn:hover, .mob-nav-btn:active { color: var(--t1); }
+  .mob-nav-btn.mob-nav-main {
+    background: var(--acc); color: #fff; border-radius: 50%;
+    width: 56px; height: 56px; margin-top: -16px; padding: 0;
+    justify-content: center; box-shadow: 0 4px 16px rgba(62,232,181,.3);
+    min-width: 56px;
+  }
+  .mob-nav-btn.mob-nav-main span { display: none; }
+  .mob-nav-btn.mob-nav-main svg { width: 26px; height: 26px; stroke: #fff; }
+  /* Modals full-screen on mobile */
+  .modal { width: 100vw; max-width: 100vw; max-height: 100vh; border-radius: 0; }
+  .modal-overlay { align-items: flex-end; }
+  /* Tables scroll */
+  .tbl { font-size: 13px; }
+  .tbl th, .tbl td { padding: 8px 10px; }
+  /* Cards */
+  .sec-head { flex-wrap: wrap; gap: 8px; }
+  .sec-title { font-size: 18px; }
+  /* Toast above bottom nav */
+  #toast-container { bottom: 80px; right: 12px; left: 12px; }
+  .toast { max-width: 100%; }
+  /* Form grids stack */
+  .form-grid { grid-template-columns: 1fr !important; }
+  /* Dashboard viewer fullscreen */
+  .dash-fullview.active { top: 0 !important; z-index: 9999 !important; }
+}
