@@ -44,8 +44,9 @@ app.use(cors({
 // Cookie parser
 app.use(cookieParser());
 
-// Body parsing — raw for Stripe webhook, JSON for everything else
+// Body parsing — raw for Stripe webhook and admin import, JSON for everything else
 app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
+app.use('/api/admin/import', express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '100mb' }));
 app.use(express.json({ limit: '10mb' }));
 
 // Request ID middleware

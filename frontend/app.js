@@ -310,6 +310,7 @@
   }
   document.getElementById('btn-logout').onclick = logout;
   window.logout = logout;
+  window.getAccessToken = function() { return accessToken; };
 
   // ── Build sidebar ──
   function buildSidebar() {
@@ -547,7 +548,8 @@
       admin_apikeys: 'if(typeof initApiKeys==="function")initApiKeys(container,api,user);',
       admin_meet: 'if(typeof initAdminMeet==="function")initAdminMeet(container,api,user);',
       admin_webhooks: 'if(typeof initWebhooks==="function")initWebhooks(container,api,user);',
-      admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);'
+      admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);',
+      admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);'
     };
     return fnMap[viewName] || '';
   }

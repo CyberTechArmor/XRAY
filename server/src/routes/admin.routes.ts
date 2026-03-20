@@ -546,4 +546,61 @@ router.post('/email/test', async (req, res, next) => {
   }
 });
 
+// ─── Import / Export ───────────────────────────────────────
+
+// POST /export - export platform data as ZIP
+router.post('/export', async (req, res, next) => {
+  try {
+    const { exportPlatform } = await import('../services/portability.service');
+    const options = req.body || {};
+    const zipBuffer = await exportPlatform(options, req.user!.sub);
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="xray-export-${new Date().toISOString().slice(0, 10)}.zip"`);
+    res.setHeader('Content-Length', zipBuffer.length.toString());
+    res.send(zipBuffer);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /import - import platform data from ZIP
+// Accepts: application/zip (raw body via express.raw in index.ts) or application/json with base64 data
+router.post('/import', async (req, res, next) => {
+  try {
+    let zipBuffer: Buffer;
+
+    if (Buffer.isBuffer(req.body)) {
+      // Raw binary upload (application/zip)
+      zipBuffer = req.body;
+    } else if (req.body && req.body.data) {
+      // Base64 encoded in JSON body
+      zipBuffer = Buffer.from(req.body.data, 'base64');
+    } else {
+      return res.status(400).json({
+        ok: false,
+        error: { code: 'MISSING_DATA', message: 'Send ZIP as binary body (Content-Type: application/zip) or as base64 in { "data": "..." }' },
+      });
+    }
+
+    if (zipBuffer.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: { code: 'EMPTY_ARCHIVE', message: 'Upload is empty' },
+      });
+    }
+
+    const { importPlatform } = await import('../services/portability.service');
+    const result = await importPlatform(zipBuffer, req.user!.sub);
+
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
