@@ -114,12 +114,54 @@ input, select, textarea { font-family: var(--font); }
 .toast.error { background: #dc2626; }
 .toast.info { background: #6366f1; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ── Landing page ── */
+#landing-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; text-align: center; }
+#landing-screen .landing-logo { margin-bottom: 24px; animation: land-float 3s ease-in-out infinite; }
+#landing-screen .landing-logo svg { width: 96px; height: 96px; }
+@keyframes land-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+#landing-screen h1 { font-size: 48px; font-weight: 700; letter-spacing: -.03em; margin-bottom: 8px; opacity: 0; animation: land-fade-up .8s ease forwards .2s; }
+#landing-screen .landing-sub { font-size: 18px; color: var(--t2); margin-bottom: 40px; max-width: 480px; opacity: 0; animation: land-fade-up .8s ease forwards .4s; }
+#landing-screen .landing-actions { display: flex; gap: 12px; opacity: 0; animation: land-fade-up .8s ease forwards .6s; }
+#landing-screen .landing-actions .btn { padding: 14px 32px; font-size: 16px; border-radius: 10px; }
+@keyframes land-fade-up { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+#landing-screen .landing-particles { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+#landing-screen .landing-particles span { position: absolute; width: 4px; height: 4px; background: var(--acc); border-radius: 50%; opacity: 0; animation: land-particle 6s linear infinite; }
+@keyframes land-particle { 0% { opacity: 0; transform: translateY(100vh) scale(0); } 20% { opacity: .6; } 100% { opacity: 0; transform: translateY(-20vh) scale(1); } }
+#landing-screen .landing-content { position: relative; z-index: 1; }
+.landing-glow { position: absolute; width: 400px; height: 400px; background: radial-gradient(circle, var(--acc-dim) 0%, transparent 70%); border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; animation: land-glow 4s ease-in-out infinite; }
+@keyframes land-glow { 0%, 100% { opacity: .3; transform: translate(-50%, -50%) scale(1); } 50% { opacity: .6; transform: translate(-50%, -50%) scale(1.2); } }
 </style>
 </head>
 <body>
 
+<!-- ── Landing Screen ── -->
+<div id="landing-screen">
+  <div class="landing-particles" id="landing-particles"></div>
+  <div class="landing-glow"></div>
+  <div class="landing-content">
+    <div class="landing-logo">
+      <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <rect width="64" height="64" rx="14" fill="#1a1a24"/>
+        <g transform="translate(32,32)">
+          <circle r="5" fill="#34d399"/>
+          <path d="M-4,-6.93 A8,8 0 0,1 4,-6.93 L10,-17.32 A20,20 0 0,0 -10,-17.32Z" fill="#34d399"/>
+          <path d="M8,0 A8,8 0 0,1 4,6.93 L10,17.32 A20,20 0 0,0 20,0Z" fill="#34d399"/>
+          <path d="M-4,6.93 A8,8 0 0,1 -8,0 L-20,0 A20,20 0 0,0 -10,17.32Z" fill="#34d399"/>
+        </g>
+      </svg>
+    </div>
+    <h1>XRay BI</h1>
+    <p class="landing-sub">See through your data. Modern business intelligence platform with real-time dashboards, secure multi-tenant architecture, and seamless integrations.</p>
+    <div class="landing-actions">
+      <button class="btn primary" id="btn-get-started">Get Started</button>
+      <button class="btn" id="btn-sign-in">Sign In</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Auth Screen ── -->
-<div id="auth-screen">
+<div id="auth-screen" style="display:none">
   <div class="auth-box">
     <div class="auth-logo">
       <h1>XRay BI</h1>
@@ -137,6 +179,8 @@ input, select, textarea { font-family: var(--font); }
         <input type="email" id="login-email" placeholder="you@company.com" autocomplete="email">
       </div>
       <button class="btn primary" id="btn-login">Send sign-in code</button>
+      <div style="position:relative;text-align:center;margin:16px 0"><span style="background:var(--bg2);padding:0 10px;color:var(--t3);font-size:12px;position:relative;z-index:1">or</span><div style="position:absolute;top:50%;left:0;right:0;border-top:1px solid var(--bdr)"></div></div>
+      <button class="btn" id="btn-passkey-login" style="gap:8px"><svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg> Sign in with passkey</button>
       <div class="auth-toggle">Don't have an account? <a id="show-signup">Sign up</a></div>
     </div>
 
@@ -340,6 +384,86 @@ input, select, textarea { font-family: var(--font); }
     if (e.key === 'Enter') document.getElementById('btn-login').click();
   };
 
+  // Passkey login
+  document.getElementById('btn-passkey-login').onclick = function() {
+    if (!window.PublicKeyCredential) {
+      showAuthErr('login-err', 'Passkeys are not supported in this browser.');
+      return;
+    }
+    var btn = this;
+    btn.disabled = true;
+    showAuthErr('login-err', '');
+
+    function b64urlToBytes(b64) {
+      var s = b64.replace(/-/g, '+').replace(/_/g, '/');
+      while (s.length % 4) s += '=';
+      var bin = atob(s);
+      var arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return arr;
+    }
+    function bytesToB64url(buf) {
+      var arr = new Uint8Array(buf);
+      var s = '';
+      for (var i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);
+      return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    }
+
+    api.post('/api/auth/passkey/begin', {}).then(function(r) {
+      if (!r.ok) {
+        btn.disabled = false;
+        showAuthErr('login-err', (r.error && r.error.message) || 'Failed to start passkey auth.');
+        return;
+      }
+      var opts = r.data;
+      var getOpts = {
+        publicKey: {
+          challenge: b64urlToBytes(opts.challenge),
+          timeout: opts.timeout || 60000,
+          rpId: opts.rpId,
+          userVerification: opts.userVerification || 'preferred'
+        }
+      };
+      if (opts.allowCredentials && opts.allowCredentials.length > 0) {
+        getOpts.publicKey.allowCredentials = opts.allowCredentials.map(function(c) {
+          return { id: b64urlToBytes(c.id), type: c.type || 'public-key', transports: c.transports };
+        });
+      }
+      return navigator.credentials.get(getOpts);
+    }).then(function(credential) {
+      if (!credential) { btn.disabled = false; return; }
+      var response = credential.response;
+      var body = {
+        id: credential.id,
+        rawId: bytesToB64url(credential.rawId),
+        type: credential.type,
+        response: {
+          authenticatorData: bytesToB64url(response.authenticatorData),
+          clientDataJSON: bytesToB64url(response.clientDataJSON),
+          signature: bytesToB64url(response.signature)
+        }
+      };
+      if (response.userHandle) body.response.userHandle = bytesToB64url(response.userHandle);
+      return api.post('/api/auth/passkey/complete', body);
+    }).then(function(r) {
+      btn.disabled = false;
+      if (!r) return;
+      if (r.ok && r.data && r.data.accessToken) {
+        accessToken = r.data.accessToken;
+        enterApp();
+      } else {
+        showAuthErr('login-err', (r.error && r.error.message) || 'Passkey verification failed.');
+      }
+    }).catch(function(err) {
+      btn.disabled = false;
+      if (err.name === 'NotAllowedError') {
+        showAuthErr('login-err', 'Authentication cancelled.');
+      } else {
+        showAuthErr('login-err', 'Passkey error: ' + (err.message || 'Unknown'));
+      }
+    });
+  };
+
   // Signup
   document.getElementById('btn-signup').onclick = function() {
     var name = document.getElementById('signup-name').value.trim();
@@ -402,6 +526,7 @@ input, select, textarea { font-family: var(--font); }
     if (!token) return false;
     // Clean the URL
     window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+    document.getElementById('landing-screen').style.display = 'none';
     api.post('/api/auth/verify-token', { token: token }).then(function(d) {
       if (d.ok && d.data && d.data.accessToken) {
         accessToken = d.data.accessToken;
@@ -413,6 +538,7 @@ input, select, textarea { font-family: var(--font); }
 
   // ── Enter app ──
   function enterApp() {
+    document.getElementById('landing-screen').style.display = 'none';
     document.getElementById('auth-screen').style.display = 'none';
     document.getElementById('app-shell').style.display = 'block';
 
@@ -432,7 +558,8 @@ input, select, textarea { font-family: var(--font); }
     accessToken = null;
     currentUser = null;
     currentView = null;
-    document.getElementById('auth-screen').style.display = '';
+    document.getElementById('landing-screen').style.display = '';
+    document.getElementById('auth-screen').style.display = 'none';
     document.getElementById('app-shell').style.display = 'none';
     showForm('login');
   }
@@ -622,6 +749,35 @@ input, select, textarea { font-family: var(--font); }
   };
 
   init();
+
+  // ── Landing page ──
+  (function() {
+    var particles = document.getElementById('landing-particles');
+    if (particles) {
+      for (var i = 0; i < 20; i++) {
+        var span = document.createElement('span');
+        span.style.left = Math.random() * 100 + '%';
+        span.style.animationDelay = Math.random() * 6 + 's';
+        span.style.animationDuration = (4 + Math.random() * 4) + 's';
+        particles.appendChild(span);
+      }
+    }
+    var landing = document.getElementById('landing-screen');
+    var authScreen = document.getElementById('auth-screen');
+    if (landing && authScreen) {
+      authScreen.style.display = 'none';
+      document.getElementById('btn-get-started').onclick = function() {
+        landing.style.display = 'none';
+        authScreen.style.display = '';
+        showForm('signup');
+      };
+      document.getElementById('btn-sign-in').onclick = function() {
+        landing.style.display = 'none';
+        authScreen.style.display = '';
+        showForm('login');
+      };
+    }
+  })();
 })();
 </script>
 </body>

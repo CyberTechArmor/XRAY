@@ -65,6 +65,28 @@ router.get('/tenants/:id', async (req, res, next) => {
   }
 });
 
+// PATCH /tenants/:id/plan - manually set tenant plan tier (super admin override)
+router.patch('/tenants/:id/plan', async (req, res, next) => {
+  try {
+    const { planTier, dashboardLimit, paymentStatus } = req.body;
+    if (!planTier) {
+      return res.status(400).json({ ok: false, error: { code: 'MISSING_FIELD', message: 'planTier is required' } });
+    }
+    const result = await adminService.updateTenantPlan(req.params.id, {
+      planTier,
+      dashboardLimit: dashboardLimit !== undefined ? dashboardLimit : undefined,
+      paymentStatus: paymentStatus || undefined,
+    });
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /dashboards - create dashboard
 router.post('/dashboards', async (req, res, next) => {
   try {
@@ -205,6 +227,39 @@ router.post('/email-templates/:key/test', async (req, res, next) => {
     res.json({
       ok: true,
       data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /email/test - send a test email to the requesting admin
+router.post('/email/test', async (req, res, next) => {
+  try {
+    const { sendEmail } = await import('../services/email.service');
+    const to = req.body.to || req.user!.sub;
+
+    // Look up user email if `to` is a UUID
+    let recipientEmail = to;
+    if (to.includes('-') && !to.includes('@')) {
+      const user = await import('../db/connection').then(m => m.withClient(async (client) => {
+        const result = await client.query('SELECT email FROM platform.users WHERE id = $1', [to]);
+        return result.rows[0];
+      }));
+      if (user) recipientEmail = user.email;
+    }
+
+    await sendEmail({
+      to: recipientEmail,
+      subject: 'XRay BI — Test Email',
+      html: '<h2>Test Email</h2><p>This is a test email from your XRay BI platform. If you received this, your SMTP configuration is working correctly.</p><p style="color:#666;font-size:12px">Sent at ' + new Date().toISOString() + '</p>',
+      text: 'Test Email\n\nThis is a test email from your XRay BI platform. If you received this, your SMTP configuration is working correctly.\n\nSent at ' + new Date().toISOString(),
+    });
+
+    res.json({
+      ok: true,
+      data: { sent: true, to: recipientEmail },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {

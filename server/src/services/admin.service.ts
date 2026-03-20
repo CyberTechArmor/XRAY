@@ -11,7 +11,10 @@ export async function listAllTenants(query: { page: number; limit: number }) {
     const countResult = await client.query('SELECT COUNT(*) FROM platform.tenants');
     const total = parseInt(countResult.rows[0].count, 10);
     const result = await client.query(
-      'SELECT * FROM platform.tenants ORDER BY created_at DESC LIMIT $1 OFFSET $2',
+      `SELECT t.*, bs.plan_tier AS plan, bs.dashboard_limit, bs.payment_status
+       FROM platform.tenants t
+       LEFT JOIN platform.billing_state bs ON bs.tenant_id = t.id
+       ORDER BY t.created_at DESC LIMIT $1 OFFSET $2`,
       [query.limit, offset]
     );
     return { data: result.rows, total, page: query.page, limit: query.limit };
@@ -56,6 +59,35 @@ export async function getTenantDetail(tenantId: string) {
       connection_count: parseInt(cc.rows[0].count, 10),
       billing_state: bs.rows[0] || null,
     };
+  });
+}
+
+export async function updateTenantPlan(tenantId: string, input: {
+  planTier: string;
+  dashboardLimit?: number;
+  paymentStatus?: string;
+}) {
+  return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+
+    // Check tenant exists
+    const tenant = await client.query('SELECT id, name FROM platform.tenants WHERE id = $1', [tenantId]);
+    if (tenant.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Tenant not found');
+
+    // Upsert billing state
+    const result = await client.query(
+      `INSERT INTO platform.billing_state (tenant_id, plan_tier, dashboard_limit, payment_status, updated_at)
+       VALUES ($1, $2, $3, $4, now())
+       ON CONFLICT (tenant_id) DO UPDATE SET
+         plan_tier = COALESCE($2, platform.billing_state.plan_tier),
+         dashboard_limit = COALESCE($3, platform.billing_state.dashboard_limit),
+         payment_status = COALESCE($4, platform.billing_state.payment_status),
+         updated_at = now()
+       RETURNING *`,
+      [tenantId, input.planTier, input.dashboardLimit ?? null, input.paymentStatus ?? 'active']
+    );
+
+    return result.rows[0];
   });
 }
 

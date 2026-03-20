@@ -131,6 +131,30 @@ router.post('/login/complete', async (req, res, next) => {
   }
 });
 
+// POST /passkey/begin - start passkey authentication (no auth)
+router.post('/passkey/begin', async (req, res, next) => {
+  try {
+    const result = await authService.beginPasskeyAuth(req.body.email);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /passkey/complete - complete passkey authentication (no auth)
+router.post('/passkey/complete', async (req, res, next) => {
+  try {
+    const tokens = await authService.completePasskeyAuth(req.body);
+    sendTokenPair(res, tokens, req);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /magic-link - send magic link for login (no auth)
 router.post('/magic-link', async (req, res, next) => {
   try {
