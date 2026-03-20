@@ -225,7 +225,9 @@
     var name = document.getElementById('setup-name').value.trim();
     var email = document.getElementById('setup-email').value.trim();
     var org = document.getElementById('setup-org').value.trim();
-    if (!name || !email || !org) { showAuthErr('setup-err', 'All fields are required.'); return; }
+    if (!name) { showAuthErr('setup-err', 'Full name is required.'); document.getElementById('setup-name').focus(); return; }
+    if (!email) { showAuthErr('setup-err', 'Admin email is required.'); document.getElementById('setup-email').focus(); return; }
+    if (!org) { showAuthErr('setup-err', 'Organization name is required.'); document.getElementById('setup-org').focus(); return; }
     showAuthErr('setup-err', '');
     this.disabled = true;
     var btn = this;

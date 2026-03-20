@@ -12,9 +12,12 @@ export async function listAllTenants(query: { page: number; limit: number }) {
     const countResult = await client.query('SELECT COUNT(*) FROM platform.tenants');
     const total = parseInt(countResult.rows[0].count, 10);
     const result = await client.query(
-      `SELECT t.*, bs.plan_tier AS plan, bs.dashboard_limit, bs.payment_status
+      `SELECT t.*, bs.plan_tier AS plan, bs.dashboard_limit, bs.payment_status,
+              o.email AS owner_email,
+              (SELECT COUNT(*) FROM platform.users u WHERE u.tenant_id = t.id) AS member_count
        FROM platform.tenants t
        LEFT JOIN platform.billing_state bs ON bs.tenant_id = t.id
+       LEFT JOIN platform.users o ON o.id = t.owner_user_id
        ORDER BY t.created_at DESC LIMIT $1 OFFSET $2`,
       [query.limit, offset]
     );
