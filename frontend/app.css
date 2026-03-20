@@ -89,8 +89,185 @@ input, select, textarea { font-family: var(--font); }
 #app-header .user-menu { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--t2); }
 #app-header .user-menu button { background: none; border: none; color: var(--t2); font-size: 13px; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
 #app-header .user-menu button:hover { color: var(--t1); background: var(--bg4); }
-#app-header .meet-btn { color: var(--acc); display: flex; align-items: center; gap: 4px; }
-#app-header .meet-btn:hover { background: var(--acc-dim); color: var(--acc); }
+/* ── MEET header button ── */
+@keyframes meet-glow {
+  0%, 100% { box-shadow: 0 0 6px rgba(62,232,181,0.3), 0 0 12px rgba(62,232,181,0.1); }
+  50% { box-shadow: 0 0 10px rgba(62,232,181,0.5), 0 0 20px rgba(62,232,181,0.2); }
+}
+.meet-header-btn {
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(62,232,181,0.08) !important; border: 1px solid rgba(62,232,181,0.25) !important;
+  color: var(--acc) !important; font-size: 13px; font-weight: 600; letter-spacing: .03em;
+  padding: 6px 14px !important; border-radius: 20px !important;
+  animation: meet-glow 3s ease-in-out infinite; transition: all .2s;
+}
+.meet-header-btn:hover { background: rgba(62,232,181,0.15) !important; border-color: var(--acc) !important; }
+.meet-header-btn svg { stroke: var(--acc); }
+.meet-header-btn.in-call {
+  background: rgba(239,68,68,0.12) !important; border-color: rgba(239,68,68,0.4) !important;
+  color: var(--danger) !important; animation: meet-glow-red 2s ease-in-out infinite;
+}
+.meet-header-btn.in-call svg { stroke: var(--danger); }
+@keyframes meet-glow-red {
+  0%, 100% { box-shadow: 0 0 6px rgba(239,68,68,0.3), 0 0 12px rgba(239,68,68,0.1); }
+  50% { box-shadow: 0 0 10px rgba(239,68,68,0.5), 0 0 20px rgba(239,68,68,0.2); }
+}
+
+/* ── Meet room indicator in header ── */
+.meet-room-indicator {
+  font-size: 12px; font-family: var(--mono); color: var(--acc); cursor: pointer;
+  padding: 3px 10px; border-radius: 12px; background: var(--acc-dim);
+  border: 1px solid rgba(62,232,181,0.2); transition: all .2s; white-space: nowrap;
+}
+.meet-room-indicator:hover { background: rgba(62,232,181,0.15); border-color: var(--acc); }
+
+/* ── Meet minimized controls in header ── */
+.meet-minimized-controls {
+  display: flex; align-items: center; gap: 2px;
+  background: var(--bg3); border: 1px solid var(--bdr); border-radius: 20px; padding: 2px 4px;
+}
+.meet-minimized-controls .meet-bar-btn {
+  width: 26px; height: 26px; border-radius: 6px; border: none;
+  background: transparent; color: var(--t2); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: background .15s;
+}
+.meet-minimized-controls .meet-bar-btn:hover { background: var(--bg4); color: var(--t1); }
+.meet-minimized-controls .meet-bar-btn.close:hover { background: #dc2626; color: #fff; }
+
+/* ── Meet panel dropdown ── */
+.meet-panel {
+  position: fixed; z-index: 9500; background: var(--bg2);
+  border: 1px solid var(--bdr); border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.4); width: 380px; max-height: 80vh;
+  overflow-y: auto; padding: 0;
+}
+.meet-panel-section { padding: 16px; }
+.meet-panel-option {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 14px 16px; background: var(--bg3); border: 1px solid var(--bdr);
+  border-radius: 10px; color: var(--t1); font-size: 15px; font-weight: 500;
+  cursor: pointer; transition: all .15s; margin-bottom: 8px;
+}
+.meet-panel-option:last-child { margin-bottom: 0; }
+.meet-panel-option:hover { background: var(--bg4); border-color: var(--acc); color: var(--acc); }
+.meet-panel-option svg { stroke: var(--acc); flex-shrink: 0; }
+
+/* Meet new meeting panel */
+.meet-room-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 16px;
+  padding: 10px 12px; background: var(--bg3); border-radius: 8px;
+}
+.meet-room-label { font-size: 13px; color: var(--t2); }
+.meet-room-code { font-family: var(--mono); font-size: 14px; color: var(--acc); flex: 1; }
+.meet-share-btn {
+  font-size: 12px !important; padding: 5px 10px !important;
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--acc-dim) !important; border-color: rgba(62,232,181,0.2) !important;
+  color: var(--acc) !important;
+}
+.meet-share-btn:hover { background: rgba(62,232,181,0.15) !important; }
+
+/* Members section */
+.meet-members-section { margin-bottom: 14px; }
+.meet-members-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px; font-size: 13px; color: var(--t2);
+}
+.meet-all-btn {
+  font-size: 11px !important; padding: 3px 10px !important;
+  background: var(--bg4) !important; border-color: var(--bdr) !important;
+}
+.meet-all-btn.active { background: var(--acc-dim) !important; border-color: var(--acc) !important; color: var(--acc) !important; }
+.meet-search-input {
+  width: 100%; padding: 8px 12px; background: var(--bg4); border: 1px solid var(--bdr);
+  border-radius: 8px; color: var(--t1); font-size: 13px; outline: 0; margin-bottom: 6px;
+}
+.meet-search-input:focus { border-color: var(--acc); }
+.meet-member-list {
+  max-height: 160px; overflow-y: auto; border: 1px solid var(--bdr);
+  border-radius: 8px; background: var(--bg3);
+}
+.meet-member-item {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  cursor: pointer; transition: background .1s; font-size: 13px; color: var(--t1);
+}
+.meet-member-item:hover { background: var(--bg4); }
+.meet-member-item .meet-check {
+  width: 16px; height: 16px; border: 1.5px solid var(--t3); border-radius: 4px;
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  transition: all .15s; font-size: 11px; color: transparent;
+}
+.meet-member-item.selected .meet-check {
+  background: var(--acc); border-color: var(--acc); color: #000;
+}
+.meet-member-item .meet-member-name { flex: 1; }
+.meet-member-item .meet-member-email { font-size: 11px; color: var(--t3); }
+
+/* Email section */
+.meet-email-section { margin-bottom: 14px; }
+.meet-email-section label { display: block; font-size: 13px; color: var(--t2); margin-bottom: 6px; }
+.meet-email-input-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.meet-email-input-row input {
+  flex: 1; padding: 8px 12px; background: var(--bg4); border: 1px solid var(--bdr);
+  border-radius: 8px; color: var(--t1); font-size: 13px; outline: 0;
+}
+.meet-email-input-row input:focus { border-color: var(--acc); }
+.meet-email-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.meet-email-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; background: var(--bg4); border: 1px solid var(--bdr);
+  border-radius: 12px; font-size: 12px; color: var(--t2);
+}
+.meet-email-tag button {
+  background: none; border: none; color: var(--t3); font-size: 14px;
+  cursor: pointer; line-height: 1; padding: 0;
+}
+.meet-email-tag button:hover { color: var(--danger); }
+
+.meet-start-btn { width: 100%; justify-content: center; }
+
+/* Meet panel join section */
+.meet-panel .fg { margin-bottom: 12px; }
+.meet-panel .fg label { display: block; font-size: 13px; color: var(--t2); margin-bottom: 5px; }
+.meet-panel .fg input {
+  width: 100%; padding: 10px 14px; font-size: 14px; color: var(--t1);
+  background: var(--bg4); border: 1px solid var(--bdr); border-radius: 8px; outline: 0;
+}
+.meet-panel .fg input:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-dim); }
+
+/* ── Meet viewport (fullscreen / PIP) ── */
+.meet-viewport {
+  position: fixed; z-index: 9500; display: flex; flex-direction: column;
+  background: var(--bg1); overflow: hidden;
+  box-shadow: 0 8px 40px rgba(0,0,0,.5);
+}
+.meet-viewport.mode-fullscreen {
+  top: var(--header-h); left: 0; right: 0; bottom: 0;
+  border-radius: 0; border: none;
+}
+.meet-viewport.mode-pip {
+  bottom: 24px; right: 24px; width: 400px; height: 280px;
+  border-radius: 12px; border: 1px solid var(--bdr);
+  resize: both; min-width: 300px; min-height: 200px;
+}
+.meet-viewport-bar {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+  background: var(--bg2); border-bottom: 1px solid var(--bdr);
+  flex-shrink: 0; cursor: move; user-select: none;
+}
+.meet-viewport-title {
+  flex: 1; font-size: 13px; font-weight: 600; color: var(--t1);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.meet-viewport .meet-bar-btn {
+  width: 28px; height: 28px; border-radius: 6px; border: none;
+  background: transparent; color: var(--t2); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: background .15s;
+}
+.meet-viewport .meet-bar-btn:hover { background: var(--bg4); color: var(--t1); }
+.meet-viewport .meet-bar-btn.close:hover { background: #dc2626; color: #fff; }
+.meet-viewport-iframe { flex: 1; position: relative; }
+.meet-viewport-iframe iframe { width: 100%; height: 100%; border: none; }
 
 #app-body { display: flex; height: calc(100vh - var(--header-h)); }
 #sidebar { width: var(--sidebar-w); background: var(--bg2); border-right: 1px solid var(--bdr); overflow-y: auto; flex-shrink: 0; padding: 12px 0; transition: width .2s ease, padding .2s ease; }
@@ -187,12 +364,12 @@ input, select, textarea { font-family: var(--font); }
   .form-grid { grid-template-columns: 1fr !important; }
   /* Dashboard viewer fullscreen */
   .dash-fullview.active { top: 0 !important; z-index: 9999 !important; }
-  /* Hide meet FAB on mobile - use bottom nav Meet button instead */
-  #xray-meet-fab { display: none !important; }
   /* Ensure mobile nav sits above everything except modals */
   #mobile-nav { z-index: 9000; -webkit-tap-highlight-color: transparent; }
   .mob-nav-btn { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
-  /* Meet popup mobile adjustments */
-  #xray-meet-popup.mode-start { bottom: 76px; right: 8px; left: 8px; width: auto; }
-  #xray-meet-popup.mode-pip { bottom: 76px; right: 8px; width: calc(100vw - 16px); }
+  /* Meet mobile adjustments */
+  .meet-panel { left: 8px !important; right: 8px !important; width: auto !important; }
+  .meet-viewport.mode-pip { bottom: 76px; right: 8px; width: calc(100vw - 16px); }
+  .meet-header-btn span { display: none; }
+  .meet-header-btn { padding: 6px 8px !important; }
 }

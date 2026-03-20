@@ -82,4 +82,18 @@ router.post('/invite', authenticateJWT, async (req, res, next) => {
   }
 });
 
+// GET /members - list tenant members for meeting invites
+router.get('/members', authenticateJWT, async (req, res, next) => {
+  try {
+    const members = await meetService.getTenantMembers(req.user!.tid);
+    res.json({
+      ok: true,
+      data: members,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
