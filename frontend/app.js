@@ -1076,5 +1076,111 @@
 
   window.__xrayRefreshMeetWidget = function() { initMeetHeader(); };
 
-  init();
+  // ── Share page handler ──
+  // When NGINX serves index.html for /share/:token, detect it and render share UI instead
+  function handleSharePage() {
+    var pathname = window.location.pathname;
+    if (!pathname.match(/^\/share\/.+/)) return false;
+
+    var token = pathname.split('/').pop();
+    if (!token) return false;
+
+    // Hide landing page entirely
+    var landing = document.getElementById('landing-screen');
+    if (landing) landing.style.display = 'none';
+
+    // Build share page UI
+    document.body.insertAdjacentHTML('afterbegin',
+      '<div id="share-page" style="min-height:100vh;background:var(--bg,#08090c);color:var(--t1,#f0f1f4)">' +
+        '<div style="height:48px;background:var(--bg2,#0f1117);border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;padding:0 20px;gap:12px">' +
+          '<a href="/" style="text-decoration:none;display:flex;align-items:center;gap:4px">' +
+            '<span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center">' +
+              '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:22px;height:22px">' +
+                '<path d="M50 8 L62 28 A28 28 0 0 1 78 50 L98 50 A48 48 0 0 0 50 2 Z" fill="#3ee8b5"/>' +
+                '<path d="M78 50 A28 28 0 0 1 62 72 L50 92 A48 48 0 0 0 98 50 Z" fill="#3ee8b5"/>' +
+                '<path d="M62 72 A28 28 0 0 1 38 72 L50 50 Z" fill="#3ee8b5"/>' +
+                '<path d="M38 72 L28 92 A48 48 0 0 1 2 50 L22 50 A28 28 0 0 0 38 72 Z" fill="#3ee8b5"/>' +
+                '<path d="M22 50 A28 28 0 0 1 38 28 L50 8 A48 48 0 0 0 2 50 Z" fill="#3ee8b5"/>' +
+                '<circle cx="50" cy="50" r="12" fill="#3ee8b5"/>' +
+              '</svg>' +
+            '</span>' +
+            '<span style="font-size:18px;font-weight:700;letter-spacing:-0.02em"><span style="color:#fff">X</span><span style="color:#3ee8b5">Ray</span></span>' +
+          '</a>' +
+        '</div>' +
+        '<div id="share-content" style="width:100%;height:calc(100vh - 48px)">' +
+          '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--t2,#8e91a0);gap:10px;font-size:14px">' +
+            '<div class="spinner"></div> Loading dashboard...' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+
+    // Check sessionStorage cache (30 min TTL)
+    var cacheKey = 'xray_share_' + token;
+    var cached = null;
+    try {
+      var raw = sessionStorage.getItem(cacheKey);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed.ts && (Date.now() - parsed.ts) < 30 * 60 * 1000) {
+          cached = parsed.data;
+        } else {
+          sessionStorage.removeItem(cacheKey);
+        }
+      }
+    } catch(e) {}
+
+    if (cached) {
+      renderShareDashboard(cached);
+    } else {
+      fetchShareDashboard(token, cacheKey);
+    }
+    return true;
+  }
+
+  function fetchShareDashboard(token, cacheKey) {
+    fetch('/api/share/' + encodeURIComponent(token))
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (!d.ok) {
+          showShareError((d.error && d.error.message) || 'This dashboard is no longer available.');
+          return;
+        }
+        try {
+          sessionStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), data: d.data }));
+        } catch(e) {}
+        renderShareDashboard(d.data);
+      })
+      .catch(function() {
+        showShareError('Failed to load dashboard. Please try again later.');
+      });
+  }
+
+  function renderShareDashboard(data) {
+    document.title = (data.name || 'Dashboard') + ' \u2014 XRay';
+    var content = document.getElementById('share-content');
+    if (!content) return;
+    var iframe = document.createElement('iframe');
+    iframe.sandbox = 'allow-scripts allow-forms allow-popups allow-same-origin';
+    iframe.style.cssText = 'width:100%;height:100%;border:none;background:#08090c';
+    content.innerHTML = '';
+    content.appendChild(iframe);
+    var doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.open();
+    doc.write('<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#08090c;color:#f0f1f4}' + (data.css || '') + '</style></head><body>' + (data.html || '') + '<scr' + 'ipt>' + (data.js || '') + '</scr' + 'ipt></body></html>');
+    doc.close();
+  }
+
+  function showShareError(msg) {
+    var content = document.getElementById('share-content');
+    if (!content) return;
+    content.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--t2,#8e91a0);gap:12px;font-size:15px">' +
+      '<svg viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" fill="none" stroke-width="1" style="opacity:.3"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
+      '<p>' + msg + '</p></div>';
+  }
+
+  // Check if we're on a share page before running normal app init
+  if (!handleSharePage()) {
+    init();
+  }
 })();

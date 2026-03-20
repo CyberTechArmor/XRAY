@@ -42,16 +42,22 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
   try {
     const { withClient } = await import('../db/connection');
 
-    // Single query: SELECT + UPDATE last_viewed_at in one round-trip
+    // Separate SELECT then UPDATE to avoid RLS issues with UPDATE...RETURNING
     const dashboard = await withClient(async (client) => {
       await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
       const result = await client.query(
-        `UPDATE platform.dashboards SET last_viewed_at = now()
-         WHERE id = $1 AND tenant_id = $2 AND status = 'active'
-         RETURNING id, fetch_url, fetch_method, fetch_headers, fetch_body,
-                   view_html, view_css, view_js`,
+        `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body,
+                view_html, view_css, view_js
+         FROM platform.dashboards
+         WHERE id = $1 AND tenant_id = $2 AND status = 'active'`,
         [req.params.id, req.user!.tid]
       );
+      if (result.rows[0]) {
+        client.query(
+          `UPDATE platform.dashboards SET last_viewed_at = now() WHERE id = $1`,
+          [req.params.id]
+        );
+      }
       return result.rows[0];
     });
 
