@@ -3,10 +3,41 @@ import * as dashboardService from '../services/dashboard.service';
 
 const router = Router();
 
+// In-memory cache for public dashboard renders (30 min TTL)
+const shareCache = new Map<string, { data: any; ts: number }>();
+const SHARE_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
 // GET /:token - render public shared dashboard (no auth, token-based)
 router.get('/:token', async (req, res, next) => {
   try {
-    const data = await dashboardService.renderPublicDashboard(req.params.token);
+    const token = req.params.token;
+    const now = Date.now();
+
+    // Check cache
+    const cached = shareCache.get(token);
+    if (cached && (now - cached.ts) < SHARE_CACHE_TTL) {
+      res.set('X-Cache', 'HIT');
+      res.json({
+        ok: true,
+        data: cached.data,
+        meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    const data = await dashboardService.renderPublicDashboard(token);
+
+    // Store in cache
+    shareCache.set(token, { data, ts: now });
+
+    // Evict old entries periodically
+    if (shareCache.size > 100) {
+      for (const [key, val] of shareCache) {
+        if (now - val.ts > SHARE_CACHE_TTL) shareCache.delete(key);
+      }
+    }
+
+    res.set('X-Cache', 'MISS');
     res.json({
       ok: true,
       data,

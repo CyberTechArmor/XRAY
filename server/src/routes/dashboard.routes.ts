@@ -41,13 +41,15 @@ router.get('/:id', authenticateJWT, requirePermission('dashboards.view'), async 
 router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
   try {
     const { withClient } = await import('../db/connection');
+
+    // Single query: SELECT + UPDATE last_viewed_at in one round-trip
     const dashboard = await withClient(async (client) => {
       await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
       const result = await client.query(
-        `SELECT d.id, d.fetch_url, d.fetch_method, d.fetch_headers, d.fetch_body, d.status, d.tenant_id,
-                d.view_html, d.view_css, d.view_js
-         FROM platform.dashboards d
-         WHERE d.id = $1 AND d.tenant_id = $2 AND d.status = 'active'`,
+        `UPDATE platform.dashboards SET last_viewed_at = now()
+         WHERE id = $1 AND tenant_id = $2 AND status = 'active'
+         RETURNING id, fetch_url, fetch_method, fetch_headers, fetch_body,
+                   view_html, view_css, view_js`,
         [req.params.id, req.user!.tid]
       );
       return result.rows[0];
@@ -56,12 +58,6 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     if (!dashboard) {
       return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Dashboard not found or inactive' } });
     }
-
-    // Track last viewed
-    await withClient(async (c) => {
-      await c.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-      await c.query('UPDATE platform.dashboards SET last_viewed_at = now() WHERE id = $1', [req.params.id]);
-    });
 
     // If dashboard has static content, return it directly
     if (!dashboard.fetch_url) {

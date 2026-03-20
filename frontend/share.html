@@ -5,31 +5,54 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Shared Dashboard — XRay</title>
 <style>
-  :root { --bg:#08090c; --t1:#f0f1f4; --t2:#8e91a0; --acc:#3ee8b5; }
+  :root { --bg:#08090c; --bg2:#0f1117; --t1:#f0f1f4; --t2:#8e91a0; --acc:#3ee8b5; --bdr:rgba(255,255,255,0.06); }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--t1); min-height: 100vh; }
-  .share-bar { height: 48px; background: #0f1117; border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; align-items: center; padding: 0 20px; gap: 12px; }
-  .share-bar .logo { font-size: 16px; font-weight: 700; }
+  .share-bar {
+    height: 48px; background: var(--bg2); border-bottom: 1px solid var(--bdr);
+    display: flex; align-items: center; padding: 0 20px; gap: 12px;
+  }
+  .share-bar a { text-decoration: none; display: flex; align-items: center; gap: 4px; }
+  .share-bar .logo { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
   .share-bar .logo .x { color: #fff; }
   .share-bar .logo .r { color: var(--acc); }
-  .share-bar .sep { width: 1px; height: 20px; background: rgba(255,255,255,0.1); }
-  .share-bar .dash-name { font-size: 14px; color: var(--t2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .share-bar .badge { font-size: 11px; color: var(--acc); background: rgba(62,232,181,0.08); border: 1px solid rgba(62,232,181,0.2); padding: 3px 10px; border-radius: 12px; }
+  .share-bar .logo-icon {
+    width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  }
+  .share-bar .logo-icon svg { width: 22px; height: 22px; }
   .share-content { width: 100%; height: calc(100vh - 48px); }
-  .share-content iframe { width: 100%; height: 100%; border: none; }
-  .share-loading { display: flex; align-items: center; justify-content: center; height: calc(100vh - 48px); color: var(--t2); gap: 10px; font-size: 14px; }
-  .spinner { width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.06); border-top-color: var(--acc); border-radius: 50%; animation: spin .6s linear infinite; }
+  .share-content iframe { width: 100%; height: 100%; border: none; background: var(--bg); }
+  .share-loading {
+    display: flex; align-items: center; justify-content: center;
+    height: calc(100vh - 48px); color: var(--t2); gap: 10px; font-size: 14px;
+  }
+  .spinner {
+    width: 20px; height: 20px; border: 2px solid var(--bdr);
+    border-top-color: var(--acc); border-radius: 50%; animation: spin .6s linear infinite;
+  }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .share-error { display: flex; flex-direction: column; align-items: center; justify-content: center; height: calc(100vh - 48px); color: var(--t2); gap: 12px; font-size: 15px; }
+  .share-error {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: calc(100vh - 48px); color: var(--t2); gap: 12px; font-size: 15px;
+  }
   .share-error svg { opacity: .3; }
 </style>
 </head>
 <body>
 <div class="share-bar">
-  <div class="logo"><span class="x">X</span><span class="r">Ray</span></div>
-  <div class="sep"></div>
-  <div class="dash-name" id="dash-name"></div>
-  <span class="badge">Shared</span>
+  <a href="/">
+    <span class="logo-icon">
+      <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <path d="M50 8 L62 28 A28 28 0 0 1 78 50 L98 50 A48 48 0 0 0 50 2 Z" fill="#3ee8b5"/>
+        <path d="M78 50 A28 28 0 0 1 62 72 L50 92 A48 48 0 0 0 98 50 Z" fill="#3ee8b5"/>
+        <path d="M62 72 A28 28 0 0 1 38 72 L50 50 Z" fill="#3ee8b5"/>
+        <path d="M38 72 L28 92 A48 48 0 0 1 2 50 L22 50 A28 28 0 0 0 38 72 Z" fill="#3ee8b5"/>
+        <path d="M22 50 A28 28 0 0 1 38 28 L50 8 A48 48 0 0 0 2 50 Z" fill="#3ee8b5"/>
+        <circle cx="50" cy="50" r="12" fill="#3ee8b5"/>
+      </svg>
+    </span>
+    <span class="logo"><span class="x">X</span><span class="r">Ray</span></span>
+  </a>
 </div>
 <div class="share-content" id="share-content">
   <div class="share-loading"><div class="spinner"></div> Loading dashboard...</div>
@@ -40,29 +63,58 @@
   var token = parts[parts.length - 1];
   if (!token) { showError('No share token provided'); return; }
 
-  fetch('/api/share/' + encodeURIComponent(token))
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      if (!d.ok) {
-        showError((d.error && d.error.message) || 'This dashboard is no longer available.');
-        return;
+  // Check sessionStorage cache (30 min TTL)
+  var cacheKey = 'xray_share_' + token;
+  var cached = null;
+  try {
+    var raw = sessionStorage.getItem(cacheKey);
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      if (parsed.ts && (Date.now() - parsed.ts) < 30 * 60 * 1000) {
+        cached = parsed.data;
+      } else {
+        sessionStorage.removeItem(cacheKey);
       }
-      var data = d.data;
-      document.getElementById('dash-name').textContent = data.name || 'Dashboard';
-      document.title = (data.name || 'Dashboard') + ' — XRay';
-      var content = document.getElementById('share-content');
-      var iframe = document.createElement('iframe');
-      iframe.sandbox = 'allow-scripts allow-forms allow-popups allow-same-origin';
-      content.innerHTML = '';
-      content.appendChild(iframe);
-      var doc = iframe.contentDocument || iframe.contentWindow.document;
-      doc.open();
-      doc.write('<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#08090c;color:#f0f1f4}' + (data.css || '') + '</style></head><body>' + (data.html || '') + '<scr' + 'ipt>' + (data.js || '') + '</scr' + 'ipt></body></html>');
-      doc.close();
-    })
-    .catch(function() {
-      showError('Failed to load dashboard. Please try again later.');
-    });
+    }
+  } catch(e) {}
+
+  if (cached) {
+    renderDashboard(cached);
+  } else {
+    fetchDashboard();
+  }
+
+  function fetchDashboard() {
+    fetch('/api/share/' + encodeURIComponent(token))
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (!d.ok) {
+          showError((d.error && d.error.message) || 'This dashboard is no longer available.');
+          return;
+        }
+        // Cache the result
+        try {
+          sessionStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), data: d.data }));
+        } catch(e) {}
+        renderDashboard(d.data);
+      })
+      .catch(function() {
+        showError('Failed to load dashboard. Please try again later.');
+      });
+  }
+
+  function renderDashboard(data) {
+    document.title = (data.name || 'Dashboard') + ' \u2014 XRay';
+    var content = document.getElementById('share-content');
+    var iframe = document.createElement('iframe');
+    iframe.sandbox = 'allow-scripts allow-forms allow-popups allow-same-origin';
+    content.innerHTML = '';
+    content.appendChild(iframe);
+    var doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.open();
+    doc.write('<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#08090c;color:#f0f1f4}' + (data.css || '') + '</style></head><body>' + (data.html || '') + '<scr' + 'ipt>' + (data.js || '') + '</scr' + 'ipt></body></html>');
+    doc.close();
+  }
 
   function showError(msg) {
     document.getElementById('share-content').innerHTML = '<div class="share-error"><svg viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" fill="none" stroke-width="1"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><p>' + msg + '</p></div>';

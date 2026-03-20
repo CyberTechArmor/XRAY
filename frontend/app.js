@@ -24,7 +24,8 @@
     package: '<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
     key: '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>',
     link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
-    video: '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>'
+    video: '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>',
+    inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'
   };
 
   function iconSvg(name) {
@@ -295,7 +296,49 @@
       buildSidebar();
       buildMobileNav();
       loadBundle();
+      // Prompt for passkey setup on first login (no passkeys registered yet)
+      promptPasskeySetup();
     });
+  }
+
+  function promptPasskeySetup() {
+    if (!window.PublicKeyCredential) return;
+    // Check if user already has passkeys
+    api.get('/api/users/me/passkeys').then(function(r) {
+      if (!r.ok) return;
+      var passkeys = r.data || [];
+      if (passkeys.length > 0) return; // already has passkeys
+      // Check if user already dismissed the prompt
+      try { if (localStorage.getItem('xray_passkey_dismissed')) return; } catch(e) {}
+      showPasskeyPrompt();
+    }).catch(function() {});
+  }
+
+  function showPasskeyPrompt() {
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.zIndex = '8500';
+    overlay.innerHTML = '<div class="modal" style="width:400px">'
+      + '<div class="modal-head"><div class="modal-title">Set up passkey?</div></div>'
+      + '<div class="modal-body"><p style="font-size:14px;color:var(--t2);margin-bottom:16px">Passkeys let you sign in quickly and securely with your fingerprint, face, or device PIN. Would you like to set one up now?</p></div>'
+      + '<div class="modal-foot"><button class="btn" id="passkey-later">Later</button><button class="btn primary" id="passkey-setup-now">Set up now</button></div>'
+      + '</div>';
+    document.body.appendChild(overlay);
+
+    overlay.querySelector('#passkey-later').onclick = function() {
+      try { localStorage.setItem('xray_passkey_dismissed', '1'); } catch(e) {}
+      overlay.remove();
+    };
+    overlay.querySelector('#passkey-setup-now').onclick = function() {
+      overlay.remove();
+      window.location.hash = 'account';
+    };
+    overlay.onclick = function(e) {
+      if (e.target === overlay) {
+        try { localStorage.setItem('xray_passkey_dismissed', '1'); } catch(e) {}
+        overlay.remove();
+      }
+    };
   }
 
   // ── Logout ──
@@ -426,7 +469,21 @@
 
     var mobMeet = document.getElementById('mob-meet');
     if (mobMeet) mobMeet.onclick = function() {
-      handleMeetButtonClick();
+      if (meetState.inCall) {
+        // Toggle between minimized and fullscreen
+        if (meetState.viewMode === 'minimized' || meetState.viewMode === null) {
+          setMeetViewMode('fullscreen');
+        } else {
+          setMeetViewMode('minimized');
+        }
+      } else {
+        handleMeetButtonClick();
+      }
+    };
+
+    var mobEnd = document.getElementById('mob-meet-end');
+    if (mobEnd) mobEnd.onclick = function() {
+      endMeetCall();
     };
 
     var mobMenu = document.getElementById('mob-menu');
@@ -538,7 +595,8 @@
       admin_meet: 'if(typeof initAdminMeet==="function")initAdminMeet(container,api,user);',
       admin_webhooks: 'if(typeof initWebhooks==="function")initWebhooks(container,api,user);',
       admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);',
-      admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);'
+      admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);',
+      inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);'
     };
     return fnMap[viewName] || '';
   }
@@ -860,8 +918,42 @@
     if (!viewport || !iframeWrap) return;
     iframeWrap.innerHTML = '<iframe src="' + url + '" allow="camera; microphone; display-capture; autoplay" allowfullscreen></iframe>';
 
+    // Listen for end-call events from the iframe
+    var meetIframe = iframeWrap.querySelector('iframe');
+    if (meetIframe) {
+      // Watch for iframe navigation (user clicks leave/end in the meeting UI)
+      try {
+        var checkInterval = setInterval(function() {
+          if (!meetState.inCall) { clearInterval(checkInterval); return; }
+          try {
+            // If iframe navigated away from meeting or shows a "left" page
+            var iframeSrc = meetIframe.contentWindow.location.href;
+            if (iframeSrc && iframeSrc.indexOf('room=') === -1 && iframeSrc !== 'about:blank') {
+              clearInterval(checkInterval);
+              endMeetCall();
+            }
+          } catch(e) {
+            // Cross-origin - can't check, that's ok
+          }
+        }, 2000);
+        // Also listen for postMessage from meeting iframe
+        window.addEventListener('message', function meetMsgHandler(e) {
+          if (!meetState.inCall) { window.removeEventListener('message', meetMsgHandler); return; }
+          var d = e.data;
+          if (typeof d === 'string') {
+            try { d = JSON.parse(d); } catch(ex) {}
+          }
+          if (d && (d.type === 'meeting-ended' || d.type === 'call-ended' || d.type === 'hangup' || d.event === 'meetingEnded' || d.event === 'participantLeft' && d.local)) {
+            window.removeEventListener('message', meetMsgHandler);
+            endMeetCall();
+          }
+        });
+      } catch(e) {}
+    }
+
     setMeetViewMode('fullscreen');
     updateMeetHeaderState();
+    updateMobileMeetState();
   }
 
   function setMeetViewMode(mode) {
@@ -906,12 +998,24 @@
     if (iframeWrap) iframeWrap.innerHTML = '';
     setMeetViewMode(null);
     updateMeetHeaderState();
+    updateMobileMeetState();
   }
 
   function updateMeetHeaderState() {
     var btn = document.getElementById('btn-meet-header');
     if (!btn) return;
     btn.classList.toggle('in-call', meetState.inCall);
+  }
+
+  function updateMobileMeetState() {
+    var mobMeet = document.getElementById('mob-meet');
+    var mobEnd = document.getElementById('mob-meet-end');
+    if (mobMeet) {
+      mobMeet.classList.toggle('mob-meet-active', meetState.inCall);
+    }
+    if (mobEnd) {
+      mobEnd.style.display = meetState.inCall ? '' : 'none';
+    }
   }
 
   function setupMeetViewport() {
