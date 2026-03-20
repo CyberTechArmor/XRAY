@@ -19,10 +19,19 @@ interface Permission {
   description: string | null;
 }
 
-export async function listRoles(): Promise<Role[]> {
+export async function listRoles(): Promise<(Role & { permissions: string[]; user_count: number })[]> {
   return withClient(async (client) => {
     const result = await client.query(
-      'SELECT id, name, slug, description, is_system, is_platform, created_at FROM platform.roles ORDER BY name'
+      `SELECT r.id, r.name, r.slug, r.description, r.is_system, r.is_platform, r.created_at,
+              COALESCE(
+                (SELECT json_agg(p.key ORDER BY p.key)
+                 FROM platform.role_permissions rp
+                 JOIN platform.permissions p ON p.id = rp.permission_id
+                 WHERE rp.role_id = r.id), '[]'::json
+              ) AS permissions,
+              (SELECT COUNT(*)::int FROM platform.users u WHERE u.role_id = r.id) AS user_count
+       FROM platform.roles r
+       ORDER BY r.is_system DESC, r.name`
     );
     return result.rows;
   });
