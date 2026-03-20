@@ -121,6 +121,9 @@ CREATE TABLE platform.connections (
     source_type       TEXT NOT NULL,
     source_detail     TEXT,
     pipeline_ref      TEXT,
+    description       TEXT,
+    connection_details TEXT,
+    image_url         TEXT,
     status            TEXT NOT NULL DEFAULT 'pending'
                       CHECK (status IN ('pending', 'active', 'error', 'disabled')),
     last_sync_at      TIMESTAMPTZ,
@@ -128,6 +131,18 @@ CREATE TABLE platform.connections (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Connection Comments
+CREATE TABLE platform.connection_comments (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    connection_id   UUID NOT NULL REFERENCES platform.connections(id) ON DELETE CASCADE,
+    author_id       UUID REFERENCES platform.users(id),
+    content         TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_conn_comments_conn ON platform.connection_comments(connection_id, created_at DESC);
 
 -- Connection Tables
 CREATE TABLE platform.connection_tables (
@@ -336,6 +351,7 @@ ALTER TABLE platform.dashboard_access ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.dashboard_sources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.connections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.connection_tables ENABLE ROW LEVEL SECURITY;
+ALTER TABLE platform.connection_comments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.invitations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.billing_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.user_passkeys ENABLE ROW LEVEL SECURITY;
@@ -462,6 +478,7 @@ CREATE POLICY platform_admin_bypass ON platform.dashboard_access USING (current_
 CREATE POLICY platform_admin_bypass ON platform.dashboard_sources USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.connections USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.connection_tables USING (current_setting('app.is_platform_admin', true)::boolean = true);
+CREATE POLICY platform_admin_bypass ON platform.connection_comments USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.invitations USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.billing_state USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.user_passkeys USING (current_setting('app.is_platform_admin', true)::boolean = true);

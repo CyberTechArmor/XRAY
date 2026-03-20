@@ -301,13 +301,15 @@ export async function listAllConnections(query: { page: number; limit: number })
 export async function createConnection(input: {
   tenantId: string; name: string; sourceType: string;
   sourceDetail?: string; pipelineRef?: string;
+  description?: string; connectionDetails?: string; imageUrl?: string;
 }) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.connections (tenant_id, name, source_type, source_detail, pipeline_ref)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [input.tenantId, input.name, input.sourceType, input.sourceDetail || null, input.pipelineRef || null]
+      `INSERT INTO platform.connections (tenant_id, name, source_type, source_detail, pipeline_ref, description, connection_details, image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [input.tenantId, input.name, input.sourceType, input.sourceDetail || null, input.pipelineRef || null,
+       input.description || null, input.connectionDetails || null, input.imageUrl || null]
     );
     const conn = result.rows[0];
     auditService.log({ tenantId: input.tenantId, action: 'connection.create', resourceType: 'connection', resourceId: conn.id, metadata: { name: input.name, sourceType: input.sourceType } });
@@ -323,6 +325,7 @@ export async function updateConnection(connectionId: string, updates: Record<str
     let idx = 1;
     const allowedKeys: Record<string, string> = {
       name: 'name', status: 'status', pipelineRef: 'pipeline_ref',
+      description: 'description', connectionDetails: 'connection_details', imageUrl: 'image_url',
     };
     for (const [key, value] of Object.entries(updates)) {
       const col = allowedKeys[key];
@@ -357,6 +360,62 @@ export async function registerTable(connectionId: string, input: { tableName: st
       [connectionId, conn.rows[0].tenant_id, input.tableName, input.description || null]
     );
     return result.rows[0];
+  });
+}
+
+export async function deleteConnection(connectionId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'DELETE FROM platform.connections WHERE id = $1 RETURNING id, tenant_id',
+      [connectionId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
+    auditService.log({ tenantId: result.rows[0].tenant_id, action: 'connection.delete', resourceType: 'connection', resourceId: connectionId });
+    return { deleted: true };
+  });
+}
+
+// ─── Connection Comments ─────────────────────────────────
+
+export async function listConnectionComments(connectionId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT c.*, u.name AS author_name, u.email AS author_email
+       FROM platform.connection_comments c
+       LEFT JOIN platform.users u ON u.id = c.author_id
+       WHERE c.connection_id = $1
+       ORDER BY c.created_at DESC`,
+      [connectionId]
+    );
+    return result.rows;
+  });
+}
+
+export async function createConnectionComment(connectionId: string, authorId: string, content: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `INSERT INTO platform.connection_comments (connection_id, author_id, content) VALUES ($1, $2, $3) RETURNING *`,
+      [connectionId, authorId, content]
+    );
+    const comment = result.rows[0];
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'connection_comment.create', resourceType: 'connection_comment', resourceId: comment.id });
+    return comment;
+  });
+}
+
+export async function deleteConnectionComment(commentId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'DELETE FROM platform.connection_comments WHERE id = $1 RETURNING id',
+      [commentId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Comment not found');
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'connection_comment.delete', resourceType: 'connection_comment', resourceId: commentId });
+    return { deleted: true };
   });
 }
 

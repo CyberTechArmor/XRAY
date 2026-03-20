@@ -11,6 +11,7 @@ import {
   connectionUpdateSchema,
   connectionTableCreateSchema,
   connectionTemplateCreateSchema,
+  connectionCommentCreateSchema,
   tenantNoteCreateSchema,
   settingsUpdateSchema,
   emailTemplateUpdateSchema,
@@ -241,6 +242,90 @@ router.post('/connection-templates', async (req, res, next) => {
 router.delete('/connection-templates/:id', async (req, res, next) => {
   try {
     const result = await adminService.deleteConnectionTemplate(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /connections/:id - delete connection
+router.delete('/connections/:id', async (req, res, next) => {
+  try {
+    const result = await adminService.deleteConnection(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /connections/:id - get connection detail
+router.get('/connections/:id', async (req, res, next) => {
+  try {
+    const { withClient } = await import('../db/connection');
+    const conn = await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const result = await client.query(
+        `SELECT c.*, t.name AS tenant_name, o.email AS owner_email
+         FROM platform.connections c
+         LEFT JOIN platform.tenants t ON t.id = c.tenant_id
+         LEFT JOIN platform.users o ON o.id = t.owner_user_id
+         WHERE c.id = $1`,
+        [req.params.id]
+      );
+      return result.rows[0];
+    });
+    if (!conn) return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Connection not found' } });
+    res.json({
+      ok: true,
+      data: conn,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /connections/:id/comments - list comments
+router.get('/connections/:id/comments', async (req, res, next) => {
+  try {
+    const result = await adminService.listConnectionComments(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /connections/:id/comments - add comment
+router.post('/connections/:id/comments', async (req, res, next) => {
+  try {
+    const data = validateBody(connectionCommentCreateSchema, req.body);
+    const result = await adminService.createConnectionComment(req.params.id, req.user!.sub, data.content);
+    res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /connections/:id/comments/:cid - delete comment
+router.delete('/connections/:id/comments/:cid', async (req, res, next) => {
+  try {
+    const result = await adminService.deleteConnectionComment(req.params.cid);
     res.json({
       ok: true,
       data: result,

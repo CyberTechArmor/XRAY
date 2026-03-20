@@ -107,12 +107,22 @@ export const connectionCreateSchema = z.object({
   sourceType: z.enum(['api', 'csv', 'database', 'webhook']),
   sourceDetail: z.string().optional(),
   pipelineRef: z.string().optional(),
+  description: z.string().max(5000).optional(),
+  connectionDetails: z.string().max(50000).optional(),
+  imageUrl: z.string().max(2000).optional(),
 });
 
 export const connectionUpdateSchema = z.object({
   name: nameSchema.optional(),
   status: z.enum(['pending', 'active', 'error', 'disabled']).optional(),
   pipelineRef: z.string().optional(),
+  description: z.string().max(5000).optional(),
+  connectionDetails: z.string().max(50000).optional(),
+  imageUrl: z.string().max(2000).optional(),
+});
+
+export const connectionCommentCreateSchema = z.object({
+  content: z.string().min(1).max(10000),
 });
 
 export const connectionTableCreateSchema = z.object({
