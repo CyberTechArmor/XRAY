@@ -266,16 +266,14 @@ export async function initiateSignup(input: {
     tenantName: input.tenantName,
   });
 
-  try {
-    await sendTemplateEmail('signup_verification', input.email, {
-      name: input.name,
-      code,
-      link: `${config.webauthn.origin}/auth/verify?token=${token}&purpose=signup`,
-    });
-  } catch (err) {
-    // Log but don't expose SMTP errors to caller
+  // Fire-and-forget: don't block the response on SMTP
+  sendTemplateEmail('signup_verification', input.email, {
+    name: input.name,
+    code,
+    link: `${config.webauthn.origin}/auth/verify?token=${token}&purpose=signup`,
+  }).catch((err) => {
     console.error('Failed to send signup email:', err);
-  }
+  });
 
   return { message: 'Verification email sent. Please check your inbox.' };
 }
@@ -297,15 +295,14 @@ export async function initiateLogin(email: string): Promise<{ message: string }>
 
   const { code, token } = await createMagicLink(email, 'login', user.tenant_id);
 
-  try {
-    await sendTemplateEmail('login_code', email, {
-      name: user.name,
-      code,
-      link: `${config.webauthn.origin}/auth/verify?token=${token}&purpose=login`,
-    });
-  } catch (err) {
+  // Fire-and-forget: don't block the response on SMTP
+  sendTemplateEmail('login_code', email, {
+    name: user.name,
+    code,
+    link: `${config.webauthn.origin}/auth/verify?token=${token}&purpose=login`,
+  }).catch((err) => {
     console.error('Failed to send login email:', err);
-  }
+  });
 
   return { message: 'If an account exists, a login link has been sent.' };
 }
@@ -587,15 +584,14 @@ export async function initiateRecovery(email: string): Promise<{ message: string
 
   const { code, token } = await createMagicLink(email, 'verify', user.tenant_id);
 
-  try {
-    await sendTemplateEmail('account_recovery', email, {
-      name: user.name,
-      code,
-      link: `${config.webauthn.origin}/auth/recover?token=${token}`,
-    });
-  } catch (err) {
+  // Fire-and-forget: don't block the response on SMTP
+  sendTemplateEmail('account_recovery', email, {
+    name: user.name,
+    code,
+    link: `${config.webauthn.origin}/auth/recover?token=${token}`,
+  }).catch((err) => {
     console.error('Failed to send recovery email:', err);
-  }
+  });
 
   return { message: 'If an account exists, a recovery email has been sent.' };
 }
