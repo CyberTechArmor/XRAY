@@ -28,3 +28,18 @@ CREATE TABLE IF NOT EXISTS platform.connection_templates (
     fetch_body      JSONB,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Add tile image and last viewed tracking
+ALTER TABLE platform.dashboards
+    ADD COLUMN IF NOT EXISTS tile_image_url TEXT,
+    ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ;
+
+-- Tenant notes
+CREATE TABLE IF NOT EXISTS platform.tenant_notes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID NOT NULL REFERENCES platform.tenants(id) ON DELETE CASCADE,
+    author_id       UUID NOT NULL REFERENCES platform.users(id),
+    content         TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -40,6 +40,7 @@ export async function createTenant(input: { name: string; slug: string }) {
        VALUES ($1, 'free', 0, 'none')`,
       [tenant.id]
     );
+    auditService.log({ tenantId: tenant.id, action: 'tenant.create', resourceType: 'tenant', resourceId: tenant.id, metadata: { name: input.name, slug: input.slug } });
     return tenant;
   });
 }
@@ -91,6 +92,7 @@ export async function updateTenantPlan(tenantId: string, input: {
       [tenantId, input.planTier, input.dashboardLimit ?? null, input.paymentStatus ?? 'active']
     );
 
+    auditService.log({ tenantId, action: 'tenant.plan_update', resourceType: 'tenant', resourceId: tenantId, metadata: { planTier: input.planTier, dashboardLimit: input.dashboardLimit, paymentStatus: input.paymentStatus } });
     return result.rows[0];
   });
 }
@@ -135,21 +137,25 @@ export async function createDashboard(input: {
   tenantId: string; name: string; description?: string;
   viewHtml?: string; viewCss?: string; viewJs?: string;
   fetchUrl?: string; fetchMethod?: string; fetchHeaders?: Record<string, string>; fetchBody?: unknown;
+  tileImageUrl?: string;
 }) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.dashboards (tenant_id, name, description, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      `INSERT INTO platform.dashboards (tenant_id, name, description, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, tile_image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
       [
         input.tenantId, input.name, input.description || null,
         input.viewHtml || null, input.viewCss || null, input.viewJs || null,
         input.fetchUrl || null, input.fetchMethod || 'GET',
         input.fetchHeaders ? JSON.stringify(input.fetchHeaders) : '{}',
         input.fetchBody ? JSON.stringify(input.fetchBody) : null,
+        input.tileImageUrl || null,
       ]
     );
-    return result.rows[0];
+    const dash = result.rows[0];
+    auditService.log({ tenantId: input.tenantId, action: 'dashboard.create', resourceType: 'dashboard', resourceId: dash.id, metadata: { name: input.name } });
+    return dash;
   });
 }
 
@@ -164,6 +170,7 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       viewCss: 'view_css', viewJs: 'view_js', status: 'status',
       fetchUrl: 'fetch_url', fetchMethod: 'fetch_method',
       fetchHeaders: 'fetch_headers', fetchBody: 'fetch_body',
+      tileImageUrl: 'tile_image_url',
     };
     for (const [key, value] of Object.entries(updates)) {
       const col = allowedKeys[key];
@@ -186,7 +193,9 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       values
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
-    return result.rows[0];
+    const dash = result.rows[0];
+    auditService.log({ tenantId: dash.tenant_id, action: 'dashboard.update', resourceType: 'dashboard', resourceId: dashboardId, metadata: { fields: Object.keys(updates) } });
+    return dash;
   });
 }
 
@@ -213,7 +222,9 @@ export async function createConnectionTemplate(input: {
         input.fetchBody ? JSON.stringify(input.fetchBody) : null,
       ]
     );
-    return result.rows[0];
+    const tmpl = result.rows[0];
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'connection_template.create', resourceType: 'connection_template', resourceId: tmpl.id, metadata: { name: input.name } });
+    return tmpl;
   });
 }
 
@@ -224,6 +235,7 @@ export async function deleteConnectionTemplate(templateId: string) {
       [templateId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Template not found');
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'connection_template.delete', resourceType: 'connection_template', resourceId: templateId });
     return { deleted: true };
   });
 }
@@ -289,15 +301,19 @@ export async function listAllConnections(query: { page: number; limit: number })
 export async function createConnection(input: {
   tenantId: string; name: string; sourceType: string;
   sourceDetail?: string; pipelineRef?: string;
+  description?: string; connectionDetails?: string; imageUrl?: string;
 }) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.connections (tenant_id, name, source_type, source_detail, pipeline_ref)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [input.tenantId, input.name, input.sourceType, input.sourceDetail || null, input.pipelineRef || null]
+      `INSERT INTO platform.connections (tenant_id, name, source_type, source_detail, pipeline_ref, description, connection_details, image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [input.tenantId, input.name, input.sourceType, input.sourceDetail || null, input.pipelineRef || null,
+       input.description || null, input.connectionDetails || null, input.imageUrl || null]
     );
-    return result.rows[0];
+    const conn = result.rows[0];
+    auditService.log({ tenantId: input.tenantId, action: 'connection.create', resourceType: 'connection', resourceId: conn.id, metadata: { name: input.name, sourceType: input.sourceType } });
+    return conn;
   });
 }
 
@@ -309,6 +325,7 @@ export async function updateConnection(connectionId: string, updates: Record<str
     let idx = 1;
     const allowedKeys: Record<string, string> = {
       name: 'name', status: 'status', pipelineRef: 'pipeline_ref',
+      description: 'description', connectionDetails: 'connection_details', imageUrl: 'image_url',
     };
     for (const [key, value] of Object.entries(updates)) {
       const col = allowedKeys[key];
@@ -326,7 +343,9 @@ export async function updateConnection(connectionId: string, updates: Record<str
       values
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
-    return result.rows[0];
+    const conn = result.rows[0];
+    auditService.log({ tenantId: conn.tenant_id, action: 'connection.update', resourceType: 'connection', resourceId: connectionId, metadata: { fields: Object.keys(updates) } });
+    return conn;
   });
 }
 
@@ -341,6 +360,117 @@ export async function registerTable(connectionId: string, input: { tableName: st
       [connectionId, conn.rows[0].tenant_id, input.tableName, input.description || null]
     );
     return result.rows[0];
+  });
+}
+
+export async function deleteConnection(connectionId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'DELETE FROM platform.connections WHERE id = $1 RETURNING id, tenant_id',
+      [connectionId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
+    auditService.log({ tenantId: result.rows[0].tenant_id, action: 'connection.delete', resourceType: 'connection', resourceId: connectionId });
+    return { deleted: true };
+  });
+}
+
+// ─── Connection Comments ─────────────────────────────────
+
+export async function listConnectionComments(connectionId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT c.*, u.name AS author_name, u.email AS author_email
+       FROM platform.connection_comments c
+       LEFT JOIN platform.users u ON u.id = c.author_id
+       WHERE c.connection_id = $1
+       ORDER BY c.created_at DESC`,
+      [connectionId]
+    );
+    return result.rows;
+  });
+}
+
+export async function createConnectionComment(connectionId: string, authorId: string, content: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `INSERT INTO platform.connection_comments (connection_id, author_id, content) VALUES ($1, $2, $3) RETURNING *`,
+      [connectionId, authorId, content]
+    );
+    const comment = result.rows[0];
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'connection_comment.create', resourceType: 'connection_comment', resourceId: comment.id });
+    return comment;
+  });
+}
+
+export async function deleteConnectionComment(commentId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'DELETE FROM platform.connection_comments WHERE id = $1 RETURNING id',
+      [commentId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Comment not found');
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'connection_comment.delete', resourceType: 'connection_comment', resourceId: commentId });
+    return { deleted: true };
+  });
+}
+
+// ─── Tenant Notes ────────────────────────────────────────
+
+export async function listTenantNotes(tenantId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT n.*, u.name AS author_name, u.email AS author_email
+       FROM platform.tenant_notes n
+       LEFT JOIN platform.users u ON u.id = n.author_id
+       WHERE n.tenant_id = $1
+       ORDER BY n.created_at DESC`,
+      [tenantId]
+    );
+    return result.rows;
+  });
+}
+
+export async function createTenantNote(tenantId: string, authorId: string, content: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `INSERT INTO platform.tenant_notes (tenant_id, author_id, content) VALUES ($1, $2, $3) RETURNING *`,
+      [tenantId, authorId, content]
+    );
+    const note = result.rows[0];
+    auditService.log({ tenantId, userId: authorId, action: 'tenant_note.create', resourceType: 'tenant_note', resourceId: note.id });
+    return note;
+  });
+}
+
+export async function updateTenantNote(noteId: string, content: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `UPDATE platform.tenant_notes SET content = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [content, noteId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Note not found');
+    const note = result.rows[0];
+    auditService.log({ tenantId: note.tenant_id, action: 'tenant_note.update', resourceType: 'tenant_note', resourceId: noteId });
+    return note;
+  });
+}
+
+export async function deleteTenantNote(noteId: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      'DELETE FROM platform.tenant_notes WHERE id = $1 RETURNING id',
+      [noteId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Note not found');
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'tenant_note.delete', resourceType: 'tenant_note', resourceId: noteId });
+    return { deleted: true };
   });
 }
 
@@ -375,6 +505,7 @@ export async function updateSettings(updates: Record<string, string | null>) {
         [key, storedValue]
       );
     }
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'settings.update', resourceType: 'settings', metadata: { keys: Object.keys(updates) } });
     return { updated: Object.keys(updates).length };
   });
   // Invalidate settings cache so getSmtpConfig etc. pick up new values immediately
@@ -389,6 +520,17 @@ export async function listEmailTemplates() {
       'SELECT template_key, subject, variables, description, updated_at FROM platform.email_templates ORDER BY template_key'
     );
     return result.rows;
+  });
+}
+
+export async function getEmailTemplate(templateKey: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      'SELECT * FROM platform.email_templates WHERE template_key = $1',
+      [templateKey]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Template not found');
+    return result.rows[0];
   });
 }
 
@@ -408,6 +550,7 @@ export async function updateEmailTemplate(templateKey: string, updates: {
       values
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Template not found');
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'email_template.update', resourceType: 'email_template', resourceId: templateKey, metadata: { fields: Object.keys(updates) } });
     return result.rows[0];
   });
 }

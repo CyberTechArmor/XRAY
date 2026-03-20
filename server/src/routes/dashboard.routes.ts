@@ -55,6 +55,12 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Dashboard not found or inactive' } });
     }
 
+    // Track last viewed
+    await withClient(async (c) => {
+      await c.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      await c.query('UPDATE platform.dashboards SET last_viewed_at = now() WHERE id = $1', [req.params.id]);
+    });
+
     // If dashboard has static content, return it directly
     if (!dashboard.fetch_url) {
       return res.json({

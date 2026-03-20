@@ -71,6 +71,7 @@ export const dashboardCreateSchema = z.object({
   fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
   fetchHeaders: z.record(z.string()).optional(),
   fetchBody: z.any().optional(),
+  tileImageUrl: z.string().url().max(2000).optional(),
 });
 
 export const dashboardUpdateSchema = z.object({
@@ -84,6 +85,7 @@ export const dashboardUpdateSchema = z.object({
   fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
   fetchHeaders: z.record(z.string()).optional(),
   fetchBody: z.any().optional(),
+  tileImageUrl: z.string().url().max(2000).optional().nullable(),
 });
 
 export const connectionTemplateCreateSchema = z.object({
@@ -95,18 +97,32 @@ export const connectionTemplateCreateSchema = z.object({
   fetchBody: z.any().optional(),
 });
 
+export const tenantNoteCreateSchema = z.object({
+  content: z.string().min(1).max(10000),
+});
+
 export const connectionCreateSchema = z.object({
   tenantId: uuidSchema,
   name: nameSchema,
   sourceType: z.enum(['api', 'csv', 'database', 'webhook']),
   sourceDetail: z.string().optional(),
   pipelineRef: z.string().optional(),
+  description: z.string().max(5000).optional(),
+  connectionDetails: z.string().max(50000).optional(),
+  imageUrl: z.string().max(2000).optional(),
 });
 
 export const connectionUpdateSchema = z.object({
   name: nameSchema.optional(),
   status: z.enum(['pending', 'active', 'error', 'disabled']).optional(),
   pipelineRef: z.string().optional(),
+  description: z.string().max(5000).optional(),
+  connectionDetails: z.string().max(50000).optional(),
+  imageUrl: z.string().max(2000).optional(),
+});
+
+export const connectionCommentCreateSchema = z.object({
+  content: z.string().min(1).max(10000),
 });
 
 export const connectionTableCreateSchema = z.object({

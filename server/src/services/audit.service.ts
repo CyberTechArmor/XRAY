@@ -49,6 +49,70 @@ export function log(entry: AuditLogEntry): void {
   });
 }
 
+/**
+ * Platform-wide audit query (for super admin).
+ */
+export async function queryAll(params: Omit<AuditQueryParams, 'tenantId'> & { tenantId?: string }): Promise<PaginatedAuditLog> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const page = params.page || 1;
+    const limit = Math.min(params.limit || 50, 200);
+    const offset = (page - 1) * limit;
+
+    const conditions: string[] = [];
+    const values: unknown[] = [];
+    let paramIdx = 1;
+
+    if (params.tenantId) {
+      conditions.push(`a.tenant_id = $${paramIdx}`);
+      values.push(params.tenantId);
+      paramIdx++;
+    }
+    if (params.action) {
+      conditions.push(`a.action = $${paramIdx}`);
+      values.push(params.action);
+      paramIdx++;
+    }
+    if (params.userId) {
+      conditions.push(`a.user_id = $${paramIdx}`);
+      values.push(params.userId);
+      paramIdx++;
+    }
+    if (params.resourceType) {
+      conditions.push(`a.resource_type = $${paramIdx}`);
+      values.push(params.resourceType);
+      paramIdx++;
+    }
+
+    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const countResult = await client.query(
+      `SELECT COUNT(*) FROM platform.audit_log a ${whereClause}`,
+      values
+    );
+    const total = parseInt(countResult.rows[0].count, 10);
+
+    const dataResult = await client.query(
+      `SELECT a.id, a.tenant_id, a.user_id, a.action, a.resource_type, a.resource_id, a.metadata, a.created_at,
+              t.name AS tenant_name, u.email AS user_email
+       FROM platform.audit_log a
+       LEFT JOIN platform.tenants t ON t.id = a.tenant_id
+       LEFT JOIN platform.users u ON u.id = a.user_id
+       ${whereClause}
+       ORDER BY a.created_at DESC
+       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+      [...values, limit, offset]
+    );
+
+    return {
+      data: dataResult.rows,
+      total,
+      page,
+      limit,
+    };
+  });
+}
+
 export async function query(params: AuditQueryParams): Promise<PaginatedAuditLog> {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);

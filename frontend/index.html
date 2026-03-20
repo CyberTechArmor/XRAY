@@ -183,7 +183,9 @@
   <div id="app-header">
     <div class="logo"><svg viewBox="0 0 36 36" fill="none" style="width:28px;height:28px;vertical-align:middle;margin-right:8px"><g transform="translate(18,18)"><circle r="2.8" fill="#3ee8b5"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85" transform="rotate(120)"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85" transform="rotate(240)"/></g></svg><span style="color:#fff">X</span><span style="color:#3ee8b5">Ray</span></div>
     <div class="spacer"></div>
+    <div id="header-center-title" style="position:absolute;left:50%;transform:translateX(-50%);font-size:15px;font-weight:600;color:var(--t1);display:none;pointer-events:none"></div>
     <div class="user-menu">
+      <button id="btn-meet-header" class="meet-btn" title="Start a meeting" style="display:none"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="1.5"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg> Meet</button>
       <span id="user-name"></span>
       <button id="btn-logout">Sign out</button>
     </div>
@@ -193,6 +195,25 @@
     <main id="main-content">
       <div id="view-container"></div>
     </main>
+  </div>
+  <!-- Mobile bottom nav -->
+  <nav id="mobile-nav">
+    <button id="mob-meet" class="mob-nav-btn" title="Meet"><svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" fill="none" stroke-width="1.5"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg><span>Meet</span></button>
+    <button id="mob-dashboards" class="mob-nav-btn mob-nav-main" title="Dashboards"><svg viewBox="0 0 24 24" width="28" height="28" stroke="currentColor" fill="none" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg><span>Dashboards</span></button>
+    <button id="mob-menu" class="mob-nav-btn" title="Menu"><svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" fill="none" stroke-width="1.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg><span>Menu</span></button>
+  </nav>
+  <!-- Mobile slide-out menu -->
+  <div id="mobile-menu-overlay" class="mob-overlay"></div>
+  <div id="mobile-menu-drawer" class="mob-drawer">
+    <div class="mob-drawer-head">
+      <span>Menu</span>
+      <button id="mob-drawer-close">&times;</button>
+    </div>
+    <div id="mob-drawer-nav"></div>
+    <div class="mob-drawer-foot">
+      <span id="mob-user-name"></span>
+      <button id="mob-logout">Sign out</button>
+    </div>
   </div>
 </div>
 

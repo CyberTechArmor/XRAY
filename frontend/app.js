@@ -293,6 +293,7 @@
       currentUser = d.data;
       document.getElementById('user-name').textContent = currentUser.name || currentUser.email;
       buildSidebar();
+      buildMobileNav();
       loadBundle();
     });
   }
@@ -309,6 +310,7 @@
   }
   document.getElementById('btn-logout').onclick = logout;
   window.logout = logout;
+  window.getAccessToken = function() { return accessToken; };
 
   // ── Build sidebar ──
   function buildSidebar() {
@@ -319,6 +321,24 @@
     var userPerms = [];
     if (currentUser && currentUser.permissions) userPerms = currentUser.permissions;
     var isAdmin = currentUser && currentUser.is_platform_admin;
+
+    // Add collapse toggle at top
+    var toggleWrap = document.createElement('div');
+    toggleWrap.className = 'sidebar-toggle';
+    var toggleBtn = document.createElement('button');
+    toggleBtn.title = 'Toggle sidebar';
+    toggleBtn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>';
+    toggleBtn.onclick = function() {
+      sidebar.classList.toggle('collapsed');
+      try { localStorage.setItem('xray_sidebar', sidebar.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
+    };
+    toggleWrap.appendChild(toggleBtn);
+    sidebar.appendChild(toggleWrap);
+
+    // Restore collapse state
+    try {
+      if (localStorage.getItem('xray_sidebar') === '1') sidebar.classList.add('collapsed');
+    } catch(e) {}
 
     bundle.nav.forEach(function(item) {
       if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
@@ -349,6 +369,101 @@
         sidebar.appendChild(el);
       });
     });
+
+    // Show MEET header button if configured
+    var meetBtn = document.getElementById('btn-meet-header');
+    if (meetBtn) {
+      api.get('/api/meet/config').then(function(r) {
+        if (r.ok && r.data && r.data.configured) {
+          meetBtn.style.display = '';
+          meetBtn.onclick = function() {
+            var fab = document.getElementById('xray-meet-fab');
+            if (fab) fab.click();
+          };
+        }
+      }).catch(function() {});
+    }
+  }
+
+  // ── Mobile nav ──
+  function buildMobileNav() {
+    if (!bundle || !bundle.nav) return;
+    var drawerNav = document.getElementById('mob-drawer-nav');
+    var overlay = document.getElementById('mobile-menu-overlay');
+    var drawer = document.getElementById('mobile-menu-drawer');
+    if (!drawerNav) return;
+
+    // Populate drawer with full nav
+    drawerNav.innerHTML = '';
+    var sections = {};
+    var userPerms = (currentUser && currentUser.permissions) || [];
+    var isAdmin = currentUser && currentUser.is_platform_admin;
+    bundle.nav.forEach(function(item) {
+      if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
+      var sec = item.section || 'main';
+      if (!sections[sec]) sections[sec] = [];
+      sections[sec].push(item);
+    });
+    var sectionLabels = { main: '', manage: 'Manage', account: 'Account', platform: 'Platform', config: 'Configuration' };
+    var order = ['main', 'manage', 'account', 'platform', 'config', 'system'];
+    order.forEach(function(sec) {
+      if (!sections[sec] || !sections[sec].length) return;
+      if (sectionLabels[sec]) {
+        var lbl = document.createElement('div');
+        lbl.className = 'nav-section';
+        lbl.textContent = sectionLabels[sec];
+        drawerNav.appendChild(lbl);
+      }
+      sections[sec].forEach(function(item) {
+        var el = document.createElement('div');
+        el.className = 'nav-item';
+        el.setAttribute('data-view', item.view);
+        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>';
+        el.onclick = function() { closeMobileMenu(); navigateTo(item.view); };
+        drawerNav.appendChild(el);
+      });
+    });
+
+    // User name in drawer
+    var mobName = document.getElementById('mob-user-name');
+    if (mobName && currentUser) mobName.textContent = currentUser.name || currentUser.email;
+    var mobLogout = document.getElementById('mob-logout');
+    if (mobLogout) mobLogout.onclick = function() { closeMobileMenu(); logout(); };
+
+    // Mobile nav buttons
+    var mobDash = document.getElementById('mob-dashboards');
+    if (mobDash) mobDash.onclick = function() { closeMobileMenu(); navigateTo('dashboard_list'); };
+
+    var mobMeet = document.getElementById('mob-meet');
+    if (mobMeet) mobMeet.onclick = function() {
+      var fab = document.getElementById('xray-meet-fab');
+      if (fab) fab.click();
+    };
+
+    var mobMenu = document.getElementById('mob-menu');
+    if (mobMenu) mobMenu.onclick = function() {
+      overlay.classList.add('open');
+      drawer.classList.add('open');
+    };
+
+    // Close drawer
+    var closeBtn = document.getElementById('mob-drawer-close');
+    if (closeBtn) closeBtn.onclick = closeMobileMenu;
+    if (overlay) overlay.onclick = closeMobileMenu;
+
+    function closeMobileMenu() {
+      overlay.classList.remove('open');
+      drawer.classList.remove('open');
+    }
+    window._closeMobileMenu = closeMobileMenu;
+  }
+
+  // Update mobile drawer active state on navigation
+  function updateMobileActive(viewName) {
+    var items = document.querySelectorAll('#mob-drawer-nav .nav-item');
+    items.forEach(function(el) {
+      el.classList.toggle('active', el.getAttribute('data-view') === viewName);
+    });
   }
 
   // ── Load bundle ──
@@ -373,10 +488,17 @@
       window.location.hash = viewName;
     }
 
+    // Clear full-viewport dashboard viewer state
+    var hdrTitle = document.getElementById('header-center-title');
+    if (hdrTitle) { hdrTitle.style.display = 'none'; hdrTitle.textContent = ''; }
+    var sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.style.display = '';
+
     var items = document.querySelectorAll('#sidebar .nav-item');
     items.forEach(function(el) {
       el.classList.toggle('active', el.getAttribute('data-view') === viewName);
     });
+    updateMobileActive(viewName);
 
     var container = document.getElementById('view-container');
     var viewDef = bundle.views[viewName];
@@ -426,7 +548,8 @@
       admin_apikeys: 'if(typeof initApiKeys==="function")initApiKeys(container,api,user);',
       admin_meet: 'if(typeof initAdminMeet==="function")initAdminMeet(container,api,user);',
       admin_webhooks: 'if(typeof initWebhooks==="function")initWebhooks(container,api,user);',
-      admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);'
+      admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);',
+      admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);'
     };
     return fnMap[viewName] || '';
   }

@@ -11,11 +11,14 @@ import {
   connectionUpdateSchema,
   connectionTableCreateSchema,
   connectionTemplateCreateSchema,
+  connectionCommentCreateSchema,
+  tenantNoteCreateSchema,
   settingsUpdateSchema,
   emailTemplateUpdateSchema,
   paginationSchema,
 } from '../lib/validation';
 import * as adminService from '../services/admin.service';
+import * as auditService from '../services/audit.service';
 
 const router = Router();
 
@@ -249,6 +252,90 @@ router.delete('/connection-templates/:id', async (req, res, next) => {
   }
 });
 
+// DELETE /connections/:id - delete connection
+router.delete('/connections/:id', async (req, res, next) => {
+  try {
+    const result = await adminService.deleteConnection(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /connections/:id - get connection detail
+router.get('/connections/:id', async (req, res, next) => {
+  try {
+    const { withClient } = await import('../db/connection');
+    const conn = await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const result = await client.query(
+        `SELECT c.*, t.name AS tenant_name, o.email AS owner_email
+         FROM platform.connections c
+         LEFT JOIN platform.tenants t ON t.id = c.tenant_id
+         LEFT JOIN platform.users o ON o.id = t.owner_user_id
+         WHERE c.id = $1`,
+        [req.params.id]
+      );
+      return result.rows[0];
+    });
+    if (!conn) return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Connection not found' } });
+    res.json({
+      ok: true,
+      data: conn,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /connections/:id/comments - list comments
+router.get('/connections/:id/comments', async (req, res, next) => {
+  try {
+    const result = await adminService.listConnectionComments(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /connections/:id/comments - add comment
+router.post('/connections/:id/comments', async (req, res, next) => {
+  try {
+    const data = validateBody(connectionCommentCreateSchema, req.body);
+    const result = await adminService.createConnectionComment(req.params.id, req.user!.sub, data.content);
+    res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /connections/:id/comments/:cid - delete comment
+router.delete('/connections/:id/comments/:cid', async (req, res, next) => {
+  try {
+    const result = await adminService.deleteConnectionComment(req.params.cid);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /connections/:id/tables - register table
 router.post('/connections/:id/tables', async (req, res, next) => {
   try {
@@ -258,6 +345,82 @@ router.post('/connections/:id/tables', async (req, res, next) => {
       ok: true,
       data: result,
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /tenants/:id/notes - list notes for a tenant
+router.get('/tenants/:id/notes', async (req, res, next) => {
+  try {
+    const result = await adminService.listTenantNotes(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /tenants/:id/notes - add a note
+router.post('/tenants/:id/notes', async (req, res, next) => {
+  try {
+    const data = validateBody(tenantNoteCreateSchema, req.body);
+    const result = await adminService.createTenantNote(req.params.id, req.user!.sub, data.content);
+    res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /tenants/:id/notes/:noteId - edit a note
+router.patch('/tenants/:id/notes/:noteId', async (req, res, next) => {
+  try {
+    const data = validateBody(tenantNoteCreateSchema, req.body);
+    const result = await adminService.updateTenantNote(req.params.noteId, data.content);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /tenants/:id/notes/:noteId - delete a note
+router.delete('/tenants/:id/notes/:noteId', async (req, res, next) => {
+  try {
+    const result = await adminService.deleteTenantNote(req.params.noteId);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /audit - platform-wide audit log
+router.get('/audit', async (req, res, next) => {
+  try {
+    const page = parseInt(req.query.page as string, 10) || 1;
+    const limit = parseInt(req.query.limit as string, 10) || 50;
+    const action = req.query.action as string | undefined;
+    const resourceType = req.query.resourceType as string | undefined;
+    const result = await auditService.queryAll({ page, limit, action, resourceType });
+    res.json({
+      ok: true,
+      data: result.data,
+      meta: { total: result.total, page: result.page, limit: result.limit, request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {
     next(err);
@@ -297,6 +460,20 @@ router.patch('/settings', async (req, res, next) => {
 router.get('/email-templates', async (req, res, next) => {
   try {
     const result = await adminService.listEmailTemplates();
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /email-templates/:key - get single email template with full body
+router.get('/email-templates/:key', async (req, res, next) => {
+  try {
+    const result = await adminService.getEmailTemplate(req.params.key);
     res.json({
       ok: true,
       data: result,
@@ -362,6 +539,63 @@ router.post('/email/test', async (req, res, next) => {
     res.json({
       ok: true,
       data: { sent: true, to: recipientEmail },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Import / Export ───────────────────────────────────────
+
+// POST /export - export platform data as ZIP
+router.post('/export', async (req, res, next) => {
+  try {
+    const { exportPlatform } = await import('../services/portability.service');
+    const options = req.body || {};
+    const zipBuffer = await exportPlatform(options, req.user!.sub);
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="xray-export-${new Date().toISOString().slice(0, 10)}.zip"`);
+    res.setHeader('Content-Length', zipBuffer.length.toString());
+    res.send(zipBuffer);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /import - import platform data from ZIP
+// Accepts: application/zip (raw body via express.raw in index.ts) or application/json with base64 data
+router.post('/import', async (req, res, next) => {
+  try {
+    let zipBuffer: Buffer;
+
+    if (Buffer.isBuffer(req.body)) {
+      // Raw binary upload (application/zip)
+      zipBuffer = req.body;
+    } else if (req.body && req.body.data) {
+      // Base64 encoded in JSON body
+      zipBuffer = Buffer.from(req.body.data, 'base64');
+    } else {
+      return res.status(400).json({
+        ok: false,
+        error: { code: 'MISSING_DATA', message: 'Send ZIP as binary body (Content-Type: application/zip) or as base64 in { "data": "..." }' },
+      });
+    }
+
+    if (zipBuffer.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: { code: 'EMPTY_ARCHIVE', message: 'Upload is empty' },
+      });
+    }
+
+    const { importPlatform } = await import('../services/portability.service');
+    const result = await importPlatform(zipBuffer, req.user!.sub);
+
+    res.json({
+      ok: true,
+      data: result,
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {
