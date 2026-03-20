@@ -40,6 +40,9 @@ export async function sendEmail(options: SendEmailOptions): Promise<void> {
       smtp.user && smtp.pass
         ? { user: smtp.user, pass: smtp.pass }
         : undefined,
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 15_000,
   });
 
   await transporter.sendMail({
