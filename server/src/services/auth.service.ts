@@ -670,6 +670,125 @@ export async function logout(sessionId: string): Promise<void> {
   });
 }
 
+// ─── Passkey Authentication ──────────────────────────────
+
+export async function beginPasskeyAuth(email?: string): Promise<unknown> {
+  const webauthn = await import('../lib/webauthn');
+
+  let allowCredentials: { id: Buffer; transports?: string[] }[] = [];
+  let userId: string | null = null;
+
+  if (email) {
+    // Get passkeys for this specific user
+    const result = await withClient(async (client) => {
+      const userResult = await client.query(
+        'SELECT id FROM platform.users WHERE email = $1 AND status = $2',
+        [email, 'active']
+      );
+      if (userResult.rows.length === 0) return null;
+      userId = userResult.rows[0].id;
+      const pkResult = await client.query(
+        'SELECT credential_id, transports FROM platform.user_passkeys WHERE user_id = $1',
+        [userId]
+      );
+      return pkResult.rows;
+    });
+
+    if (result && result.length > 0) {
+      allowCredentials = result.map((r: any) => ({
+        id: r.credential_id,
+        transports: r.transports,
+      }));
+    }
+  }
+
+  const options = await webauthn.generateAuthOptions(allowCredentials);
+
+  // Store challenge temporarily
+  await withClient(async (client) => {
+    // Store in platform_settings as a temporary challenge
+    await client.query(
+      `INSERT INTO platform.platform_settings (key, value, updated_at)
+       VALUES ($1, $2, now())
+       ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()`,
+      ['passkey_challenge_' + options.challenge.substring(0, 16), JSON.stringify({ challenge: options.challenge, email, created: Date.now() })]
+    );
+  });
+
+  return options;
+}
+
+export async function completePasskeyAuth(body: any): Promise<{ accessToken: string; refreshToken: string; sessionId: string }> {
+  const webauthn = await import('../lib/webauthn');
+
+  // Find the credential
+  const credentialId = body.id;
+
+  const credential = await withClient(async (client) => {
+    const result = await client.query(
+      `SELECT p.*, u.id as uid, u.email, u.tenant_id, u.name
+       FROM platform.user_passkeys p
+       JOIN platform.users u ON u.id = p.user_id
+       WHERE p.credential_id = decode($1, 'base64')
+       AND u.status = 'active'`,
+      [credentialId.replace(/-/g, '+').replace(/_/g, '/')]
+    );
+    return result.rows[0];
+  });
+
+  if (!credential) {
+    throw new AppError(401, 'INVALID_CREDENTIAL', 'Passkey not recognized');
+  }
+
+  // Find the stored challenge
+  const challengeData = await withClient(async (client) => {
+    const result = await client.query(
+      `SELECT key, value FROM platform.platform_settings
+       WHERE key LIKE 'passkey_challenge_%' AND updated_at > now() - interval '5 minutes'
+       ORDER BY updated_at DESC LIMIT 10`
+    );
+    return result.rows;
+  });
+
+  let expectedChallenge: string | null = null;
+  for (const row of challengeData) {
+    try {
+      const parsed = JSON.parse(row.value);
+      expectedChallenge = parsed.challenge;
+      // Try verification with this challenge
+      const verification = await webauthn.verifyAuthResponse(
+        body,
+        expectedChallenge!,
+        {
+          credentialId: credential.credential_id,
+          publicKey: credential.public_key,
+          counter: credential.counter,
+          transports: credential.transports,
+        }
+      );
+
+      if (verification.verified) {
+        // Update counter
+        await withClient(async (client) => {
+          await client.query(
+            'UPDATE platform.user_passkeys SET counter = $1, last_used_at = now() WHERE id = $2',
+            [verification.authenticationInfo.newCounter, credential.id]
+          );
+          // Clean up used challenge
+          await client.query('DELETE FROM platform.platform_settings WHERE key = $1', [row.key]);
+        });
+
+        // Create session tokens
+        return createSession(credential.uid, credential.tenant_id);
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  throw new AppError(401, 'VERIFICATION_FAILED', 'Passkey verification failed');
+}
+
 export async function createSession(
   userId: string,
   tenantId: string,

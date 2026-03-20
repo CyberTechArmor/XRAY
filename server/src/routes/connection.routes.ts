@@ -33,4 +33,25 @@ router.get('/:id', authenticateJWT, requirePermission('connections.view'), async
   }
 });
 
+// POST / - create connection (JWT, connections.manage)
+router.post('/', authenticateJWT, requirePermission('connections.manage'), async (req, res, next) => {
+  try {
+    const { createConnection } = await import('../services/admin.service');
+    const result = await createConnection({
+      tenantId: req.user!.tid,
+      name: req.body.name,
+      sourceType: req.body.sourceType,
+      sourceDetail: req.body.sourceDetail,
+      pipelineRef: req.body.pipelineRef,
+    });
+    res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
