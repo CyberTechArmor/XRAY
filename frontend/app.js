@@ -214,7 +214,8 @@
 
   // Signup Enter key
   ['signup-name', 'signup-email', 'signup-org'].forEach(function(id) {
-    document.getElementById(id).onkeydown = function(e) {
+    var el = document.getElementById(id);
+    if (el) el.onkeydown = function(e) {
       if (e.key === 'Enter') document.getElementById('btn-signup').click();
     };
   });
@@ -238,7 +239,8 @@
 
   // Setup Enter key
   ['setup-name', 'setup-email', 'setup-org'].forEach(function(id) {
-    document.getElementById(id).onkeydown = function(e) {
+    var el = document.getElementById(id);
+    if (el) el.onkeydown = function(e) {
       if (e.key === 'Enter') document.getElementById('btn-setup').click();
     };
   });
