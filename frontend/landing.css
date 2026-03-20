@@ -1,0 +1,16 @@
+/* ── Landing page styles ── */
+#landing-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; text-align: center; }
+#landing-screen .landing-logo { margin-bottom: 24px; animation: land-float 3s ease-in-out infinite; }
+#landing-screen .landing-logo svg { width: 96px; height: 96px; }
+@keyframes land-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+#landing-screen h1 { font-size: 48px; font-weight: 700; letter-spacing: -.03em; margin-bottom: 8px; opacity: 0; animation: land-fade-up .8s ease forwards .2s; }
+#landing-screen .landing-sub { font-size: 18px; color: var(--t2); margin-bottom: 40px; max-width: 480px; opacity: 0; animation: land-fade-up .8s ease forwards .4s; }
+#landing-screen .landing-actions { display: flex; gap: 12px; opacity: 0; animation: land-fade-up .8s ease forwards .6s; }
+#landing-screen .landing-actions .btn { padding: 14px 32px; font-size: 16px; border-radius: 10px; }
+@keyframes land-fade-up { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+#landing-screen .landing-particles { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+#landing-screen .landing-particles span { position: absolute; width: 4px; height: 4px; background: var(--acc); border-radius: 50%; opacity: 0; animation: land-particle 6s linear infinite; }
+@keyframes land-particle { 0% { opacity: 0; transform: translateY(100vh) scale(0); } 20% { opacity: .6; } 100% { opacity: 0; transform: translateY(-20vh) scale(1); } }
+#landing-screen .landing-content { position: relative; z-index: 1; }
+.landing-glow { position: absolute; width: 400px; height: 400px; background: radial-gradient(circle, var(--acc-dim) 0%, transparent 70%); border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; animation: land-glow 4s ease-in-out infinite; }
+@keyframes land-glow { 0%, 100% { opacity: .3; transform: translate(-50%, -50%) scale(1); } 50% { opacity: .6; transform: translate(-50%, -50%) scale(1.2); } }
