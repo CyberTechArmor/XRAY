@@ -29,7 +29,8 @@ export async function createRole(input: {
   if (input.permissions && input.permissions.length > 0) {
     permIds = await resolvePermissionKeys(input.permissions);
   }
-  return rbac.createRole({ name: input.name, slug: input.slug, description: input.description, permissionIds: permIds });
+  const role = await rbac.createRole({ name: input.name, slug: input.slug, description: input.description, permissionIds: permIds });
+  return { ...role } as Record<string, unknown>;
 }
 
 export async function updateRole(
