@@ -225,7 +225,9 @@
     var name = document.getElementById('setup-name').value.trim();
     var email = document.getElementById('setup-email').value.trim();
     var org = document.getElementById('setup-org').value.trim();
-    if (!name || !email || !org) { showAuthErr('setup-err', 'All fields are required.'); return; }
+    if (!name) { showAuthErr('setup-err', 'Full name is required.'); document.getElementById('setup-name').focus(); return; }
+    if (!email) { showAuthErr('setup-err', 'Admin email is required.'); document.getElementById('setup-email').focus(); return; }
+    if (!org) { showAuthErr('setup-err', 'Organization name is required.'); document.getElementById('setup-org').focus(); return; }
     showAuthErr('setup-err', '');
     this.disabled = true;
     var btn = this;
@@ -358,7 +360,7 @@
   }
 
   function onBundleReady() {
-    var hash = window.location.hash.replace('#', '');
+    var hash = window.location.hash.replace('#', '').split('?')[0];
     navigateTo(hash || 'dashboard_list');
   }
 
@@ -366,7 +368,10 @@
   function navigateTo(viewName) {
     if (!bundle) return;
     currentView = viewName;
-    window.location.hash = viewName;
+    // Preserve existing query params in hash if navigating to same view
+    if (window.location.hash.split('?')[0].replace('#', '') !== viewName) {
+      window.location.hash = viewName;
+    }
 
     var items = document.querySelectorAll('#sidebar .nav-item');
     items.forEach(function(el) {
@@ -429,7 +434,7 @@
   // ── Hash routing ──
   window.onhashchange = function() {
     if (!accessToken) return;
-    var hash = window.location.hash.replace('#', '');
+    var hash = window.location.hash.replace('#', '').split('?')[0];
     if (hash && hash !== currentView) navigateTo(hash);
   };
 

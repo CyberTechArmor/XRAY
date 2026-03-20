@@ -4,6 +4,7 @@ import { validateBody, signupSchema, verifySchema, verifyTokenSchema, loginBegin
 import { hashRefreshToken } from '../lib/crypto';
 import { config } from '../config';
 import * as authService from '../services/auth.service';
+import { passkeyRateLimit, magicLinkRateLimit } from '../middleware/rate-limit';
 
 const router = Router();
 
@@ -104,8 +105,8 @@ router.post('/verify-token', async (req, res, next) => {
   }
 });
 
-// POST /login/begin - start passkey auth, return challenge (no auth)
-router.post('/login/begin', async (req, res, next) => {
+// POST /login/begin - start email login, return challenge (no auth)
+router.post('/login/begin', magicLinkRateLimit, async (req, res, next) => {
   try {
     const data = validateBody(loginBeginSchema, req.body);
     const result = await authService.initiateLogin(data.email);
@@ -132,7 +133,7 @@ router.post('/login/complete', async (req, res, next) => {
 });
 
 // POST /passkey/begin - start passkey authentication (no auth)
-router.post('/passkey/begin', async (req, res, next) => {
+router.post('/passkey/begin', passkeyRateLimit, async (req, res, next) => {
   try {
     const result = await authService.beginPasskeyAuth(req.body.email);
     res.json({
@@ -146,7 +147,7 @@ router.post('/passkey/begin', async (req, res, next) => {
 });
 
 // POST /passkey/complete - complete passkey authentication (no auth)
-router.post('/passkey/complete', async (req, res, next) => {
+router.post('/passkey/complete', passkeyRateLimit, async (req, res, next) => {
   try {
     const tokens = await authService.completePasskeyAuth(req.body);
     sendTokenPair(res, tokens, req);
@@ -156,7 +157,7 @@ router.post('/passkey/complete', async (req, res, next) => {
 });
 
 // POST /magic-link - send magic link for login (no auth)
-router.post('/magic-link', async (req, res, next) => {
+router.post('/magic-link', magicLinkRateLimit, async (req, res, next) => {
   try {
     const data = validateBody(magicLinkSchema, req.body);
     const result = await authService.initiateLogin(data.email);

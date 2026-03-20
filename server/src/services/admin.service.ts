@@ -12,9 +12,12 @@ export async function listAllTenants(query: { page: number; limit: number }) {
     const countResult = await client.query('SELECT COUNT(*) FROM platform.tenants');
     const total = parseInt(countResult.rows[0].count, 10);
     const result = await client.query(
-      `SELECT t.*, bs.plan_tier AS plan, bs.dashboard_limit, bs.payment_status
+      `SELECT t.*, bs.plan_tier AS plan, bs.dashboard_limit, bs.payment_status,
+              o.email AS owner_email,
+              (SELECT COUNT(*) FROM platform.users u WHERE u.tenant_id = t.id) AS member_count
        FROM platform.tenants t
        LEFT JOIN platform.billing_state bs ON bs.tenant_id = t.id
+       LEFT JOIN platform.users o ON o.id = t.owner_user_id
        ORDER BY t.created_at DESC LIMIT $1 OFFSET $2`,
       [query.limit, offset]
     );
@@ -94,16 +97,57 @@ export async function updateTenantPlan(tenantId: string, input: {
 
 // ─── Dashboards ───────────────────────────────────────────
 
+export async function listAllDashboards(query: { page: number; limit: number }) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const offset = (query.page - 1) * query.limit;
+    const countResult = await client.query('SELECT COUNT(*) FROM platform.dashboards');
+    const total = parseInt(countResult.rows[0].count, 10);
+    const result = await client.query(
+      `SELECT d.*, t.name AS tenant_name, o.email AS owner_email
+       FROM platform.dashboards d
+       LEFT JOIN platform.tenants t ON t.id = d.tenant_id
+       LEFT JOIN platform.users o ON o.id = t.owner_user_id
+       ORDER BY d.created_at DESC LIMIT $1 OFFSET $2`,
+      [query.limit, offset]
+    );
+    return { data: result.rows, total, page: query.page, limit: query.limit };
+  });
+}
+
+export async function getDashboardDetail(dashboardId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT d.*, t.name AS tenant_name, o.email AS owner_email
+       FROM platform.dashboards d
+       LEFT JOIN platform.tenants t ON t.id = d.tenant_id
+       LEFT JOIN platform.users o ON o.id = t.owner_user_id
+       WHERE d.id = $1`,
+      [dashboardId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
+    return result.rows[0];
+  });
+}
+
 export async function createDashboard(input: {
   tenantId: string; name: string; description?: string;
   viewHtml?: string; viewCss?: string; viewJs?: string;
+  fetchUrl?: string; fetchMethod?: string; fetchHeaders?: Record<string, string>; fetchBody?: unknown;
 }) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.dashboards (tenant_id, name, description, view_html, view_css, view_js)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [input.tenantId, input.name, input.description || null, input.viewHtml || null, input.viewCss || null, input.viewJs || null]
+      `INSERT INTO platform.dashboards (tenant_id, name, description, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [
+        input.tenantId, input.name, input.description || null,
+        input.viewHtml || null, input.viewCss || null, input.viewJs || null,
+        input.fetchUrl || null, input.fetchMethod || 'GET',
+        input.fetchHeaders ? JSON.stringify(input.fetchHeaders) : '{}',
+        input.fetchBody ? JSON.stringify(input.fetchBody) : null,
+      ]
     );
     return result.rows[0];
   });
@@ -118,12 +162,19 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
     const allowedKeys: Record<string, string> = {
       name: 'name', description: 'description', viewHtml: 'view_html',
       viewCss: 'view_css', viewJs: 'view_js', status: 'status',
+      fetchUrl: 'fetch_url', fetchMethod: 'fetch_method',
+      fetchHeaders: 'fetch_headers', fetchBody: 'fetch_body',
     };
     for (const [key, value] of Object.entries(updates)) {
       const col = allowedKeys[key];
       if (col && value !== undefined) {
         fields.push(`${col} = $${idx}`);
-        values.push(value);
+        // JSON fields need stringification
+        if (col === 'fetch_headers' || col === 'fetch_body') {
+          values.push(value ? JSON.stringify(value) : null);
+        } else {
+          values.push(value);
+        }
         idx++;
       }
     }
@@ -139,7 +190,101 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
   });
 }
 
+// ─── Connection Templates ────────────────────────────────
+
+export async function listConnectionTemplates() {
+  return withClient(async (client) => {
+    const result = await client.query('SELECT * FROM platform.connection_templates ORDER BY name');
+    return result.rows;
+  });
+}
+
+export async function createConnectionTemplate(input: {
+  name: string; description?: string; fetchMethod?: string;
+  fetchUrl?: string; fetchHeaders?: Record<string, string>; fetchBody?: unknown;
+}) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `INSERT INTO platform.connection_templates (name, description, fetch_method, fetch_url, fetch_headers, fetch_body)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [
+        input.name, input.description || null, input.fetchMethod || 'GET',
+        input.fetchUrl || null, input.fetchHeaders ? JSON.stringify(input.fetchHeaders) : '{}',
+        input.fetchBody ? JSON.stringify(input.fetchBody) : null,
+      ]
+    );
+    return result.rows[0];
+  });
+}
+
+export async function deleteConnectionTemplate(templateId: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      'DELETE FROM platform.connection_templates WHERE id = $1 RETURNING id',
+      [templateId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Template not found');
+    return { deleted: true };
+  });
+}
+
+// ─── Dashboard Proxy (fetch from n8n) ────────────────────
+
+export async function fetchDashboardContent(dashboardId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body, status FROM platform.dashboards WHERE id = $1',
+      [dashboardId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
+    const dash = result.rows[0];
+    if (!dash.fetch_url) throw new AppError(400, 'NO_CONNECTION', 'Dashboard has no connection URL configured');
+
+    const headers: Record<string, string> = typeof dash.fetch_headers === 'string'
+      ? JSON.parse(dash.fetch_headers) : (dash.fetch_headers || {});
+
+    const fetchOpts: RequestInit = {
+      method: dash.fetch_method || 'GET',
+      headers: { 'Content-Type': 'application/json', ...headers },
+    };
+    if (dash.fetch_body && dash.fetch_method !== 'GET') {
+      fetchOpts.body = typeof dash.fetch_body === 'string' ? dash.fetch_body : JSON.stringify(dash.fetch_body);
+    }
+
+    const response = await fetch(dash.fetch_url, fetchOpts);
+    if (!response.ok) {
+      throw new AppError(502, 'UPSTREAM_ERROR', `Connection returned ${response.status}: ${response.statusText}`);
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      return await response.json();
+    }
+    // Return raw HTML response
+    const html = await response.text();
+    return { html, css: '', js: '' };
+  });
+}
+
 // ─── Connections ──────────────────────────────────────────
+
+export async function listAllConnections(query: { page: number; limit: number }) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const offset = (query.page - 1) * query.limit;
+    const countResult = await client.query('SELECT COUNT(*) FROM platform.connections');
+    const total = parseInt(countResult.rows[0].count, 10);
+    const result = await client.query(
+      `SELECT c.*, t.name AS tenant_name
+       FROM platform.connections c
+       LEFT JOIN platform.tenants t ON t.id = c.tenant_id
+       ORDER BY c.created_at DESC LIMIT $1 OFFSET $2`,
+      [query.limit, offset]
+    );
+    return { data: result.rows, total, page: query.page, limit: query.limit };
+  });
+}
 
 export async function createConnection(input: {
   tenantId: string; name: string; sourceType: string;

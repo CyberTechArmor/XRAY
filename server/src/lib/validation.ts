@@ -67,6 +67,10 @@ export const dashboardCreateSchema = z.object({
   viewHtml: z.string().max(500_000).optional(),
   viewCss: z.string().max(200_000).optional(),
   viewJs: z.string().max(500_000).optional(),
+  fetchUrl: z.string().url().max(2000).optional(),
+  fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
+  fetchHeaders: z.record(z.string()).optional(),
+  fetchBody: z.any().optional(),
 });
 
 export const dashboardUpdateSchema = z.object({
@@ -76,6 +80,19 @@ export const dashboardUpdateSchema = z.object({
   viewCss: z.string().max(200_000).optional(),
   viewJs: z.string().max(500_000).optional(),
   status: z.enum(['draft', 'active', 'archived']).optional(),
+  fetchUrl: z.string().url().max(2000).optional().nullable(),
+  fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
+  fetchHeaders: z.record(z.string()).optional(),
+  fetchBody: z.any().optional(),
+});
+
+export const connectionTemplateCreateSchema = z.object({
+  name: nameSchema,
+  description: z.string().max(1000).optional(),
+  fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
+  fetchUrl: z.string().max(2000).optional(),
+  fetchHeaders: z.record(z.string()).optional(),
+  fetchBody: z.any().optional(),
 });
 
 export const connectionCreateSchema = z.object({
