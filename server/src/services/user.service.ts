@@ -68,7 +68,7 @@ export async function registerPasskey(userId: string) {
   return withClient(async (client) => {
     await bypassRLS(client);
     const userResult = await client.query(
-      'SELECT id, email, name FROM platform.users WHERE id = $1', [userId]
+      'SELECT id, email, name, tenant_id FROM platform.users WHERE id = $1', [userId]
     );
     if (userResult.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
     const user = userResult.rows[0];
@@ -89,6 +89,20 @@ export async function registerPasskey(userId: string) {
       }))
     );
 
+    // Store the challenge in user_sessions so verifyPasskeyRegistration can retrieve it
+    const crypto = await import('crypto');
+    const fakeHash = crypto.randomBytes(32).toString('hex');
+    // Clean up any previous registration challenges for this user
+    await client.query(
+      `DELETE FROM platform.user_sessions WHERE user_id = $1 AND device_info->>'type' = 'passkey_registration'`,
+      [userId]
+    );
+    await client.query(
+      `INSERT INTO platform.user_sessions (user_id, tenant_id, refresh_token_hash, device_info, expires_at)
+       VALUES ($1, $2, $3, $4, now() + interval '5 minutes')`,
+      [userId, user.tenant_id, fakeHash, JSON.stringify({ type: 'passkey_registration', challenge: options.challenge })]
+    );
+
     return options;
   });
 }
@@ -98,8 +112,8 @@ export async function verifyPasskeyRegistration(userId: string, body: unknown) {
     await bypassRLS(client);
     // Retrieve the pending challenge for this user
     const challengeResult = await client.query(
-      `SELECT challenge FROM platform.user_sessions
-       WHERE user_id = $1 AND device_info = 'passkey_registration'
+      `SELECT id, device_info FROM platform.user_sessions
+       WHERE user_id = $1 AND device_info->>'type' = 'passkey_registration' AND expires_at > now()
        ORDER BY created_at DESC LIMIT 1`,
       [userId]
     );
@@ -108,7 +122,7 @@ export async function verifyPasskeyRegistration(userId: string, body: unknown) {
       throw new AppError(400, 'NO_CHALLENGE', 'No pending registration challenge found. Please start registration again.');
     }
 
-    const expectedChallenge = challengeResult.rows[0].challenge;
+    const expectedChallenge = challengeResult.rows[0].device_info.challenge;
     const verification = await webauthn.verifyRegResponse(
       body as import('@simplewebauthn/server/script/deps').RegistrationResponseJSON,
       expectedChallenge
@@ -118,26 +132,30 @@ export async function verifyPasskeyRegistration(userId: string, body: unknown) {
       throw new AppError(400, 'VERIFICATION_FAILED', 'Passkey verification failed');
     }
 
-    const { credentialID, credentialPublicKey, counter, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+    const { credentialID, credentialPublicKey, counter, credentialBackedUp } = verification.registrationInfo;
+
+    // Get user's tenant_id for the passkey record
+    const userRow = await client.query('SELECT tenant_id FROM platform.users WHERE id = $1', [userId]);
+    const tenantId = userRow.rows[0]?.tenant_id;
 
     // Store the new passkey
     await client.query(
       `INSERT INTO platform.user_passkeys
-         (user_id, credential_id, public_key, counter, device_type, backed_up)
+         (user_id, tenant_id, credential_id, public_key, counter, backed_up)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [
         userId,
+        tenantId,
         Buffer.from(credentialID, 'base64url'),
         Buffer.from(credentialPublicKey),
         counter,
-        credentialDeviceType,
         credentialBackedUp,
       ]
     );
 
     // Clean up the registration challenge
     await client.query(
-      `DELETE FROM platform.user_sessions WHERE user_id = $1 AND device_info = 'passkey_registration'`,
+      `DELETE FROM platform.user_sessions WHERE user_id = $1 AND device_info->>'type' = 'passkey_registration'`,
       [userId]
     );
 
