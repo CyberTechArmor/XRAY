@@ -187,4 +187,12 @@ input, select, textarea { font-family: var(--font); }
   .form-grid { grid-template-columns: 1fr !important; }
   /* Dashboard viewer fullscreen */
   .dash-fullview.active { top: 0 !important; z-index: 9999 !important; }
+  /* Hide meet FAB on mobile - use bottom nav Meet button instead */
+  #xray-meet-fab { display: none !important; }
+  /* Ensure mobile nav sits above everything except modals */
+  #mobile-nav { z-index: 9000; -webkit-tap-highlight-color: transparent; }
+  .mob-nav-btn { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+  /* Meet popup mobile adjustments */
+  #xray-meet-popup.mode-start { bottom: 76px; right: 8px; left: 8px; width: auto; }
+  #xray-meet-popup.mode-pip { bottom: 76px; right: 8px; width: calc(100vw - 16px); }
 }

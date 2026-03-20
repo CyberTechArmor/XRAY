@@ -309,6 +309,7 @@
     closeModal();
   }
   document.getElementById('btn-logout').onclick = logout;
+  document.getElementById('header-logo').onclick = function() { if (accessToken) navigateTo('dashboard_list'); };
   window.logout = logout;
   window.getAccessToken = function() { return accessToken; };
 
