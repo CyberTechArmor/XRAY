@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XRay BI</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2308090c'/%3E%3Ctext x='32' y='44' text-anchor='middle' font-family='system-ui,sans-serif' font-weight='700' font-size='36' fill='%233ee8b5'%3EX%3C/text%3E%3C/svg%3E">
 <style>
 :root {
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -413,7 +414,7 @@ input, select, textarea { font-family: var(--font); }
   // ── Enter app ──
   function enterApp() {
     document.getElementById('auth-screen').style.display = 'none';
-    document.getElementById('app-shell').style.display = '';
+    document.getElementById('app-shell').style.display = 'block';
 
     // Load user profile
     api.get('/api/users/me').then(function(d) {
@@ -542,11 +543,22 @@ input, select, textarea { font-family: var(--font); }
       account: 'if(typeof initAccount==="function")initAccount(container,api,user);',
       billing: 'if(typeof initBilling==="function")initBilling(container,api,user);',
       team: 'if(typeof initTeam==="function")initTeam(container,api,user);',
+      dashboard_list: 'if(typeof initDashboardList==="function")initDashboardList(container,api,user);',
+      connections: 'if(typeof initConnections==="function")initConnections(container,api,user);',
+      audit: 'if(typeof initAudit==="function")initAudit(container,api,user);',
+      admin_tenants: 'if(typeof initAdminTenants==="function")initAdminTenants(container,api,user);',
+      admin_dashboards: 'if(typeof initAdminDashboards==="function")initAdminDashboards(container,api,user);',
+      admin_connections: 'if(typeof initAdminConnections==="function")initAdminConnections(container,api,user);',
+      admin_roles: 'if(typeof initAdminRoles==="function")initAdminRoles(container,api,user);',
+      admin_email: 'if(typeof initAdminEmail==="function")initAdminEmail(container,api,user);',
+      admin_bundles: 'if(typeof initAdminBundles==="function")initAdminBundles(container,api,user);',
+      admin_stripe: 'if(typeof initAdminStripe==="function")initAdminStripe(container,api,user);',
       admin_builder: 'if(typeof initBuilder==="function")initBuilder(container,api,user);',
       admin_settings: 'if(typeof initSettings==="function")initSettings(container,api,user);',
       admin_apikeys: 'if(typeof initApiKeys==="function")initApiKeys(container,api,user);',
       admin_meet: 'if(typeof initAdminMeet==="function")initAdminMeet(container,api,user);',
-      admin_webhooks: 'if(typeof initWebhooks==="function")initWebhooks(container,api,user);'
+      admin_webhooks: 'if(typeof initWebhooks==="function")initWebhooks(container,api,user);',
+      admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);'
     };
     return fnMap[viewName] || '';
   }
