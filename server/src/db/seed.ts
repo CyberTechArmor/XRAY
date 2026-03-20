@@ -100,6 +100,7 @@ async function seed() {
         ('platform.name',           'XRay BI', false),
         ('platform.support_email',  NULL, false),
         ('platform.domain',         NULL, false),
+        ('platform.share_domain',   NULL, false),
         ('meet_server_url',         NULL, false),
         ('meet_api_key',            NULL, true)
       ON CONFLICT (key) DO NOTHING;

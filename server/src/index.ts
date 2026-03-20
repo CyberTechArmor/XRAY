@@ -24,6 +24,7 @@ import auditRoutes from './routes/audit.routes';
 import apikeyRoutes from './routes/apikey.routes';
 import webhookRoutes from './routes/webhook.routes';
 import meetRoutes from './routes/meet.routes';
+import shareRoutes from './routes/share.routes';
 
 const app = express();
 
@@ -83,6 +84,19 @@ app.use('/api/audit', auditRoutes);
 app.use('/api/api-keys', apikeyRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/meet', meetRoutes);
+app.use('/api/share', shareRoutes);
+
+// Serve public share page (serves the HTML page for /share/:token)
+app.get('/share/:token', (_req, res) => {
+  const path = require('path');
+  const sharePage = path.resolve(__dirname, '../../frontend/share.html');
+  res.sendFile(sharePage, (err: Error) => {
+    if (err) {
+      // Fallback: redirect to API endpoint
+      res.redirect('/api/share/' + _req.params.token);
+    }
+  });
+});
 
 // Error handler (must be last)
 app.use(errorHandler);

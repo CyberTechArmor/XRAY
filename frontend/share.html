@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared Dashboard — XRay</title>
+<style>
+  :root { --bg:#08090c; --t1:#f0f1f4; --t2:#8e91a0; --acc:#3ee8b5; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--t1); min-height: 100vh; }
+  .share-bar { height: 48px; background: #0f1117; border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; align-items: center; padding: 0 20px; gap: 12px; }
+  .share-bar .logo { font-size: 16px; font-weight: 700; }
+  .share-bar .logo .x { color: #fff; }
+  .share-bar .logo .r { color: var(--acc); }
+  .share-bar .sep { width: 1px; height: 20px; background: rgba(255,255,255,0.1); }
+  .share-bar .dash-name { font-size: 14px; color: var(--t2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .share-bar .badge { font-size: 11px; color: var(--acc); background: rgba(62,232,181,0.08); border: 1px solid rgba(62,232,181,0.2); padding: 3px 10px; border-radius: 12px; }
+  .share-content { width: 100%; height: calc(100vh - 48px); }
+  .share-content iframe { width: 100%; height: 100%; border: none; }
+  .share-loading { display: flex; align-items: center; justify-content: center; height: calc(100vh - 48px); color: var(--t2); gap: 10px; font-size: 14px; }
+  .spinner { width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.06); border-top-color: var(--acc); border-radius: 50%; animation: spin .6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .share-error { display: flex; flex-direction: column; align-items: center; justify-content: center; height: calc(100vh - 48px); color: var(--t2); gap: 12px; font-size: 15px; }
+  .share-error svg { opacity: .3; }
+</style>
+</head>
+<body>
+<div class="share-bar">
+  <div class="logo"><span class="x">X</span><span class="r">Ray</span></div>
+  <div class="sep"></div>
+  <div class="dash-name" id="dash-name"></div>
+  <span class="badge">Shared</span>
+</div>
+<div class="share-content" id="share-content">
+  <div class="share-loading"><div class="spinner"></div> Loading dashboard...</div>
+</div>
+<script>
+(function() {
+  var parts = window.location.pathname.split('/');
+  var token = parts[parts.length - 1];
+  if (!token) { showError('No share token provided'); return; }
+
+  fetch('/api/share/' + encodeURIComponent(token))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d.ok) {
+        showError((d.error && d.error.message) || 'This dashboard is no longer available.');
+        return;
+      }
+      var data = d.data;
+      document.getElementById('dash-name').textContent = data.name || 'Dashboard';
+      document.title = (data.name || 'Dashboard') + ' — XRay';
+      var content = document.getElementById('share-content');
+      var iframe = document.createElement('iframe');
+      iframe.sandbox = 'allow-scripts allow-forms allow-popups allow-same-origin';
+      content.innerHTML = '';
+      content.appendChild(iframe);
+      var doc = iframe.contentDocument || iframe.contentWindow.document;
+      doc.open();
+      doc.write('<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#08090c;color:#f0f1f4}' + (data.css || '') + '</style></head><body>' + (data.html || '') + '<scr' + 'ipt>' + (data.js || '') + '</scr' + 'ipt></body></html>');
+      doc.close();
+    })
+    .catch(function() {
+      showError('Failed to load dashboard. Please try again later.');
+    });
+
+  function showError(msg) {
+    document.getElementById('share-content').innerHTML = '<div class="share-error"><svg viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" fill="none" stroke-width="1"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><p>' + msg + '</p></div>';
+  }
+})();
+</script>
+</body>
+</html>
