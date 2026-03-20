@@ -401,7 +401,7 @@ input, select, textarea { font-family: var(--font); }
     var token = params.get('token');
     if (!token) return false;
     // Clean the URL
-    window.history.replaceState({}, '', window.location.pathname);
+    window.history.replaceState({}, '', window.location.pathname + window.location.hash);
     api.post('/api/auth/verify-token', { token: token }).then(function(d) {
       if (d.ok && d.data && d.data.accessToken) {
         accessToken = d.data.accessToken;
@@ -492,7 +492,7 @@ input, select, textarea { font-family: var(--font); }
   function onBundleReady() {
     // Default view
     var hash = window.location.hash.replace('#', '');
-    navigateTo(hash || 'account');
+    navigateTo(hash || 'dashboard_list');
   }
 
   // ── Navigate to view ──
@@ -588,10 +588,10 @@ input, select, textarea { font-family: var(--font); }
   }
 
   // ── Meet widget loader ──
-  function initMeetWidget() {
+  function loadMeetWidget() {
     if (!bundle || !bundle.views.meet_widget) return;
     var view = bundle.views.meet_widget;
-    if (view.css) {
+    if (view.css && !document.getElementById('meet-widget-style')) {
       var s = document.createElement('style');
       s.id = 'meet-widget-style';
       s.textContent = view.css;
@@ -599,17 +599,26 @@ input, select, textarea { font-family: var(--font); }
     }
     if (view.js) {
       try {
-        var fn = new Function('api', 'user', view.js + '\nif(typeof initMeetWidget==="function")initMeetWidget(api,user);');
+        // Remove existing FAB so it can be re-injected with fresh config
+        var existingFab = document.getElementById('xray-meet-fab');
+        if (existingFab) existingFab.remove();
+        var existingPopup = document.getElementById('xray-meet-popup');
+        if (existingPopup) existingPopup.remove();
+        var fn = new Function('api', 'user', view.js.replace(
+          "if (document.getElementById('xray-meet-fab')) return;", ''
+        ) + '\nif(typeof initMeetWidget==="function")initMeetWidget(api,user);');
         fn(api, currentUser);
       } catch (e) { console.error('Meet widget error:', e); }
     }
   }
+  // Expose refresh hook for admin_meet settings page
+  window.__xrayRefreshMeetWidget = function() { loadMeetWidget(); };
 
   // Patch enterApp to also init meet widget after bundle loads
   var _origOnBundleReady = onBundleReady;
   onBundleReady = function() {
     _origOnBundleReady();
-    initMeetWidget();
+    loadMeetWidget();
   };
 
   init();
