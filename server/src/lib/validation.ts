@@ -71,6 +71,7 @@ export const dashboardCreateSchema = z.object({
   fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
   fetchHeaders: z.record(z.string()).optional(),
   fetchBody: z.any().optional(),
+  tileImageUrl: z.string().url().max(2000).optional(),
 });
 
 export const dashboardUpdateSchema = z.object({
@@ -84,6 +85,7 @@ export const dashboardUpdateSchema = z.object({
   fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
   fetchHeaders: z.record(z.string()).optional(),
   fetchBody: z.any().optional(),
+  tileImageUrl: z.string().url().max(2000).optional().nullable(),
 });
 
 export const connectionTemplateCreateSchema = z.object({
@@ -93,6 +95,10 @@ export const connectionTemplateCreateSchema = z.object({
   fetchUrl: z.string().max(2000).optional(),
   fetchHeaders: z.record(z.string()).optional(),
   fetchBody: z.any().optional(),
+});
+
+export const tenantNoteCreateSchema = z.object({
+  content: z.string().min(1).max(10000),
 });
 
 export const connectionCreateSchema = z.object({

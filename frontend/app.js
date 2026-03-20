@@ -373,6 +373,12 @@
       window.location.hash = viewName;
     }
 
+    // Clear full-viewport dashboard viewer state
+    var hdrTitle = document.getElementById('header-center-title');
+    if (hdrTitle) { hdrTitle.style.display = 'none'; hdrTitle.textContent = ''; }
+    var sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.style.display = '';
+
     var items = document.querySelectorAll('#sidebar .nav-item');
     items.forEach(function(el) {
       el.classList.toggle('active', el.getAttribute('data-view') === viewName);

@@ -154,6 +154,8 @@ CREATE TABLE platform.dashboards (
     fetch_method    TEXT DEFAULT 'GET' CHECK (fetch_method IN ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')),
     fetch_headers   JSONB DEFAULT '{}',
     fetch_body      JSONB,
+    tile_image_url  TEXT,
+    last_viewed_at  TIMESTAMPTZ,
     is_public       BOOLEAN DEFAULT false,
     status          TEXT NOT NULL DEFAULT 'draft'
                     CHECK (status IN ('draft', 'active', 'archived')),
@@ -171,6 +173,16 @@ CREATE TABLE platform.connection_templates (
     fetch_headers   JSONB DEFAULT '{}',
     fetch_body      JSONB,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Tenant notes
+CREATE TABLE platform.tenant_notes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID NOT NULL REFERENCES platform.tenants(id) ON DELETE CASCADE,
+    author_id       UUID NOT NULL REFERENCES platform.users(id),
+    content         TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Dashboard Access

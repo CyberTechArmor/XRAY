@@ -135,18 +135,20 @@ export async function createDashboard(input: {
   tenantId: string; name: string; description?: string;
   viewHtml?: string; viewCss?: string; viewJs?: string;
   fetchUrl?: string; fetchMethod?: string; fetchHeaders?: Record<string, string>; fetchBody?: unknown;
+  tileImageUrl?: string;
 }) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.dashboards (tenant_id, name, description, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      `INSERT INTO platform.dashboards (tenant_id, name, description, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, tile_image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
       [
         input.tenantId, input.name, input.description || null,
         input.viewHtml || null, input.viewCss || null, input.viewJs || null,
         input.fetchUrl || null, input.fetchMethod || 'GET',
         input.fetchHeaders ? JSON.stringify(input.fetchHeaders) : '{}',
         input.fetchBody ? JSON.stringify(input.fetchBody) : null,
+        input.tileImageUrl || null,
       ]
     );
     return result.rows[0];
@@ -164,6 +166,7 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       viewCss: 'view_css', viewJs: 'view_js', status: 'status',
       fetchUrl: 'fetch_url', fetchMethod: 'fetch_method',
       fetchHeaders: 'fetch_headers', fetchBody: 'fetch_body',
+      tileImageUrl: 'tile_image_url',
     };
     for (const [key, value] of Object.entries(updates)) {
       const col = allowedKeys[key];
@@ -341,6 +344,56 @@ export async function registerTable(connectionId: string, input: { tableName: st
       [connectionId, conn.rows[0].tenant_id, input.tableName, input.description || null]
     );
     return result.rows[0];
+  });
+}
+
+// ─── Tenant Notes ────────────────────────────────────────
+
+export async function listTenantNotes(tenantId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT n.*, u.name AS author_name, u.email AS author_email
+       FROM platform.tenant_notes n
+       LEFT JOIN platform.users u ON u.id = n.author_id
+       WHERE n.tenant_id = $1
+       ORDER BY n.created_at DESC`,
+      [tenantId]
+    );
+    return result.rows;
+  });
+}
+
+export async function createTenantNote(tenantId: string, authorId: string, content: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `INSERT INTO platform.tenant_notes (tenant_id, author_id, content) VALUES ($1, $2, $3) RETURNING *`,
+      [tenantId, authorId, content]
+    );
+    return result.rows[0];
+  });
+}
+
+export async function updateTenantNote(noteId: string, content: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `UPDATE platform.tenant_notes SET content = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [content, noteId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Note not found');
+    return result.rows[0];
+  });
+}
+
+export async function deleteTenantNote(noteId: string) {
+  return withClient(async (client) => {
+    const result = await client.query(
+      'DELETE FROM platform.tenant_notes WHERE id = $1 RETURNING id',
+      [noteId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Note not found');
+    return { deleted: true };
   });
 }
 

@@ -11,6 +11,7 @@ import {
   connectionUpdateSchema,
   connectionTableCreateSchema,
   connectionTemplateCreateSchema,
+  tenantNoteCreateSchema,
   settingsUpdateSchema,
   emailTemplateUpdateSchema,
   paginationSchema,
@@ -255,6 +256,64 @@ router.post('/connections/:id/tables', async (req, res, next) => {
     const data = validateBody(connectionTableCreateSchema, req.body);
     const result = await adminService.registerTable(req.params.id, data);
     res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /tenants/:id/notes - list notes for a tenant
+router.get('/tenants/:id/notes', async (req, res, next) => {
+  try {
+    const result = await adminService.listTenantNotes(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /tenants/:id/notes - add a note
+router.post('/tenants/:id/notes', async (req, res, next) => {
+  try {
+    const data = validateBody(tenantNoteCreateSchema, req.body);
+    const result = await adminService.createTenantNote(req.params.id, req.user!.sub, data.content);
+    res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /tenants/:id/notes/:noteId - edit a note
+router.patch('/tenants/:id/notes/:noteId', async (req, res, next) => {
+  try {
+    const data = validateBody(tenantNoteCreateSchema, req.body);
+    const result = await adminService.updateTenantNote(req.params.noteId, data.content);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /tenants/:id/notes/:noteId - delete a note
+router.delete('/tenants/:id/notes/:noteId', async (req, res, next) => {
+  try {
+    const result = await adminService.deleteTenantNote(req.params.noteId);
+    res.json({
       ok: true,
       data: result,
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },

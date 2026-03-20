@@ -83,7 +83,7 @@ input, select, textarea { font-family: var(--font); }
 
 /* ── App layout ── */
 #app-shell { display: none; height: 100vh; overflow: hidden; }
-#app-header { height: var(--header-h); background: var(--bg2); border-bottom: 1px solid var(--bdr); display: flex; align-items: center; padding: 0 20px; gap: 16px; z-index: 100; }
+#app-header { height: var(--header-h); background: var(--bg2); border-bottom: 1px solid var(--bdr); display: flex; align-items: center; padding: 0 20px; gap: 16px; z-index: 100; position: relative; }
 #app-header .logo { font-size: 18px; font-weight: 700; letter-spacing: -.02em; flex-shrink: 0; }
 #app-header .spacer { flex: 1; }
 #app-header .user-menu { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--t2); }

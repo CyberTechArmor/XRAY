@@ -10,6 +10,12 @@ interface Dashboard {
   view_html: string | null;
   view_css: string | null;
   view_js: string | null;
+  fetch_url: string | null;
+  fetch_method: string | null;
+  fetch_headers: Record<string, string> | null;
+  fetch_body: unknown;
+  tile_image_url: string | null;
+  last_viewed_at: string | null;
   is_public: boolean;
   status: string;
   created_at: string;
