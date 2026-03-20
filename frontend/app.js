@@ -212,6 +212,13 @@
     }).catch(function() { btn.disabled = false; showAuthErr('signup-err', 'Network error.'); });
   };
 
+  // Signup Enter key
+  ['signup-name', 'signup-email', 'signup-org'].forEach(function(id) {
+    document.getElementById(id).onkeydown = function(e) {
+      if (e.key === 'Enter') document.getElementById('btn-signup').click();
+    };
+  });
+
   // First-boot setup
   document.getElementById('btn-setup').onclick = function() {
     var name = document.getElementById('setup-name').value.trim();
@@ -228,6 +235,13 @@
       enterApp();
     }).catch(function() { btn.disabled = false; showAuthErr('setup-err', 'Network error.'); });
   };
+
+  // Setup Enter key
+  ['setup-name', 'setup-email', 'setup-org'].forEach(function(id) {
+    document.getElementById(id).onkeydown = function(e) {
+      if (e.key === 'Enter') document.getElementById('btn-setup').click();
+    };
+  });
 
   // Verify
   document.getElementById('btn-verify').onclick = function() {

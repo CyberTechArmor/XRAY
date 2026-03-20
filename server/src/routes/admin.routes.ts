@@ -252,9 +252,9 @@ router.post('/email/test', async (req, res, next) => {
 
     await sendEmail({
       to: recipientEmail,
-      subject: 'XRay BI — Test Email',
-      html: '<h2>Test Email</h2><p>This is a test email from your XRay BI platform. If you received this, your SMTP configuration is working correctly.</p><p style="color:#666;font-size:12px">Sent at ' + new Date().toISOString() + '</p>',
-      text: 'Test Email\n\nThis is a test email from your XRay BI platform. If you received this, your SMTP configuration is working correctly.\n\nSent at ' + new Date().toISOString(),
+      subject: 'XRay — Test Email',
+      html: '<h2>Test Email</h2><p>This is a test email from your XRay platform. If you received this, your SMTP configuration is working correctly.</p><p style="color:#666;font-size:12px">Sent at ' + new Date().toISOString() + '</p>',
+      text: 'Test Email\n\nThis is a test email from your XRay platform. If you received this, your SMTP configuration is working correctly.\n\nSent at ' + new Date().toISOString(),
     });
 
     res.json({

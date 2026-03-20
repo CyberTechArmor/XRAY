@@ -1,6 +1,7 @@
 import { withClient, withTransaction } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { encrypt } from '../lib/crypto';
+import { refreshCache as refreshSettingsCache } from './settings.service';
 import * as auditService from './audit.service';
 
 // ─── Tenants ──────────────────────────────────────────────
@@ -231,6 +232,8 @@ export async function updateSettings(updates: Record<string, string | null>) {
     }
     return { updated: Object.keys(updates).length };
   });
+  // Invalidate settings cache so getSmtpConfig etc. pick up new values immediately
+  await refreshSettingsCache();
 }
 
 // ─── Email Templates ─────────────────────────────────────

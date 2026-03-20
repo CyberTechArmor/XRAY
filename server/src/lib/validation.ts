@@ -49,13 +49,15 @@ export const roleCreateSchema = z.object({
   name: nameSchema,
   slug: slugSchema,
   description: z.string().max(500).optional(),
-  permissionIds: z.array(uuidSchema),
+  permissionIds: z.array(uuidSchema).optional(),
+  permissions: z.array(z.string().min(1).max(100)).optional(),
 });
 
 export const roleUpdateSchema = z.object({
   name: nameSchema.optional(),
   description: z.string().max(500).optional(),
   permissionIds: z.array(uuidSchema).optional(),
+  permissions: z.array(z.string().min(1).max(100)).optional(),
 });
 
 export const dashboardCreateSchema = z.object({
