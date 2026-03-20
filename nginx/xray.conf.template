@@ -66,9 +66,10 @@ server {
         add_header Expires "0";
     }
 
-    # Cache bundles
+    # Cache bundles (no-cache ensures revalidation on each request)
     location /bundles/ {
-        add_header Cache-Control "public, max-age=3600, immutable";
+        add_header Cache-Control "no-cache";
+        etag on;
     }
 
     # API: auth routes (strict rate limit)

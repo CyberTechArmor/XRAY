@@ -484,7 +484,7 @@ input, select, textarea { font-family: var(--font); }
   // ── Load bundle ──
   function loadBundle() {
     if (bundle) { onBundleReady(); return; }
-    fetch('/bundles/general.json').then(function(r) { return r.json(); })
+    fetch('/bundles/general.json?v=' + Date.now()).then(function(r) { return r.json(); })
       .then(function(d) { bundle = d; buildSidebar(); onBundleReady(); })
       .catch(function() { toast('Failed to load UI bundle', 'error'); });
   }
