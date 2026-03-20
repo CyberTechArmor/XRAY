@@ -277,9 +277,11 @@ rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
 # Deploy frontend static files
 mkdir -p /var/www/xray/bundles
-if [ -f "$SCRIPT_DIR/frontend/index.html" ]; then
-  cp "$SCRIPT_DIR/frontend/index.html" /var/www/xray/
-fi
+for f in index.html app.css app.js landing.css landing.js; do
+  if [ -f "$SCRIPT_DIR/frontend/$f" ]; then
+    cp "$SCRIPT_DIR/frontend/$f" /var/www/xray/
+  fi
+done
 if [ -d "$SCRIPT_DIR/frontend/bundles" ]; then
   cp "$SCRIPT_DIR/frontend/bundles/"* /var/www/xray/bundles/
 fi
