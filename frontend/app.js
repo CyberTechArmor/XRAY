@@ -459,7 +459,7 @@
   function loadBundle() {
     if (bundle) { onBundleReady(); return; }
     fetch('/bundles/general.json?v=' + Date.now()).then(function(r) { return r.json(); })
-      .then(function(d) { bundle = d; buildSidebar(); onBundleReady(); })
+      .then(function(d) { bundle = d; buildSidebar(); buildMobileNav(); onBundleReady(); })
       .catch(function() { toast('Failed to load UI bundle', 'error'); });
   }
 
@@ -481,7 +481,7 @@
     var hdrTitle = document.getElementById('header-center-title');
     if (hdrTitle) { hdrTitle.style.display = 'none'; hdrTitle.textContent = ''; }
     var sidebar = document.getElementById('sidebar');
-    if (sidebar) sidebar.style.display = '';
+    if (sidebar) { sidebar.style.display = ''; if (sidebar.dataset.dashCollapsed) { sidebar.classList.remove('collapsed'); delete sidebar.dataset.dashCollapsed; } }
 
     var items = document.querySelectorAll('#sidebar .nav-item');
     items.forEach(function(el) {

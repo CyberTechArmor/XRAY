@@ -72,13 +72,14 @@ router.get('/tenants/:id', async (req, res, next) => {
 // PATCH /tenants/:id/plan - manually set tenant plan tier (super admin override)
 router.patch('/tenants/:id/plan', async (req, res, next) => {
   try {
-    const { planTier, dashboardLimit, paymentStatus } = req.body;
+    const { planTier, dashboardLimit, connectorLimit, paymentStatus } = req.body;
     if (!planTier) {
       return res.status(400).json({ ok: false, error: { code: 'MISSING_FIELD', message: 'planTier is required' } });
     }
     const result = await adminService.updateTenantPlan(req.params.id, {
       planTier,
       dashboardLimit: dashboardLimit !== undefined ? dashboardLimit : undefined,
+      connectorLimit: connectorLimit !== undefined ? connectorLimit : undefined,
       paymentStatus: paymentStatus || undefined,
     });
     res.json({

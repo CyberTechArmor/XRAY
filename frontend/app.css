@@ -363,7 +363,7 @@ input, select, textarea { font-family: var(--font); }
   /* Form grids stack */
   .form-grid { grid-template-columns: 1fr !important; }
   /* Dashboard viewer fullscreen */
-  .dash-fullview.active { top: 0 !important; z-index: 9999 !important; }
+  .dash-fullview.active { top: var(--header-h, 48px) !important; left: 0 !important; bottom: 64px !important; z-index: 80 !important; }
   /* Ensure mobile nav sits above everything except modals */
   #mobile-nav { z-index: 9000; -webkit-tap-highlight-color: transparent; }
   .mob-nav-btn { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }

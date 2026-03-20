@@ -261,6 +261,7 @@ CREATE TABLE platform.billing_state (
     plan_tier               TEXT NOT NULL DEFAULT 'free'
                             CHECK (plan_tier IN ('free', 'starter', 'professional')),
     dashboard_limit         INTEGER NOT NULL DEFAULT 0,
+    connector_limit         INTEGER NOT NULL DEFAULT 0,
     current_period_end      TIMESTAMPTZ,
     payment_status          TEXT DEFAULT 'none'
                             CHECK (payment_status IN ('none', 'active', 'past_due',
