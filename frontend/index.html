@@ -708,6 +708,8 @@ input, select, textarea { font-family: var(--font); }
       // Check if platform needs first-boot setup
       fetch('/api/auth/setup').then(function(r) { return r.json(); }).then(function(d) {
         if (d.ok && d.data && d.data.setupRequired) {
+          document.getElementById('landing-screen').style.display = 'none';
+          document.getElementById('auth-screen').style.display = '';
           showForm('setup');
         }
       }).catch(function() {});
