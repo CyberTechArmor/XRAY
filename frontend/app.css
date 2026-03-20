@@ -89,9 +89,19 @@ input, select, textarea { font-family: var(--font); }
 #app-header .user-menu { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--t2); }
 #app-header .user-menu button { background: none; border: none; color: var(--t2); font-size: 13px; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
 #app-header .user-menu button:hover { color: var(--t1); background: var(--bg4); }
+#app-header .meet-btn { color: var(--acc); display: flex; align-items: center; gap: 4px; }
+#app-header .meet-btn:hover { background: var(--acc-dim); color: var(--acc); }
 
 #app-body { display: flex; height: calc(100vh - var(--header-h)); }
-#sidebar { width: var(--sidebar-w); background: var(--bg2); border-right: 1px solid var(--bdr); overflow-y: auto; flex-shrink: 0; padding: 12px 0; }
+#sidebar { width: var(--sidebar-w); background: var(--bg2); border-right: 1px solid var(--bdr); overflow-y: auto; flex-shrink: 0; padding: 12px 0; transition: width .2s ease, padding .2s ease; }
+#sidebar.collapsed { width: 52px; overflow: hidden; }
+#sidebar.collapsed .nav-section { display: none; }
+#sidebar.collapsed .nav-item span { display: none; }
+#sidebar.collapsed .nav-item { justify-content: center; padding: 9px 0; }
+#sidebar .sidebar-toggle { display: flex; align-items: center; justify-content: flex-end; padding: 4px 12px 8px; }
+#sidebar.collapsed .sidebar-toggle { justify-content: center; padding: 4px 0 8px; }
+#sidebar .sidebar-toggle button { background: none; border: none; color: var(--t3); cursor: pointer; padding: 4px; border-radius: 4px; display: flex; }
+#sidebar .sidebar-toggle button:hover { color: var(--t1); background: var(--bg4); }
 #sidebar .nav-section { padding: 6px 16px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--t3); margin-top: 12px; }
 #sidebar .nav-section:first-child { margin-top: 0; }
 #sidebar .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 16px; font-size: 14px; color: var(--t2); cursor: pointer; transition: all .12s; border-radius: 0; }

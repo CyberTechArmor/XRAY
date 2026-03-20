@@ -17,6 +17,7 @@ import {
   paginationSchema,
 } from '../lib/validation';
 import * as adminService from '../services/admin.service';
+import * as auditService from '../services/audit.service';
 
 const router = Router();
 
@@ -317,6 +318,24 @@ router.delete('/tenants/:id/notes/:noteId', async (req, res, next) => {
       ok: true,
       data: result,
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /audit - platform-wide audit log
+router.get('/audit', async (req, res, next) => {
+  try {
+    const page = parseInt(req.query.page as string, 10) || 1;
+    const limit = parseInt(req.query.limit as string, 10) || 50;
+    const action = req.query.action as string | undefined;
+    const resourceType = req.query.resourceType as string | undefined;
+    const result = await auditService.queryAll({ page, limit, action, resourceType });
+    res.json({
+      ok: true,
+      data: result.data,
+      meta: { total: result.total, page: result.page, limit: result.limit, request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {
     next(err);

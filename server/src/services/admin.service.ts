@@ -40,6 +40,7 @@ export async function createTenant(input: { name: string; slug: string }) {
        VALUES ($1, 'free', 0, 'none')`,
       [tenant.id]
     );
+    auditService.log({ tenantId: tenant.id, action: 'tenant.create', resourceType: 'tenant', resourceId: tenant.id, metadata: { name: input.name, slug: input.slug } });
     return tenant;
   });
 }
@@ -91,6 +92,7 @@ export async function updateTenantPlan(tenantId: string, input: {
       [tenantId, input.planTier, input.dashboardLimit ?? null, input.paymentStatus ?? 'active']
     );
 
+    auditService.log({ tenantId, action: 'tenant.plan_update', resourceType: 'tenant', resourceId: tenantId, metadata: { planTier: input.planTier, dashboardLimit: input.dashboardLimit, paymentStatus: input.paymentStatus } });
     return result.rows[0];
   });
 }
@@ -151,7 +153,9 @@ export async function createDashboard(input: {
         input.tileImageUrl || null,
       ]
     );
-    return result.rows[0];
+    const dash = result.rows[0];
+    auditService.log({ tenantId: input.tenantId, action: 'dashboard.create', resourceType: 'dashboard', resourceId: dash.id, metadata: { name: input.name } });
+    return dash;
   });
 }
 
@@ -189,7 +193,9 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       values
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
-    return result.rows[0];
+    const dash = result.rows[0];
+    auditService.log({ tenantId: dash.tenant_id, action: 'dashboard.update', resourceType: 'dashboard', resourceId: dashboardId, metadata: { fields: Object.keys(updates) } });
+    return dash;
   });
 }
 
@@ -216,7 +222,9 @@ export async function createConnectionTemplate(input: {
         input.fetchBody ? JSON.stringify(input.fetchBody) : null,
       ]
     );
-    return result.rows[0];
+    const tmpl = result.rows[0];
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'connection_template.create', resourceType: 'connection_template', resourceId: tmpl.id, metadata: { name: input.name } });
+    return tmpl;
   });
 }
 
@@ -227,6 +235,7 @@ export async function deleteConnectionTemplate(templateId: string) {
       [templateId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Template not found');
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'connection_template.delete', resourceType: 'connection_template', resourceId: templateId });
     return { deleted: true };
   });
 }
@@ -300,7 +309,9 @@ export async function createConnection(input: {
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
       [input.tenantId, input.name, input.sourceType, input.sourceDetail || null, input.pipelineRef || null]
     );
-    return result.rows[0];
+    const conn = result.rows[0];
+    auditService.log({ tenantId: input.tenantId, action: 'connection.create', resourceType: 'connection', resourceId: conn.id, metadata: { name: input.name, sourceType: input.sourceType } });
+    return conn;
   });
 }
 
@@ -329,7 +340,9 @@ export async function updateConnection(connectionId: string, updates: Record<str
       values
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
-    return result.rows[0];
+    const conn = result.rows[0];
+    auditService.log({ tenantId: conn.tenant_id, action: 'connection.update', resourceType: 'connection', resourceId: connectionId, metadata: { fields: Object.keys(updates) } });
+    return conn;
   });
 }
 
@@ -371,7 +384,9 @@ export async function createTenantNote(tenantId: string, authorId: string, conte
       `INSERT INTO platform.tenant_notes (tenant_id, author_id, content) VALUES ($1, $2, $3) RETURNING *`,
       [tenantId, authorId, content]
     );
-    return result.rows[0];
+    const note = result.rows[0];
+    auditService.log({ tenantId, userId: authorId, action: 'tenant_note.create', resourceType: 'tenant_note', resourceId: note.id });
+    return note;
   });
 }
 
@@ -382,7 +397,9 @@ export async function updateTenantNote(noteId: string, content: string) {
       [content, noteId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Note not found');
-    return result.rows[0];
+    const note = result.rows[0];
+    auditService.log({ tenantId: note.tenant_id, action: 'tenant_note.update', resourceType: 'tenant_note', resourceId: noteId });
+    return note;
   });
 }
 
@@ -393,6 +410,7 @@ export async function deleteTenantNote(noteId: string) {
       [noteId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Note not found');
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'tenant_note.delete', resourceType: 'tenant_note', resourceId: noteId });
     return { deleted: true };
   });
 }
@@ -428,6 +446,7 @@ export async function updateSettings(updates: Record<string, string | null>) {
         [key, storedValue]
       );
     }
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'settings.update', resourceType: 'settings', metadata: { keys: Object.keys(updates) } });
     return { updated: Object.keys(updates).length };
   });
   // Invalidate settings cache so getSmtpConfig etc. pick up new values immediately
@@ -461,6 +480,7 @@ export async function updateEmailTemplate(templateKey: string, updates: {
       values
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Template not found');
+    auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'email_template.update', resourceType: 'email_template', resourceId: templateKey, metadata: { fields: Object.keys(updates) } });
     return result.rows[0];
   });
 }

@@ -717,8 +717,10 @@ export async function beginPasskeyAuth(email?: string): Promise<unknown> {
 export async function completePasskeyAuth(body: any): Promise<{ accessToken: string; refreshToken: string; sessionId: string }> {
   const webauthn = await import('../lib/webauthn');
 
-  // Find the credential
+  // Find the credential - convert base64url to base64 with proper padding
   const credentialId = body.id;
+  let b64 = credentialId.replace(/-/g, '+').replace(/_/g, '/');
+  while (b64.length % 4) b64 += '=';
 
   const credential = await withClient(async (client) => {
     const result = await client.query(
@@ -727,7 +729,7 @@ export async function completePasskeyAuth(body: any): Promise<{ accessToken: str
        JOIN platform.users u ON u.id = p.user_id
        WHERE p.credential_id = decode($1, 'base64')
        AND u.status = 'active'`,
-      [credentialId.replace(/-/g, '+').replace(/_/g, '/')]
+      [b64]
     );
     return result.rows[0];
   });
@@ -746,15 +748,18 @@ export async function completePasskeyAuth(body: any): Promise<{ accessToken: str
     return result.rows;
   });
 
-  let expectedChallenge: string | null = null;
+  if (challengeData.length === 0) {
+    throw new AppError(401, 'NO_CHALLENGE', 'No active passkey challenge found. Please try again.');
+  }
+
   for (const row of challengeData) {
     try {
       const parsed = JSON.parse(row.value);
-      expectedChallenge = parsed.challenge;
-      // Try verification with this challenge
+      const expectedChallenge = parsed.challenge;
+      // Map DB snake_case to StoredPasskey interface camelCase
       const verification = await webauthn.verifyAuthResponse(
         body,
-        expectedChallenge!,
+        expectedChallenge,
         {
           credentialId: credential.credential_id,
           publicKey: credential.public_key,

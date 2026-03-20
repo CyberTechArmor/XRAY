@@ -320,6 +320,24 @@
     if (currentUser && currentUser.permissions) userPerms = currentUser.permissions;
     var isAdmin = currentUser && currentUser.is_platform_admin;
 
+    // Add collapse toggle at top
+    var toggleWrap = document.createElement('div');
+    toggleWrap.className = 'sidebar-toggle';
+    var toggleBtn = document.createElement('button');
+    toggleBtn.title = 'Toggle sidebar';
+    toggleBtn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>';
+    toggleBtn.onclick = function() {
+      sidebar.classList.toggle('collapsed');
+      try { localStorage.setItem('xray_sidebar', sidebar.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
+    };
+    toggleWrap.appendChild(toggleBtn);
+    sidebar.appendChild(toggleWrap);
+
+    // Restore collapse state
+    try {
+      if (localStorage.getItem('xray_sidebar') === '1') sidebar.classList.add('collapsed');
+    } catch(e) {}
+
     bundle.nav.forEach(function(item) {
       if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
       var sec = item.section || 'main';
@@ -349,6 +367,20 @@
         sidebar.appendChild(el);
       });
     });
+
+    // Show MEET header button if configured
+    var meetBtn = document.getElementById('btn-meet-header');
+    if (meetBtn) {
+      api.get('/api/meet/config').then(function(r) {
+        if (r.ok && r.data && r.data.configured) {
+          meetBtn.style.display = '';
+          meetBtn.onclick = function() {
+            var fab = document.getElementById('xray-meet-fab');
+            if (fab) fab.click();
+          };
+        }
+      }).catch(function() {});
+    }
   }
 
   // ── Load bundle ──
