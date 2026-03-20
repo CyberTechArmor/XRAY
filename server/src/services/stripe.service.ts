@@ -287,4 +287,154 @@ export async function createPortalSession(
   return { url: session.url };
 }
 
+export async function getBillingStatus(tenantId: string): Promise<{
+  plan: string;
+  status: string;
+  currentPeriodEnd: string | null;
+  dashboardLimit: number;
+  subscriptions: Array<{
+    id: string;
+    productId: string;
+    productName: string;
+    status: string;
+    quantity: number;
+    currentPeriodEnd: string | null;
+    cancelAtPeriodEnd: boolean;
+  }>;
+  invoices: Array<{
+    id: string;
+    amount: number;
+    currency: string;
+    status: string;
+    created: string;
+    pdfUrl: string | null;
+  }>;
+}> {
+  const billingState = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'SELECT * FROM platform.billing_state WHERE tenant_id = $1',
+      [tenantId]
+    );
+    return result.rows[0] || null;
+  });
+
+  const tenant = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query('SELECT stripe_customer_id FROM platform.tenants WHERE id = $1', [tenantId]);
+    return result.rows[0];
+  });
+
+  const base = {
+    plan: billingState?.plan_tier || 'free',
+    status: billingState?.payment_status || 'none',
+    currentPeriodEnd: billingState?.current_period_end || null,
+    dashboardLimit: billingState?.dashboard_limit || 0,
+    subscriptions: [] as any[],
+    invoices: [] as any[],
+  };
+
+  // If we have a Stripe customer, fetch live data from Stripe
+  if (tenant?.stripe_customer_id) {
+    try {
+      const stripe = getStripeClient();
+
+      // Fetch active subscriptions
+      const subs = await stripe.subscriptions.list({
+        customer: tenant.stripe_customer_id,
+        status: 'all',
+        limit: 20,
+        expand: ['data.items.data.price.product'],
+      });
+
+      base.subscriptions = subs.data.map((sub) => {
+        const item = sub.items.data[0];
+        const product = item?.price?.product;
+        const productObj = typeof product === 'object' && product !== null ? product as Stripe.Product : null;
+        return {
+          id: sub.id,
+          productId: productObj?.id || (typeof product === 'string' ? product : ''),
+          productName: productObj?.name || 'Subscription',
+          status: sub.status,
+          quantity: item?.quantity || 1,
+          currentPeriodEnd: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
+          cancelAtPeriodEnd: sub.cancel_at_period_end,
+        };
+      });
+
+      // Fetch recent invoices
+      const invs = await stripe.invoices.list({
+        customer: tenant.stripe_customer_id,
+        limit: 10,
+      });
+
+      base.invoices = invs.data.map((inv) => ({
+        id: inv.id,
+        amount: inv.amount_paid || 0,
+        currency: inv.currency || 'usd',
+        status: inv.status || 'unknown',
+        created: new Date((inv.created || 0) * 1000).toISOString(),
+        pdfUrl: inv.invoice_pdf || null,
+      }));
+
+      // Update local billing state from Stripe data
+      const activeSubs = subs.data.filter((s) => s.status === 'active' || s.status === 'trialing');
+      if (activeSubs.length > 0) {
+        base.status = 'active';
+      }
+    } catch (err) {
+      console.error('Failed to fetch Stripe data:', err);
+      // Return local billing state if Stripe API fails
+    }
+  }
+
+  return base;
+}
+
+export async function createCheckoutSession(
+  tenantId: string,
+  stripeCustomerId: string | null,
+  items: Array<{ productId: string; quantity: number }>,
+  returnUrl: string,
+  customerEmail?: string
+): Promise<{ url: string; sessionId: string }> {
+  const stripe = getStripeClient();
+
+  // Resolve product prices from Stripe
+  const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [];
+  for (const item of items) {
+    // Get the default price for each product
+    const prices = await stripe.prices.list({
+      product: item.productId,
+      active: true,
+      limit: 1,
+    });
+    if (prices.data.length === 0) {
+      throw new AppError(400, 'NO_PRICE', `No active price found for product ${item.productId}`);
+    }
+    lineItems.push({
+      price: prices.data[0].id,
+      quantity: item.quantity,
+    });
+  }
+
+  const params: Stripe.Checkout.SessionCreateParams = {
+    mode: 'subscription',
+    line_items: lineItems,
+    success_url: `${returnUrl}?checkout=success`,
+    cancel_url: `${returnUrl}?checkout=cancelled`,
+    metadata: { tenant_id: tenantId },
+    subscription_data: { metadata: { tenant_id: tenantId } },
+  };
+
+  if (stripeCustomerId) {
+    params.customer = stripeCustomerId;
+  } else if (customerEmail) {
+    params.customer_email = customerEmail;
+  }
+
+  const session = await stripe.checkout.sessions.create(params);
+  return { url: session.url!, sessionId: session.id };
+}
+
 export { getStripeConfig };

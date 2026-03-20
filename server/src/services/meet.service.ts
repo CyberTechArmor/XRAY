@@ -72,6 +72,15 @@ export async function createRoom(options: {
   return { room, joinUrl };
 }
 
+export async function getUserDisplayName(userId: string): Promise<string | null> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query('SELECT name, email FROM platform.users WHERE id = $1', [userId]);
+    if (result.rows.length === 0) return null;
+    return result.rows[0].name || result.rows[0].email;
+  });
+}
+
 export function getJoinUrl(serverUrl: string, roomName: string, participantName?: string): string {
   const params = new URLSearchParams({ room: roomName });
   if (participantName) params.set('name', participantName);

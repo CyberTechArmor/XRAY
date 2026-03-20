@@ -81,6 +81,9 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
         ? dashboard.fetch_body : JSON.stringify(dashboard.fetch_body);
     }
 
+    // 90-second timeout for upstream fetches (some data flows take time)
+    fetchOpts.signal = AbortSignal.timeout(90_000);
+
     const response = await fetch(dashboard.fetch_url, fetchOpts);
     if (!response.ok) {
       return res.status(502).json({ ok: false, error: { code: 'UPSTREAM_ERROR', message: `Connection returned ${response.status}` } });
