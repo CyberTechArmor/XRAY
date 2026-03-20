@@ -8,6 +8,7 @@
   var currentView = null;
   var pendingEmail = null;
   var pendingFlow = null; // 'login' | 'signup'
+  window.__pendingFlow = null;
 
   // ── Icons (simple SVG paths) ──
   var icons = {
@@ -84,26 +85,14 @@
   // ── Auth UI ──
   function showAuthErr(formId, msg) {
     var el = document.getElementById(formId);
+    if (!el) return;
     el.textContent = msg;
     el.style.display = msg ? '' : 'none';
   }
 
-  // Expose showForm globally so landing.js can call it
-  window.showForm = function showForm(name) {
-    document.getElementById('auth-login').style.display = name === 'login' ? '' : 'none';
-    document.getElementById('auth-signup').style.display = name === 'signup' ? '' : 'none';
-    document.getElementById('auth-setup').style.display = name === 'setup' ? '' : 'none';
-    document.getElementById('auth-verify').style.display = name === 'verify' ? '' : 'none';
-  };
-  var showForm = window.showForm;
-
-  document.getElementById('show-signup').onclick = function(e) { e.preventDefault(); showForm('signup'); };
-  document.getElementById('show-login').onclick = function(e) { e.preventDefault(); showForm('login'); };
-  document.getElementById('verify-back').onclick = function(e) { e.preventDefault(); showForm(pendingFlow || 'login'); };
-
   // Login
   document.getElementById('btn-login').onclick = function() {
-    var email = document.getElementById('login-email').value.trim();
+    var email = document.getElementById('land-login-email').value.trim();
     if (!email) { showAuthErr('login-err', 'Email is required.'); return; }
     showAuthErr('login-err', '');
     this.disabled = true;
@@ -113,12 +102,13 @@
       if (!d.ok) { showAuthErr('login-err', (d.error && d.error.message) || 'Failed to send code.'); return; }
       pendingEmail = email;
       pendingFlow = 'login';
+      window.__pendingFlow = 'login';
       document.getElementById('verify-sub').textContent = 'We sent a 6-digit code to ' + email;
-      showForm('verify');
+      showLandingForm('verify');
     }).catch(function() { btn.disabled = false; showAuthErr('login-err', 'Network error.'); });
   };
 
-  document.getElementById('login-email').onkeydown = function(e) {
+  document.getElementById('land-login-email').onkeydown = function(e) {
     if (e.key === 'Enter') document.getElementById('btn-login').click();
   };
 
@@ -216,8 +206,9 @@
       if (!d.ok) { showAuthErr('signup-err', (d.error && d.error.message) || 'Signup failed.'); return; }
       pendingEmail = email;
       pendingFlow = 'signup';
+      window.__pendingFlow = 'signup';
       document.getElementById('verify-sub').textContent = 'We sent a 6-digit code to ' + email;
-      showForm('verify');
+      showLandingForm('verify');
     }).catch(function() { btn.disabled = false; showAuthErr('signup-err', 'Network error.'); });
   };
 
@@ -276,7 +267,7 @@
   // ── Enter app ──
   function enterApp() {
     document.getElementById('landing-screen').style.display = 'none';
-    document.getElementById('auth-screen').style.display = 'none';
+    closeModal();
     document.getElementById('app-shell').style.display = 'block';
 
     api.get('/api/users/me').then(function(d) {
@@ -295,9 +286,8 @@
     currentUser = null;
     currentView = null;
     document.getElementById('landing-screen').style.display = '';
-    document.getElementById('auth-screen').style.display = 'none';
     document.getElementById('app-shell').style.display = 'none';
-    showForm('login');
+    closeModal();
   }
   document.getElementById('btn-logout').onclick = logout;
   window.logout = logout;
@@ -437,9 +427,7 @@
       }
       fetch('/api/auth/setup').then(function(r) { return r.json(); }).then(function(d) {
         if (d.ok && d.data && d.data.setupRequired) {
-          document.getElementById('landing-screen').style.display = 'none';
-          document.getElementById('auth-screen').style.display = '';
-          showForm('setup');
+          openModal('setup');
         }
       }).catch(function() {});
     });

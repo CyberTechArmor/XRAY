@@ -3,119 +3,180 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>XRay BI</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231a1a24'/%3E%3Cg transform='translate(32,32)'%3E%3Ccircle r='5' fill='%2334d399'/%3E%3Cpath d='M-4,-6.93 A8,8 0 0,1 4,-6.93 L10,-17.32 A20,20 0 0,0 -10,-17.32Z' fill='%2334d399'/%3E%3Cpath d='M8,0 A8,8 0 0,1 4,6.93 L10,17.32 A20,20 0 0,0 20,0Z' fill='%2334d399'/%3E%3Cpath d='M-4,6.93 A8,8 0 0,1 -8,0 L-20,0 A20,20 0 0,0 -10,17.32Z' fill='%2334d399'/%3E%3C/g%3E%3C/svg%3E">
+<title>XRay by Fractionate — Data tells a story. Find the Break</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2308090c'/><g transform='translate(16,16)'><circle r='2.5' fill='%233ee8b5'/><path d='M-2.2,-3.8L-4.8,-8.3A9.6,9.6,0,0,1,4.8,-8.3L2.2,-3.8A4.4,4.4,0,0,0,-2.2,-3.8Z' fill='%233ee8b5'/><path d='M-2.2,-3.8L-4.8,-8.3A9.6,9.6,0,0,1,4.8,-8.3L2.2,-3.8A4.4,4.4,0,0,0,-2.2,-3.8Z' fill='%233ee8b5' transform='rotate(120)'/><path d='M-2.2,-3.8L-4.8,-8.3A9.6,9.6,0,0,1,4.8,-8.3L2.2,-3.8A4.4,4.4,0,0,0,-2.2,-3.8Z' fill='%233ee8b5' transform='rotate(240)'/></g></svg>">
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="landing.css">
 </head>
 <body>
 
-<!-- ── Landing Screen ── -->
+<!-- ══════════════════════════════════════════ -->
+<!-- ── Landing Screen                       ── -->
+<!-- ══════════════════════════════════════════ -->
 <div id="landing-screen">
-  <div class="landing-particles" id="landing-particles"></div>
-  <div class="landing-glow"></div>
-  <div class="landing-content">
-    <div class="landing-logo">
-      <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
-        <rect width="64" height="64" rx="14" fill="#1a1a24"/>
-        <g transform="translate(32,32)">
-          <circle r="5" fill="#34d399"/>
-          <path d="M-4,-6.93 A8,8 0 0,1 4,-6.93 L10,-17.32 A20,20 0 0,0 -10,-17.32Z" fill="#34d399"/>
-          <path d="M8,0 A8,8 0 0,1 4,6.93 L10,17.32 A20,20 0 0,0 20,0Z" fill="#34d399"/>
-          <path d="M-4,6.93 A8,8 0 0,1 -8,0 L-20,0 A20,20 0 0,0 -10,17.32Z" fill="#34d399"/>
-        </g>
-      </svg>
-    </div>
-    <h1>XRay BI</h1>
-    <p class="landing-sub">See through your data. Modern business intelligence platform with real-time dashboards, secure multi-tenant architecture, and seamless integrations.</p>
-    <div class="landing-actions">
-      <button class="btn primary" id="btn-get-started">Get Started</button>
-      <button class="btn" id="btn-sign-in">Sign In</button>
+
+<!-- Nav -->
+<nav class="land-nav">
+  <a href="#" class="nav-logo">
+    <div class="logo-mark"><svg viewBox="0 0 36 36" fill="none"><rect x=".5" y=".5" width="35" height="35" rx="7" stroke="rgba(255,255,255,0.08)"/><g transform="translate(18,18)"><circle r="2.8" fill="#3ee8b5"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85" transform="rotate(120)"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85" transform="rotate(240)"/></g></svg></div>
+    <div class="logo-text">XRay <span>/ fractionate</span></div>
+  </a>
+  <div class="nav-r">
+    <a href="#pricing" class="nav-link-text">Pricing</a>
+    <a href="#how" class="nav-link-text">How it works</a>
+    <button class="btn-login" onclick="openModal('login')">Sign in</button>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="hero-text">
+    <h1>Data tells a story.</h1>
+    <div class="hero-line2">
+      <span class="acc">Find the Break</span>
+      <span class="hero-pipe">|</span>
+      <button class="btn-set" onclick="openModal('signup')">
+        <svg viewBox="0 0 36 36" fill="none"><g transform="translate(18,18)"><circle r="3" fill="#3ee8b5" class="icon-glow"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" class="icon-glow" opacity=".9"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" class="icon-glow" opacity=".9" transform="rotate(120)"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" class="icon-glow" opacity=".9" transform="rotate(240)"/></g></svg>
+        Set it right
+      </button>
     </div>
   </div>
-</div>
+  <div class="hero-scene">
+    <canvas id="heroCanvas"></canvas>
+    <div class="hero-fade"></div>
+  </div>
+</section>
 
-<!-- ── Auth Screen ── -->
-<div id="auth-screen" style="display:none">
-  <div class="auth-box">
-    <div class="auth-logo">
-      <h1>XRay BI</h1>
-      <p>Business intelligence platform</p>
+<!-- How it works & Pricing -->
+<section class="section" id="how">
+  <div class="sec-label" id="pricing">// How it works &amp; pricing</div>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">01 — Connect</div>
+      <div class="step-icon c1"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></div>
+      <h3>Data connection</h3>
+      <div class="price">$500 <span>one-time</span></div>
+      <p>We plug into your API, CSV, or data model. Set up once, reuse across every dashboard.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">02 — See</div>
+      <div class="step-icon c2"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
+      <h3>Dashboard / Insight</h3>
+      <div class="price">$500 <span>one-time</span></div>
+      <p>A custom view with the diagnostic layer. See the numbers, understand the gap, know what to do.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">03 — Run</div>
+      <div class="step-icon c3"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
+      <h3>Monthly access</h3>
+      <div class="price">$500 <span>/mo &middot; up to 5</span></div>
+      <p>Dashboards always current. Data refreshes, maintenance, and support included.</p>
+      <div class="tier-note">$500/mo &rarr; 1–5 dashboards<br>$1,000/mo &rarr; 6–10 dashboards</div>
+    </div>
+  </div>
+
+  <!-- Calculator -->
+  <div class="calc">
+    <div class="calc-top">
+      <div class="calc-title">Estimate your investment</div>
+      <div class="calc-sub">Adjust the sliders to see setup and ongoing costs.</div>
+    </div>
+    <div class="calc-controls">
+      <div class="ctrl"><label>Data sources <b id="srcVal">2</b></label><input type="range" min="1" max="6" value="2" step="1" id="srcSlider" oninput="updateCalc()"></div>
+      <div class="ctrl"><label>Dashboards <b id="dashVal">4</b></label><input type="range" min="1" max="10" value="4" step="1" id="dashSlider" oninput="updateCalc()"></div>
+      <div class="ctrl"><label>Months <b id="moVal">3</b></label><input type="range" min="1" max="12" value="3" step="1" id="moSlider" oninput="updateCalc()"></div>
+    </div>
+    <div class="calc-viz">
+      <div class="legend">
+        <div class="legend-item"><div class="leg-dot c"></div>Connections</div>
+        <div class="legend-item"><div class="leg-dot d"></div>Dashboards</div>
+        <div class="legend-item"><div class="leg-dot m"></div>Monthly</div>
+      </div>
+      <div class="bars" id="calcBars"></div>
+      <div class="calc-footer">
+        <div class="cf-l"><div class="cf-label">Total investment</div><div class="cf-val" id="calcTotal">$4,500</div></div>
+        <div class="cf-r" id="calcNote"></div>
+      </div>
+    </div>
+  </div>
+  <div class="pause-note">
+    <div class="pause-icon"><svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></div>
+    <p><strong>Pause anytime.</strong> Monthly access runs month-to-month. If you need to pause, all your dashboards and data are saved — just not viewable. Pick up exactly where you left off when you're ready.</p>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="land-footer">
+  <div class="foot-l">&copy; 2026 Fractionate LLC</div>
+  <div class="foot-r"><a href="#">Privacy</a><a href="#">Terms</a><a href="#">Contact</a></div>
+</footer>
+
+</div><!-- /landing-screen -->
+
+
+<!-- ══════════════════════════════════════════ -->
+<!-- ── Auth Modal (overlays landing page)   ── -->
+<!-- ══════════════════════════════════════════ -->
+<div class="land-modal-overlay" id="loginModal" onclick="if(event.target===this)closeModal()">
+  <div class="land-modal">
+    <button class="modal-close" onclick="closeModal()">&times;</button>
+    <div class="land-modal-logo">
+      <svg viewBox="0 0 36 36" fill="none"><rect x=".5" y=".5" width="35" height="35" rx="7" stroke="rgba(255,255,255,0.08)"/><g transform="translate(18,18)"><circle r="2.8" fill="#3ee8b5"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85" transform="rotate(120)"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85" transform="rotate(240)"/></g></svg>
+      <span>XRay</span>
     </div>
 
-    <!-- Sign-in form -->
-    <div id="auth-login" class="auth-card">
-      <h2>Sign in</h2>
-      <div class="sub">Enter your email to receive a sign-in code.</div>
+    <!-- Login form -->
+    <div id="land-login">
+      <h2>Welcome back</h2>
+      <p class="modal-sub">Sign in with your email to continue.</p>
       <div id="login-err" class="auth-err"></div>
       <div id="login-info" class="auth-info"></div>
-      <div class="auth-fg">
-        <label>Email address</label>
-        <input type="email" id="login-email" placeholder="you@company.com" autocomplete="email">
-      </div>
-      <button class="btn primary" id="btn-login">Send sign-in code</button>
-      <div style="position:relative;text-align:center;margin:16px 0"><span style="background:var(--bg2);padding:0 10px;color:var(--t3);font-size:12px;position:relative;z-index:1">or</span><div style="position:absolute;top:50%;left:0;right:0;border-top:1px solid var(--bdr)"></div></div>
-      <button class="btn" id="btn-passkey-login" style="gap:8px"><svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg> Sign in with passkey</button>
-      <div class="auth-toggle">Don't have an account? <a id="show-signup">Sign up</a></div>
+      <div class="fg"><label>Email address</label><input type="email" id="land-login-email" placeholder="you@company.com" autocomplete="email"></div>
+      <button class="btn-p" id="btn-login">Send me a code</button>
+      <div class="m-div"><span>or</span></div>
+      <button class="btn-pk" id="btn-passkey-login"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>Sign in with passkey</button>
+      <div class="m-foot">New to XRay? <a onclick="showLandingForm('signup')">Create an account</a></div>
     </div>
 
     <!-- Signup form -->
-    <div id="auth-signup" class="auth-card" style="display:none">
+    <div id="land-signup" style="display:none">
       <h2>Create account</h2>
-      <div class="sub">Set up your organization on XRay.</div>
+      <p class="modal-sub">Set up your organization on XRay.</p>
       <div id="signup-err" class="auth-err"></div>
-      <div class="auth-fg">
-        <label>Full name</label>
-        <input type="text" id="signup-name" placeholder="Your name" autocomplete="name">
-      </div>
-      <div class="auth-fg">
-        <label>Email address</label>
-        <input type="email" id="signup-email" placeholder="you@company.com" autocomplete="email">
-      </div>
-      <div class="auth-fg">
-        <label>Organization name</label>
-        <input type="text" id="signup-org" placeholder="Acme Inc.">
-      </div>
-      <button class="btn primary" id="btn-signup">Create account</button>
-      <div class="auth-toggle">Already have an account? <a id="show-login">Sign in</a></div>
+      <div class="fg"><label>Full name</label><input type="text" id="signup-name" placeholder="Your name" autocomplete="name"></div>
+      <div class="fg"><label>Email address</label><input type="email" id="signup-email" placeholder="you@company.com" autocomplete="email"></div>
+      <div class="fg"><label>Organization name</label><input type="text" id="signup-org" placeholder="Acme Inc."></div>
+      <button class="btn-p" id="btn-signup">Create account</button>
+      <div class="m-foot">Already have an account? <a onclick="showLandingForm('login')">Sign in</a></div>
     </div>
 
     <!-- First-boot setup form -->
-    <div id="auth-setup" class="auth-card" style="display:none">
+    <div id="land-setup" style="display:none">
       <h2>Platform setup</h2>
-      <div class="sub">Create the first admin account. No email verification required.</div>
+      <p class="modal-sub">Create the first admin account. No email verification required.</p>
       <div id="setup-err" class="auth-err"></div>
-      <div class="auth-fg">
-        <label>Full name</label>
-        <input type="text" id="setup-name" placeholder="Your name" autocomplete="name">
-      </div>
-      <div class="auth-fg">
-        <label>Admin email</label>
-        <input type="email" id="setup-email" placeholder="admin@company.com" autocomplete="email">
-      </div>
-      <div class="auth-fg">
-        <label>Organization name</label>
-        <input type="text" id="setup-org" placeholder="Acme Inc.">
-      </div>
-      <button class="btn primary" id="btn-setup">Create admin account</button>
+      <div class="fg"><label>Full name</label><input type="text" id="setup-name" placeholder="Your name" autocomplete="name"></div>
+      <div class="fg"><label>Admin email</label><input type="email" id="setup-email" placeholder="admin@company.com" autocomplete="email"></div>
+      <div class="fg"><label>Organization name</label><input type="text" id="setup-org" placeholder="Acme Inc."></div>
+      <button class="btn-p" id="btn-setup">Create admin account</button>
     </div>
 
     <!-- Verification form -->
-    <div id="auth-verify" class="auth-card" style="display:none">
+    <div id="land-verify" style="display:none">
       <h2>Check your email</h2>
-      <div class="sub" id="verify-sub">We sent a 6-digit code to your email.</div>
+      <p class="modal-sub" id="verify-sub">We sent a 6-digit code to your email.</p>
       <div id="verify-err" class="auth-err"></div>
-      <div class="auth-fg">
-        <label>Verification code</label>
-        <input type="text" id="verify-code" placeholder="000000" maxlength="6" autocomplete="one-time-code" inputmode="numeric" style="text-align:center;font-size:24px;letter-spacing:.3em">
-      </div>
-      <button class="btn primary" id="btn-verify">Verify</button>
-      <div class="auth-toggle"><a id="verify-back">Back</a></div>
+      <div class="fg"><label>Verification code</label><input type="text" id="verify-code" placeholder="000000" maxlength="6" autocomplete="one-time-code" inputmode="numeric" style="text-align:center;font-size:24px;letter-spacing:.3em"></div>
+      <button class="btn-p" id="btn-verify">Verify</button>
+      <div class="m-foot"><a onclick="showLandingForm(window.__pendingFlow||'login')">Back</a></div>
     </div>
   </div>
 </div>
 
-<!-- ── App Shell ── -->
+
+<!-- ══════════════════════════════════════════ -->
+<!-- ── App Shell (shown after login)        ── -->
+<!-- ══════════════════════════════════════════ -->
 <div id="app-shell">
   <div id="app-header">
     <div class="logo">XRay BI</div>
@@ -135,6 +196,7 @@
 
 <div id="toast-container"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="app.js"></script>
 <script src="landing.js"></script>
 </body>
