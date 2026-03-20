@@ -408,7 +408,8 @@
         var el = document.createElement('div');
         el.className = 'nav-item';
         el.setAttribute('data-view', item.view);
-        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>';
+        var badgeHtml = item.view === 'inbox' ? '<span class="nav-badge" id="inbox-badge" style="display:none"></span>' : '';
+        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>' + badgeHtml;
         el.onclick = function() { navigateTo(item.view); };
         sidebar.appendChild(el);
       });
@@ -416,7 +417,46 @@
 
     // Show MEET header button if configured
     initMeetHeader();
+    // Start inbox unread polling
+    pollInboxUnread();
   }
+
+  // ── Inbox unread count ──
+  var _inboxPollTimer = null;
+  function pollInboxUnread() {
+    if (_inboxPollTimer) clearInterval(_inboxPollTimer);
+    fetchInboxUnread();
+    _inboxPollTimer = setInterval(fetchInboxUnread, 60000); // poll every 60s
+  }
+  function fetchInboxUnread() {
+    if (!accessToken) return;
+    api.get('/api/inbox/unread').then(function(r) {
+      if (!r.ok) return;
+      var count = r.data && r.data.count ? r.data.count : 0;
+      updateInboxBadge(count);
+    }).catch(function() {});
+  }
+  function updateInboxBadge(count) {
+    var badge = document.getElementById('inbox-badge');
+    if (!badge) return;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+    // Also update mobile drawer badge
+    var mobBadge = document.getElementById('mob-inbox-badge');
+    if (mobBadge) {
+      if (count > 0) {
+        mobBadge.textContent = count > 99 ? '99+' : String(count);
+        mobBadge.style.display = '';
+      } else {
+        mobBadge.style.display = 'none';
+      }
+    }
+  }
+  window.__xrayRefreshInbox = function() { fetchInboxUnread(); };
 
   // ── Mobile nav ──
   function buildMobileNav() {
@@ -451,7 +491,8 @@
         var el = document.createElement('div');
         el.className = 'nav-item';
         el.setAttribute('data-view', item.view);
-        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>';
+        var mobBadgeHtml = item.view === 'inbox' ? '<span class="nav-badge" id="mob-inbox-badge" style="display:none"></span>' : '';
+        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>' + mobBadgeHtml;
         el.onclick = function() { closeMobileMenu(); navigateTo(item.view); };
         drawerNav.appendChild(el);
       });

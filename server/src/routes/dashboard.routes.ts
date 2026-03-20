@@ -12,7 +12,7 @@ const router = Router();
 router.get('/', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
   try {
     const hasManage = req.user!.permissions.includes('dashboards.manage') || req.user!.is_platform_admin;
-    const result = await dashboardService.listDashboards(req.user!.tid, req.user!.sub, hasManage);
+    const result = await dashboardService.listDashboards(req.user!.tid, req.user!.sub, hasManage, req.user!.is_platform_admin);
     res.json({
       ok: true,
       data: result,
@@ -45,13 +45,23 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     // Separate SELECT then UPDATE to avoid RLS issues with UPDATE...RETURNING
     const dashboard = await withClient(async (client) => {
       await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-      const result = await client.query(
-        `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body,
-                view_html, view_css, view_js
-         FROM platform.dashboards
-         WHERE id = $1 AND tenant_id = $2 AND status = 'active'`,
-        [req.params.id, req.user!.tid]
-      );
+      // Platform admin can render any dashboard regardless of tenant
+      const query = req.user!.is_platform_admin
+        ? {
+            text: `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body,
+                    view_html, view_css, view_js
+             FROM platform.dashboards
+             WHERE id = $1 AND status = 'active'`,
+            values: [req.params.id],
+          }
+        : {
+            text: `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body,
+                    view_html, view_css, view_js
+             FROM platform.dashboards
+             WHERE id = $1 AND tenant_id = $2 AND status = 'active'`,
+            values: [req.params.id, req.user!.tid],
+          };
+      const result = await client.query(query);
       if (result.rows[0]) {
         client.query(
           `UPDATE platform.dashboards SET last_viewed_at = now() WHERE id = $1`,

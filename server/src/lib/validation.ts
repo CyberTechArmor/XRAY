@@ -30,7 +30,7 @@ export const loginBeginSchema = z.object({
 
 export const invitationCreateSchema = z.object({
   email: emailSchema,
-  roleId: uuidSchema,
+  roleId: uuidSchema.optional(),
   dashboardIds: z.array(uuidSchema).optional().default([]),
 });
 

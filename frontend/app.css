@@ -284,6 +284,7 @@ input, select, textarea { font-family: var(--font); }
 #sidebar .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 16px; font-size: 14px; color: var(--t2); cursor: pointer; transition: all .12s; border-radius: 0; }
 #sidebar .nav-item:hover { background: var(--bg3); color: var(--t1); }
 #sidebar .nav-item.active { background: var(--acc-dim); color: var(--acc); }
+.nav-badge { background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; border-radius: 10px; padding: 1px 6px; margin-left: auto; min-width: 18px; text-align: center; line-height: 16px; }
 #sidebar .nav-item svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 
 #main-content { flex: 1; overflow-y: auto; padding: 28px 32px; }
