@@ -329,6 +329,37 @@ CREATE TABLE platform.webhooks (
 CREATE INDEX idx_webhooks_url_token ON platform.webhooks(url_token) WHERE is_active;
 CREATE INDEX idx_webhooks_connection ON platform.webhooks(connection_id);
 
+-- Inbox Threads
+CREATE TABLE platform.inbox_threads (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject         TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Inbox Thread Participants
+CREATE TABLE platform.inbox_thread_participants (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    thread_id       UUID NOT NULL REFERENCES platform.inbox_threads(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES platform.users(id) ON DELETE CASCADE,
+    is_read         BOOLEAN NOT NULL DEFAULT false,
+    is_starred      BOOLEAN NOT NULL DEFAULT false,
+    UNIQUE (thread_id, user_id)
+);
+
+CREATE INDEX idx_inbox_participants_user ON platform.inbox_thread_participants(user_id, is_read);
+
+-- Inbox Messages
+CREATE TABLE platform.inbox_messages (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    thread_id       UUID NOT NULL REFERENCES platform.inbox_threads(id) ON DELETE CASCADE,
+    sender_id       UUID NOT NULL REFERENCES platform.users(id),
+    body            TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_inbox_messages_thread ON platform.inbox_messages(thread_id, created_at DESC);
+
 -- Audit Log
 CREATE TABLE platform.audit_log (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
