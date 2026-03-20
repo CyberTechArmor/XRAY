@@ -70,6 +70,7 @@ export async function getTenantDetail(tenantId: string) {
 export async function updateTenantPlan(tenantId: string, input: {
   planTier: string;
   dashboardLimit?: number;
+  connectorLimit?: number;
   paymentStatus?: string;
 }) {
   return withTransaction(async (client) => {
@@ -81,18 +82,19 @@ export async function updateTenantPlan(tenantId: string, input: {
 
     // Upsert billing state
     const result = await client.query(
-      `INSERT INTO platform.billing_state (tenant_id, plan_tier, dashboard_limit, payment_status, updated_at)
-       VALUES ($1, $2, $3, $4, now())
+      `INSERT INTO platform.billing_state (tenant_id, plan_tier, dashboard_limit, connector_limit, payment_status, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now())
        ON CONFLICT (tenant_id) DO UPDATE SET
          plan_tier = COALESCE($2, platform.billing_state.plan_tier),
          dashboard_limit = COALESCE($3, platform.billing_state.dashboard_limit),
-         payment_status = COALESCE($4, platform.billing_state.payment_status),
+         connector_limit = COALESCE($4, platform.billing_state.connector_limit),
+         payment_status = COALESCE($5, platform.billing_state.payment_status),
          updated_at = now()
        RETURNING *`,
-      [tenantId, input.planTier, input.dashboardLimit ?? null, input.paymentStatus ?? 'active']
+      [tenantId, input.planTier, input.dashboardLimit ?? null, input.connectorLimit ?? null, input.paymentStatus ?? 'active']
     );
 
-    auditService.log({ tenantId, action: 'tenant.plan_update', resourceType: 'tenant', resourceId: tenantId, metadata: { planTier: input.planTier, dashboardLimit: input.dashboardLimit, paymentStatus: input.paymentStatus } });
+    auditService.log({ tenantId, action: 'tenant.plan_update', resourceType: 'tenant', resourceId: tenantId, metadata: { planTier: input.planTier, dashboardLimit: input.dashboardLimit, connectorLimit: input.connectorLimit, paymentStatus: input.paymentStatus } });
     return result.rows[0];
   });
 }
@@ -134,7 +136,7 @@ export async function getDashboardDetail(dashboardId: string) {
 }
 
 export async function createDashboard(input: {
-  tenantId: string; name: string; description?: string;
+  tenantId: string; name: string; description?: string; status?: string;
   viewHtml?: string; viewCss?: string; viewJs?: string;
   fetchUrl?: string; fetchMethod?: string; fetchHeaders?: Record<string, string>; fetchBody?: unknown;
   tileImageUrl?: string;
@@ -142,10 +144,11 @@ export async function createDashboard(input: {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.dashboards (tenant_id, name, description, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, tile_image_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, tile_image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
       [
         input.tenantId, input.name, input.description || null,
+        input.status || 'draft',
         input.viewHtml || null, input.viewCss || null, input.viewJs || null,
         input.fetchUrl || null, input.fetchMethod || 'GET',
         input.fetchHeaders ? JSON.stringify(input.fetchHeaders) : '{}',

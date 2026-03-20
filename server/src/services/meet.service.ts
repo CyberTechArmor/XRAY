@@ -86,3 +86,13 @@ export function getJoinUrl(serverUrl: string, roomName: string, participantName?
   if (participantName) params.set('name', participantName);
   return `${serverUrl}/?${params.toString()}`;
 }
+
+export async function getTenantMembers(tenantId: string): Promise<{ id: string; name: string; email: string }[]> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.current_tenant_id', $1, true)`, [tenantId]);
+    const result = await client.query(
+      `SELECT id, name, email FROM tenant.users WHERE status = 'active' ORDER BY name ASC, email ASC`
+    );
+    return result.rows.map((r: any) => ({ id: r.id, name: r.name || '', email: r.email }));
+  });
+}

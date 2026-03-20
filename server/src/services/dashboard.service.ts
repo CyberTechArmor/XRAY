@@ -17,6 +17,7 @@ interface Dashboard {
   tile_image_url: string | null;
   last_viewed_at: string | null;
   is_public: boolean;
+  public_token: string | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -307,6 +308,106 @@ export async function revokeEmbed(
       [embedId, dashboardId, tenantId]
     );
   });
+}
+
+// ─── Public share ────────────────────────────────────────────────────────────
+
+export async function makePublic(
+  dashboardId: string,
+  tenantId: string
+): Promise<{ public_token: string }> {
+  const token = generateToken(16); // 32 hex chars
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `UPDATE platform.dashboards
+       SET is_public = true, public_token = $1, updated_at = now()
+       WHERE id = $2 AND tenant_id = $3
+       RETURNING public_token`,
+      [token, dashboardId, tenantId]
+    );
+    if (result.rows.length === 0) {
+      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+    }
+    return { public_token: result.rows[0].public_token };
+  });
+}
+
+export async function makePrivate(
+  dashboardId: string,
+  tenantId: string
+): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `UPDATE platform.dashboards
+       SET is_public = false, public_token = NULL, updated_at = now()
+       WHERE id = $1 AND tenant_id = $2
+       RETURNING id`,
+      [dashboardId, tenantId]
+    );
+    if (result.rows.length === 0) {
+      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+    }
+  });
+}
+
+export async function getPublicDashboard(
+  publicToken: string
+): Promise<Dashboard> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT * FROM platform.dashboards
+       WHERE public_token = $1 AND is_public = true AND status = 'active'`,
+      [publicToken]
+    );
+    if (result.rows.length === 0) {
+      throw new AppError(404, 'NOT_FOUND', 'Dashboard not found or no longer public');
+    }
+    return result.rows[0];
+  });
+}
+
+export async function renderPublicDashboard(
+  publicToken: string
+): Promise<{ html: string; css: string; js: string; name: string }> {
+  const dashboard = await getPublicDashboard(publicToken);
+
+  if (!dashboard.fetch_url) {
+    return {
+      html: dashboard.view_html || '',
+      css: dashboard.view_css || '',
+      js: dashboard.view_js || '',
+      name: dashboard.name,
+    };
+  }
+
+  // Proxy fetch for dynamic dashboards
+  const headers: Record<string, string> = typeof dashboard.fetch_headers === 'string'
+    ? JSON.parse(dashboard.fetch_headers) : (dashboard.fetch_headers || {});
+  const fetchOpts: RequestInit = {
+    method: dashboard.fetch_method || 'GET',
+    headers: { 'Content-Type': 'application/json', ...headers },
+  };
+  if (dashboard.fetch_body && dashboard.fetch_method !== 'GET') {
+    fetchOpts.body = typeof dashboard.fetch_body === 'string'
+      ? dashboard.fetch_body : JSON.stringify(dashboard.fetch_body);
+  }
+  fetchOpts.signal = AbortSignal.timeout(90_000);
+
+  const response = await fetch(dashboard.fetch_url, fetchOpts);
+  if (!response.ok) {
+    throw new AppError(502, 'UPSTREAM_ERROR', `Connection returned ${response.status}`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    const data = await response.json() as Record<string, string>;
+    return { html: data.html || '', css: data.css || '', js: data.js || '', name: dashboard.name };
+  }
+  const html = await response.text();
+  return { html, css: '', js: '', name: dashboard.name };
 }
 
 export async function getEmbedDashboard(

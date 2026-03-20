@@ -372,18 +372,7 @@
     });
 
     // Show MEET header button if configured
-    var meetBtn = document.getElementById('btn-meet-header');
-    if (meetBtn) {
-      api.get('/api/meet/config').then(function(r) {
-        if (r.ok && r.data && r.data.configured) {
-          meetBtn.style.display = '';
-          meetBtn.onclick = function() {
-            var fab = document.getElementById('xray-meet-fab');
-            if (fab) fab.click();
-          };
-        }
-      }).catch(function() {});
-    }
+    initMeetHeader();
   }
 
   // ── Mobile nav ──
@@ -437,8 +426,7 @@
 
     var mobMeet = document.getElementById('mob-meet');
     if (mobMeet) mobMeet.onclick = function() {
-      var fab = document.getElementById('xray-meet-fab');
-      if (fab) fab.click();
+      handleMeetButtonClick();
     };
 
     var mobMenu = document.getElementById('mob-menu');
@@ -471,7 +459,7 @@
   function loadBundle() {
     if (bundle) { onBundleReady(); return; }
     fetch('/bundles/general.json?v=' + Date.now()).then(function(r) { return r.json(); })
-      .then(function(d) { bundle = d; buildSidebar(); onBundleReady(); })
+      .then(function(d) { bundle = d; buildSidebar(); buildMobileNav(); onBundleReady(); })
       .catch(function() { toast('Failed to load UI bundle', 'error'); });
   }
 
@@ -493,7 +481,7 @@
     var hdrTitle = document.getElementById('header-center-title');
     if (hdrTitle) { hdrTitle.style.display = 'none'; hdrTitle.textContent = ''; }
     var sidebar = document.getElementById('sidebar');
-    if (sidebar) sidebar.style.display = '';
+    if (sidebar) { sidebar.style.display = ''; if (sidebar.dataset.dashCollapsed) { sidebar.classList.remove('collapsed'); delete sidebar.dataset.dashCollapsed; } }
 
     var items = document.querySelectorAll('#sidebar .nav-item');
     items.forEach(function(el) {
@@ -578,36 +566,411 @@
     });
   }
 
-  // ── Meet widget loader ──
-  function loadMeetWidget() {
-    if (!bundle || !bundle.views.meet_widget) return;
-    var view = bundle.views.meet_widget;
-    if (view.css && !document.getElementById('meet-widget-style')) {
-      var s = document.createElement('style');
-      s.id = 'meet-widget-style';
-      s.textContent = view.css;
-      document.head.appendChild(s);
+  // ── Meet system ──
+  var meetState = {
+    serverUrl: '',
+    configured: false,
+    roomCode: '',
+    inCall: false,
+    panelOpen: false,
+    panelView: 'initial', // initial | new | join
+    viewMode: null, // null | fullscreen | pip | minimized
+    members: [],
+    selectedMembers: [],
+    inviteEmails: []
+  };
+
+  function generateRoomCode() {
+    var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    var code = 'xr-';
+    for (var i = 0; i < 8; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+    return code;
+  }
+
+  function getMeetJoinUrl(room) {
+    return meetState.serverUrl + '/?room=' + encodeURIComponent(room);
+  }
+
+  function initMeetHeader() {
+    var meetBtn = document.getElementById('btn-meet-header');
+    if (!meetBtn) return;
+    api.get('/api/meet/config').then(function(r) {
+      if (!r.ok || !r.data || !r.data.configured) return;
+      meetState.serverUrl = r.data.serverUrl.replace(/\/+$/, '');
+      meetState.configured = true;
+      meetBtn.style.display = '';
+      meetBtn.onclick = handleMeetButtonClick;
+      // Preload members
+      api.get('/api/meet/members').then(function(mr) {
+        if (mr.ok && mr.data) meetState.members = mr.data;
+      }).catch(function() {});
+      setupMeetPanel();
+      setupMeetViewport();
+    }).catch(function() {});
+  }
+
+  function handleMeetButtonClick() {
+    if (meetState.inCall) {
+      // End the call
+      endMeetCall();
+      return;
     }
-    if (view.js) {
-      try {
-        var existingFab = document.getElementById('xray-meet-fab');
-        if (existingFab) existingFab.remove();
-        var existingPopup = document.getElementById('xray-meet-popup');
-        if (existingPopup) existingPopup.remove();
-        var fn = new Function('api', 'user', view.js.replace(
-          "if (document.getElementById('xray-meet-fab')) return;", ''
-        ) + '\nif(typeof initMeetWidget==="function")initMeetWidget(api,user);');
-        fn(api, currentUser);
-      } catch (e) { console.error('Meet widget error:', e); }
+    if (meetState.panelOpen) {
+      closeMeetPanel();
+    } else {
+      openMeetPanel();
     }
   }
-  window.__xrayRefreshMeetWidget = function() { loadMeetWidget(); };
 
-  var _origOnBundleReady = onBundleReady;
-  onBundleReady = function() {
-    _origOnBundleReady();
-    loadMeetWidget();
-  };
+  function openMeetPanel() {
+    var panel = document.getElementById('meet-panel');
+    var btn = document.getElementById('btn-meet-header');
+    if (!panel || !btn) return;
+    // Position below the meet button
+    var rect = btn.getBoundingClientRect();
+    panel.style.top = (rect.bottom + 8) + 'px';
+    panel.style.right = '20px';
+    panel.style.display = '';
+    meetState.panelOpen = true;
+    showMeetPanelView('initial');
+  }
+
+  function closeMeetPanel() {
+    var panel = document.getElementById('meet-panel');
+    if (panel) panel.style.display = 'none';
+    meetState.panelOpen = false;
+  }
+
+  function showMeetPanelView(view) {
+    meetState.panelView = view;
+    var initial = document.getElementById('meet-panel-initial');
+    var newP = document.getElementById('meet-panel-new');
+    var joinP = document.getElementById('meet-panel-join');
+    if (initial) initial.style.display = view === 'initial' ? '' : 'none';
+    if (newP) newP.style.display = view === 'new' ? '' : 'none';
+    if (joinP) joinP.style.display = view === 'join' ? '' : 'none';
+    if (view === 'new') {
+      meetState.roomCode = generateRoomCode();
+      meetState.selectedMembers = [];
+      meetState.inviteEmails = [];
+      var codeEl = document.getElementById('meet-room-code');
+      if (codeEl) codeEl.textContent = meetState.roomCode;
+      renderMemberList();
+      renderEmailTags();
+      var allBtn = document.getElementById('meet-select-all');
+      if (allBtn) allBtn.classList.remove('active');
+    }
+  }
+
+  function renderMemberList(filter) {
+    var list = document.getElementById('meet-member-list');
+    if (!list) return;
+    list.innerHTML = '';
+    var search = (filter || '').toLowerCase();
+    var filtered = meetState.members.filter(function(m) {
+      if (currentUser && m.id === currentUser.id) return false; // exclude self
+      if (!search) return true;
+      return (m.name && m.name.toLowerCase().indexOf(search) >= 0) || m.email.toLowerCase().indexOf(search) >= 0;
+    });
+    if (filtered.length === 0) {
+      list.innerHTML = '<div style="padding:12px;font-size:13px;color:var(--t3);text-align:center">No members found</div>';
+      return;
+    }
+    filtered.forEach(function(m) {
+      var item = document.createElement('div');
+      item.className = 'meet-member-item';
+      if (meetState.selectedMembers.indexOf(m.id) >= 0) item.classList.add('selected');
+      item.innerHTML = '<span class="meet-check">\u2713</span><span class="meet-member-name">' +
+        escapeHtml(m.name || m.email) + '</span><span class="meet-member-email">' + escapeHtml(m.email) + '</span>';
+      item.onclick = function() {
+        var idx = meetState.selectedMembers.indexOf(m.id);
+        if (idx >= 0) { meetState.selectedMembers.splice(idx, 1); }
+        else { meetState.selectedMembers.push(m.id); }
+        item.classList.toggle('selected');
+        updateAllBtn();
+      };
+      list.appendChild(item);
+    });
+  }
+
+  function escapeHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function updateAllBtn() {
+    var allBtn = document.getElementById('meet-select-all');
+    if (!allBtn) return;
+    var selectableCount = meetState.members.filter(function(m) {
+      return !currentUser || m.id !== currentUser.id;
+    }).length;
+    allBtn.classList.toggle('active', meetState.selectedMembers.length >= selectableCount && selectableCount > 0);
+  }
+
+  function renderEmailTags() {
+    var container = document.getElementById('meet-email-tags');
+    if (!container) return;
+    container.innerHTML = '';
+    meetState.inviteEmails.forEach(function(email, i) {
+      var tag = document.createElement('span');
+      tag.className = 'meet-email-tag';
+      tag.innerHTML = escapeHtml(email) + '<button title="Remove">&times;</button>';
+      tag.querySelector('button').onclick = function() {
+        meetState.inviteEmails.splice(i, 1);
+        renderEmailTags();
+      };
+      container.appendChild(tag);
+    });
+  }
+
+  function setupMeetPanel() {
+    // Initial view buttons
+    var optNew = document.getElementById('meet-opt-new');
+    if (optNew) optNew.onclick = function() { showMeetPanelView('new'); };
+    var optJoin = document.getElementById('meet-opt-join');
+    if (optJoin) optJoin.onclick = function() { showMeetPanelView('join'); };
+
+    // Share button
+    var shareBtn = document.getElementById('meet-share-btn');
+    if (shareBtn) shareBtn.onclick = function() {
+      var url = getMeetJoinUrl(meetState.roomCode);
+      if (navigator.share) {
+        navigator.share({ title: 'Join XRay Meeting', url: url }).catch(function() {});
+      } else {
+        navigator.clipboard.writeText(url).then(function() {
+          toast('Meeting link copied!', 'success');
+        }).catch(function() {
+          prompt('Copy the meeting link:', url);
+        });
+      }
+    };
+
+    // Select all button
+    var allBtn = document.getElementById('meet-select-all');
+    if (allBtn) allBtn.onclick = function() {
+      var selectable = meetState.members.filter(function(m) {
+        return !currentUser || m.id !== currentUser.id;
+      });
+      if (meetState.selectedMembers.length >= selectable.length) {
+        meetState.selectedMembers = [];
+      } else {
+        meetState.selectedMembers = selectable.map(function(m) { return m.id; });
+      }
+      renderMemberList(document.getElementById('meet-member-search') ? document.getElementById('meet-member-search').value : '');
+      updateAllBtn();
+    };
+
+    // Search
+    var searchInput = document.getElementById('meet-member-search');
+    if (searchInput) searchInput.oninput = function() { renderMemberList(this.value); };
+
+    // Add email
+    var addEmailBtn = document.getElementById('meet-add-email');
+    var emailInput = document.getElementById('meet-email-input');
+    function addEmail() {
+      if (!emailInput) return;
+      var email = emailInput.value.trim();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        toast('Enter a valid email', 'error'); return;
+      }
+      if (meetState.inviteEmails.indexOf(email) >= 0) {
+        toast('Email already added', 'info'); return;
+      }
+      meetState.inviteEmails.push(email);
+      emailInput.value = '';
+      renderEmailTags();
+    }
+    if (addEmailBtn) addEmailBtn.onclick = addEmail;
+    if (emailInput) emailInput.onkeydown = function(e) { if (e.key === 'Enter') addEmail(); };
+
+    // Start meeting
+    var startBtn = document.getElementById('meet-btn-start-new');
+    if (startBtn) startBtn.onclick = function() {
+      startBtn.disabled = true;
+      startBtn.textContent = 'Starting...';
+      api.post('/api/meet/rooms', { roomId: meetState.roomCode, displayName: 'XRay Meeting' }).then(function(r) {
+        startBtn.disabled = false;
+        startBtn.textContent = 'Start Meeting';
+        if (!r.ok) {
+          toast('Failed to create meeting: ' + (r.error ? r.error.message : 'Unknown error'), 'error');
+          return;
+        }
+        // Gather emails to invite
+        var emails = meetState.inviteEmails.slice();
+        meetState.selectedMembers.forEach(function(id) {
+          var m = meetState.members.find(function(mm) { return mm.id === id; });
+          if (m && emails.indexOf(m.email) < 0) emails.push(m.email);
+        });
+        // Send invites if any
+        if (emails.length > 0) {
+          var joinUrl = getMeetJoinUrl(meetState.roomCode);
+          api.post('/api/meet/invite', {
+            joinUrl: joinUrl, roomName: meetState.roomCode, emails: emails
+          }).then(function(ir) {
+            if (ir.ok) {
+              var sent = ir.data.results.filter(function(r) { return r.sent; }).length;
+              if (sent > 0) toast('Invite sent to ' + sent + ' participant' + (sent > 1 ? 's' : ''), 'success');
+            }
+          }).catch(function() {});
+        }
+        closeMeetPanel();
+        launchMeetCall(meetState.roomCode);
+      }).catch(function() {
+        startBtn.disabled = false;
+        startBtn.textContent = 'Start Meeting';
+        toast('Network error', 'error');
+      });
+    };
+
+    // Join meeting
+    var joinBtn = document.getElementById('meet-btn-join-room');
+    if (joinBtn) joinBtn.onclick = function() {
+      var codeInput = document.getElementById('meet-join-code');
+      var code = codeInput ? codeInput.value.trim() : '';
+      if (!code) { toast('Enter a room code', 'error'); return; }
+      closeMeetPanel();
+      meetState.roomCode = code;
+      launchMeetCall(code);
+    };
+    var joinCodeInput = document.getElementById('meet-join-code');
+    if (joinCodeInput) joinCodeInput.onkeydown = function(e) { if (e.key === 'Enter' && joinBtn) joinBtn.click(); };
+
+    // Close panel when clicking outside
+    document.addEventListener('mousedown', function(e) {
+      if (!meetState.panelOpen) return;
+      var panel = document.getElementById('meet-panel');
+      var btn = document.getElementById('btn-meet-header');
+      if (panel && !panel.contains(e.target) && btn && !btn.contains(e.target)) {
+        closeMeetPanel();
+      }
+    });
+  }
+
+  function launchMeetCall(room) {
+    meetState.inCall = true;
+    meetState.roomCode = room;
+    var params = new URLSearchParams({ room: room });
+    if (currentUser && currentUser.name) params.set('name', currentUser.name);
+    params.set('autojoin', 'true');
+    var url = meetState.serverUrl + '/?' + params.toString();
+
+    var viewport = document.getElementById('meet-viewport');
+    var iframeWrap = document.getElementById('meet-viewport-iframe');
+    if (!viewport || !iframeWrap) return;
+    iframeWrap.innerHTML = '<iframe src="' + url + '" allow="camera; microphone; display-capture; autoplay" allowfullscreen></iframe>';
+
+    setMeetViewMode('fullscreen');
+    updateMeetHeaderState();
+  }
+
+  function setMeetViewMode(mode) {
+    meetState.viewMode = mode;
+    var viewport = document.getElementById('meet-viewport');
+    var roomIndicator = document.getElementById('meet-room-indicator');
+    var minControls = document.getElementById('meet-minimized-controls');
+
+    if (!viewport) return;
+
+    if (mode === 'minimized') {
+      viewport.style.display = 'none';
+      viewport.className = 'meet-viewport';
+      // Show minimized controls in header
+      if (minControls) minControls.style.display = '';
+      if (roomIndicator) { roomIndicator.style.display = ''; roomIndicator.textContent = meetState.roomCode; }
+    } else if (mode === 'fullscreen' || mode === 'pip') {
+      viewport.style.display = 'flex';
+      viewport.className = 'meet-viewport mode-' + mode;
+      // Reset any drag positioning for fullscreen
+      if (mode === 'fullscreen') {
+        viewport.style.left = ''; viewport.style.top = '';
+        viewport.style.right = ''; viewport.style.bottom = '';
+      }
+      if (minControls) minControls.style.display = 'none';
+      if (roomIndicator) { roomIndicator.style.display = ''; roomIndicator.textContent = meetState.roomCode; }
+      var titleEl = viewport.querySelector('.meet-viewport-title');
+      if (titleEl) titleEl.textContent = 'MEET \u2014 ' + meetState.roomCode;
+    } else {
+      viewport.style.display = 'none';
+      viewport.className = 'meet-viewport';
+      if (minControls) minControls.style.display = 'none';
+      if (roomIndicator) roomIndicator.style.display = 'none';
+    }
+  }
+
+  function endMeetCall() {
+    meetState.inCall = false;
+    meetState.roomCode = '';
+    var viewport = document.getElementById('meet-viewport');
+    var iframeWrap = document.getElementById('meet-viewport-iframe');
+    if (iframeWrap) iframeWrap.innerHTML = '';
+    setMeetViewMode(null);
+    updateMeetHeaderState();
+  }
+
+  function updateMeetHeaderState() {
+    var btn = document.getElementById('btn-meet-header');
+    if (!btn) return;
+    btn.classList.toggle('in-call', meetState.inCall);
+  }
+
+  function setupMeetViewport() {
+    // Viewport controls
+    var vpMin = document.getElementById('meet-vp-minimize');
+    var vpPip = document.getElementById('meet-vp-pip');
+    var vpFs = document.getElementById('meet-vp-fullscreen');
+    var vpClose = document.getElementById('meet-vp-close');
+    if (vpMin) vpMin.onclick = function() { setMeetViewMode('minimized'); };
+    if (vpPip) vpPip.onclick = function() { setMeetViewMode('pip'); };
+    if (vpFs) vpFs.onclick = function() { setMeetViewMode('fullscreen'); };
+    if (vpClose) vpClose.onclick = function() { endMeetCall(); };
+
+    // Minimized header controls
+    var minMin = document.getElementById('meet-min-minimize');
+    var minPip = document.getElementById('meet-min-pip');
+    var minFs = document.getElementById('meet-min-fullscreen');
+    var minClose = document.getElementById('meet-min-close');
+    if (minMin) minMin.onclick = function() { setMeetViewMode('minimized'); };
+    if (minPip) minPip.onclick = function() { setMeetViewMode('pip'); };
+    if (minFs) minFs.onclick = function() { setMeetViewMode('fullscreen'); };
+    if (minClose) minClose.onclick = function() { endMeetCall(); };
+
+    // Room indicator click to copy
+    var roomIndicator = document.getElementById('meet-room-indicator');
+    if (roomIndicator) roomIndicator.onclick = function() {
+      var url = getMeetJoinUrl(meetState.roomCode);
+      navigator.clipboard.writeText(url).then(function() {
+        toast('Meeting link copied!', 'success');
+      }).catch(function() {});
+    };
+
+    // Drag for PIP mode
+    var viewport = document.getElementById('meet-viewport');
+    if (viewport) {
+      var bar = viewport.querySelector('.meet-viewport-bar');
+      var dragging = false, startX, startY, origLeft, origTop;
+      if (bar) {
+        bar.addEventListener('mousedown', function(e) {
+          if (e.target.closest('.meet-bar-btn')) return;
+          if (meetState.viewMode !== 'pip') return;
+          dragging = true;
+          startX = e.clientX; startY = e.clientY;
+          var rect = viewport.getBoundingClientRect();
+          origLeft = rect.left; origTop = rect.top;
+          e.preventDefault();
+        });
+        document.addEventListener('mousemove', function(e) {
+          if (!dragging) return;
+          viewport.style.left = (origLeft + e.clientX - startX) + 'px';
+          viewport.style.top = (origTop + e.clientY - startY) + 'px';
+          viewport.style.right = 'auto'; viewport.style.bottom = 'auto';
+        });
+        document.addEventListener('mouseup', function() { dragging = false; });
+      }
+    }
+  }
+
+  window.__xrayRefreshMeetWidget = function() { initMeetHeader(); };
 
   init();
 })();

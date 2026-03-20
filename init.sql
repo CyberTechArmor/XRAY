@@ -172,6 +172,7 @@ CREATE TABLE platform.dashboards (
     tile_image_url  TEXT,
     last_viewed_at  TIMESTAMPTZ,
     is_public       BOOLEAN DEFAULT false,
+    public_token    TEXT UNIQUE,
     status          TEXT NOT NULL DEFAULT 'draft'
                     CHECK (status IN ('draft', 'active', 'archived')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -260,6 +261,7 @@ CREATE TABLE platform.billing_state (
     plan_tier               TEXT NOT NULL DEFAULT 'free'
                             CHECK (plan_tier IN ('free', 'starter', 'professional')),
     dashboard_limit         INTEGER NOT NULL DEFAULT 0,
+    connector_limit         INTEGER NOT NULL DEFAULT 0,
     current_period_end      TIMESTAMPTZ,
     payment_status          TEXT DEFAULT 'none'
                             CHECK (payment_status IN ('none', 'active', 'past_due',

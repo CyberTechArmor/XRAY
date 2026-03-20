@@ -185,7 +185,14 @@
     <div class="spacer"></div>
     <div id="header-center-title" style="position:absolute;left:50%;transform:translateX(-50%);font-size:15px;font-weight:600;color:var(--t1);display:none;pointer-events:none"></div>
     <div class="user-menu">
-      <button id="btn-meet-header" class="meet-btn" title="Start a meeting" style="display:none"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="1.5"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg> Meet</button>
+      <button id="btn-meet-header" class="meet-header-btn" title="Start a meeting" style="display:none"><svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg><span>MEET</span></button>
+      <span id="meet-room-indicator" class="meet-room-indicator" style="display:none" title="Click to copy meeting link"></span>
+      <div id="meet-minimized-controls" class="meet-minimized-controls" style="display:none">
+        <button class="meet-bar-btn" id="meet-min-minimize" title="Minimize"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2"><path d="M5 12h14"/></svg></button>
+        <button class="meet-bar-btn" id="meet-min-pip" title="Tiny window"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2"/><rect x="10" y="10" width="12" height="12" rx="1"/></svg></button>
+        <button class="meet-bar-btn" id="meet-min-fullscreen" title="Fullscreen"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg></button>
+        <button class="meet-bar-btn close" id="meet-min-close" title="End call"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>
       <span id="user-name"></span>
       <button id="btn-logout">Sign out</button>
     </div>
@@ -215,6 +222,54 @@
       <button id="mob-logout">Sign out</button>
     </div>
   </div>
+</div>
+
+<!-- Meet panel popup -->
+<div id="meet-panel" class="meet-panel" style="display:none">
+  <div id="meet-panel-initial" class="meet-panel-section">
+    <button class="meet-panel-option" id="meet-opt-new"><svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>New Meeting</button>
+    <button class="meet-panel-option" id="meet-opt-join"><svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>Join a Meeting</button>
+  </div>
+  <div id="meet-panel-new" class="meet-panel-section" style="display:none">
+    <div class="meet-room-row">
+      <span class="meet-room-label">Room:</span>
+      <code id="meet-room-code" class="meet-room-code"></code>
+      <button class="btn meet-share-btn" id="meet-share-btn" title="Share meeting link"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Share</button>
+    </div>
+    <div class="meet-members-section">
+      <div class="meet-members-header">
+        <span>Invite team members</span>
+        <button class="btn meet-all-btn" id="meet-select-all">All</button>
+      </div>
+      <input type="text" id="meet-member-search" class="meet-search-input" placeholder="Search members...">
+      <div id="meet-member-list" class="meet-member-list"></div>
+    </div>
+    <div class="meet-email-section">
+      <label>Add by email:</label>
+      <div class="meet-email-input-row">
+        <input type="email" id="meet-email-input" placeholder="guest@example.com">
+        <button class="btn" id="meet-add-email">+ Add</button>
+      </div>
+      <div id="meet-email-tags" class="meet-email-tags"></div>
+    </div>
+    <button class="btn primary meet-start-btn" id="meet-btn-start-new">Start Meeting</button>
+  </div>
+  <div id="meet-panel-join" class="meet-panel-section" style="display:none">
+    <div class="fg"><label>Room code</label><input type="text" id="meet-join-code" placeholder="Enter room code"></div>
+    <button class="btn primary meet-start-btn" id="meet-btn-join-room">Join Meeting</button>
+  </div>
+</div>
+
+<!-- Meet fullscreen/PIP overlay -->
+<div id="meet-viewport" class="meet-viewport" style="display:none">
+  <div class="meet-viewport-bar">
+    <span class="meet-viewport-title">MEET</span>
+    <button class="meet-bar-btn" id="meet-vp-minimize" title="Minimize"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2"><path d="M5 12h14"/></svg></button>
+    <button class="meet-bar-btn" id="meet-vp-pip" title="Tiny window"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2"/><rect x="10" y="10" width="12" height="12" rx="1"/></svg></button>
+    <button class="meet-bar-btn" id="meet-vp-fullscreen" title="Fullscreen"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg></button>
+    <button class="meet-bar-btn close" id="meet-vp-close" title="End call"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </div>
+  <div class="meet-viewport-iframe" id="meet-viewport-iframe"></div>
 </div>
 
 <div id="toast-container"></div>

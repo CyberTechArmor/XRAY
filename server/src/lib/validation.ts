@@ -64,6 +64,7 @@ export const dashboardCreateSchema = z.object({
   tenantId: uuidSchema,
   name: nameSchema,
   description: z.string().max(1000).optional(),
+  status: z.enum(['draft', 'active', 'archived']).optional(),
   viewHtml: z.string().max(500_000).optional(),
   viewCss: z.string().max(200_000).optional(),
   viewJs: z.string().max(500_000).optional(),
