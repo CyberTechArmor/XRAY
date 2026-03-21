@@ -145,13 +145,32 @@ router.delete('/:id/access/:uid', authenticateJWT, requirePermission('dashboards
   }
 });
 
+// Helper: resolve the tenant_id for a dashboard (platform admin can access any tenant)
+async function resolveDashboardTenant(dashboardId: string, user: any): Promise<string> {
+  if (!user.is_platform_admin) return user.tid;
+  const { withClient } = await import('../db/connection');
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'SELECT tenant_id FROM platform.dashboards WHERE id = $1',
+      [dashboardId]
+    );
+    if (result.rows.length === 0) {
+      const { AppError } = await import('../middleware/error-handler');
+      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+    }
+    return result.rows[0].tenant_id;
+  });
+}
+
 // POST /:id/share - make dashboard public (owner or platform admin only)
 router.post('/:id/share', authenticateJWT, async (req, res, next) => {
   try {
     if (!req.user!.is_owner && !req.user!.is_platform_admin) {
       return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can share dashboards publicly' } });
     }
-    const result = await dashboardService.makePublic(req.params.id, req.user!.tid);
+    const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
+    const result = await dashboardService.makePublic(req.params.id, tenantId);
     const shareDomain = (await getSetting('platform.share_domain')) || (await getSetting('platform.domain')) || config.webauthn.origin;
     const shareUrl = `${shareDomain.replace(/\/+$/, '')}/share/${result.public_token}`;
     res.json({
@@ -170,7 +189,8 @@ router.delete('/:id/share', authenticateJWT, async (req, res, next) => {
     if (!req.user!.is_owner && !req.user!.is_platform_admin) {
       return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can manage public sharing' } });
     }
-    await dashboardService.makePrivate(req.params.id, req.user!.tid);
+    const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
+    await dashboardService.makePrivate(req.params.id, tenantId);
     res.json({
       ok: true,
       data: { message: 'Dashboard is now private' },
@@ -187,7 +207,8 @@ router.get('/:id/share', authenticateJWT, async (req, res, next) => {
     if (!req.user!.is_owner && !req.user!.is_platform_admin) {
       return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can view share status' } });
     }
-    const dashboard = await dashboardService.getDashboard(req.params.id, req.user!.tid);
+    const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
+    const dashboard = await dashboardService.getDashboard(req.params.id, tenantId);
     if (!dashboard.is_public || !dashboard.public_token) {
       return res.json({ ok: true, data: { is_public: false, share_url: null, public_token: null } });
     }

@@ -7,7 +7,7 @@
 <style>
   :root { --bg:#08090c; --bg2:#0f1117; --t1:#f0f1f4; --t2:#8e91a0; --acc:#3ee8b5; --bdr:rgba(255,255,255,0.06); }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--t1); min-height: 100vh; }
+  html, body { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--t1); height: 100%; overflow: hidden; }
   .share-bar {
     height: 48px; background: var(--bg2); border-bottom: 1px solid var(--bdr);
     display: flex; align-items: center; padding: 0 20px; gap: 12px;
@@ -42,14 +42,7 @@
 <div class="share-bar">
   <a href="/">
     <span class="logo-icon">
-      <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-        <path d="M50 8 L62 28 A28 28 0 0 1 78 50 L98 50 A48 48 0 0 0 50 2 Z" fill="#3ee8b5"/>
-        <path d="M78 50 A28 28 0 0 1 62 72 L50 92 A48 48 0 0 0 98 50 Z" fill="#3ee8b5"/>
-        <path d="M62 72 A28 28 0 0 1 38 72 L50 50 Z" fill="#3ee8b5"/>
-        <path d="M38 72 L28 92 A48 48 0 0 1 2 50 L22 50 A28 28 0 0 0 38 72 Z" fill="#3ee8b5"/>
-        <path d="M22 50 A28 28 0 0 1 38 28 L50 8 A48 48 0 0 0 2 50 Z" fill="#3ee8b5"/>
-        <circle cx="50" cy="50" r="12" fill="#3ee8b5"/>
-      </svg>
+      <svg viewBox="0 0 36 36" fill="none" style="width:22px;height:22px"><g transform="translate(18,18)"><circle r="2.8" fill="#3ee8b5"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85" transform="rotate(120)"/><path d="M-2.5,-4.33L-6,-10.39A12,12,0,0,1,6,-10.39L2.5,-4.33A5,5,0,0,0,-2.5,-4.33Z" fill="#3ee8b5" opacity=".85" transform="rotate(240)"/></g></svg>
     </span>
     <span class="logo"><span class="x">X</span><span class="r">Ray</span></span>
   </a>

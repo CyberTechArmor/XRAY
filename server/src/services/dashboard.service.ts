@@ -48,7 +48,7 @@ export async function listDashboards(
       const result = await client.query(
         `SELECT d.*, t.name as tenant_name FROM platform.dashboards d
          JOIN platform.tenants t ON t.id = d.tenant_id
-         ORDER BY d.tenant_id, d.created_at DESC`
+         ORDER BY d.updated_at DESC`
       );
       return result.rows;
     }
