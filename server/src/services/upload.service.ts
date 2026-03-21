@@ -73,6 +73,39 @@ export async function listFilesByContext(
   });
 }
 
+// ── List all files for tenant ──
+export async function listAllFiles(
+  tenantId: string,
+  opts: { contextType?: string; limit?: number; offset?: number }
+): Promise<{ rows: FileRecord[]; total: number }> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const conditions = ['tenant_id = $1'];
+    const params: unknown[] = [tenantId];
+    if (opts.contextType) {
+      conditions.push('context_type = $' + (params.length + 1));
+      params.push(opts.contextType);
+    }
+    const where = conditions.join(' AND ');
+    const countResult = await client.query(
+      `SELECT count(*)::int AS total FROM platform.file_uploads WHERE ${where}`,
+      params
+    );
+    const limit = opts.limit || 50;
+    const offset = opts.offset || 0;
+    const result = await client.query(
+      `SELECT fu.*, u.email AS uploader_email, u.name AS uploader_name
+       FROM platform.file_uploads fu
+       LEFT JOIN platform.users u ON u.id = fu.uploaded_by
+       WHERE ${where.replace(/tenant_id/g, 'fu.tenant_id').replace(/context_type/g, 'fu.context_type')}
+       ORDER BY fu.created_at DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
+    );
+    return { rows: result.rows, total: countResult.rows[0].total };
+  });
+}
+
 // ── Delete file record ──
 export async function deleteFileRecord(fileId: string): Promise<{ id: string }> {
   return withClient(async (client) => {
