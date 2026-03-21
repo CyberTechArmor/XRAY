@@ -683,7 +683,7 @@
   function generateRoomCode() {
     var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
     var code = 'xr-';
-    for (var i = 0; i < 8; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+    for (var i = 0; i < 3; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
     return code;
   }
 

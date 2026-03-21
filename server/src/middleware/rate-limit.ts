@@ -32,10 +32,10 @@ export const apiRateLimit = rateLimit({
   message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
 });
 
-// Magic link / code requests: 30 per hour per email
+// Magic link / code requests: 10 per minute per email (600/hour)
 export const magicLinkRateLimit = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 30,
+  windowMs: 60 * 1000,
+  max: 10,
   keyGenerator: (req) => req.body?.email || req.ip || req.socket.remoteAddress || 'no-ip',
   standardHeaders: true,
   legacyHeaders: false,

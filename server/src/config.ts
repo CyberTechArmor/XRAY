@@ -47,6 +47,6 @@ export const config = {
   magicLink: {
     expiryMinutes: 10,
     maxAttempts: 3,
-    rateLimitPerHour: 3,
+    rateLimitPerHour: 600,
   },
 };
