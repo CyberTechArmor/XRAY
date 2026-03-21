@@ -1,7 +1,8 @@
 import { withClient, withTransaction } from '../db/connection';
-import { generateToken, hashToken } from '../lib/crypto';
+import { generateToken, hashToken, hashRefreshToken } from '../lib/crypto';
 import { AppError } from '../middleware/error-handler';
 import { sendTemplateEmail } from './email.service';
+import { signAccessToken, signRefreshToken } from './jwt.service';
 import { config } from '../config';
 import * as auditService from './audit.service';
 
@@ -142,6 +143,42 @@ export async function acceptInvitation(input: { token: string; name: string }) {
       [invitation.id]
     );
 
+    // Get role info for token generation
+    const roleResult = await client.query(
+      `SELECT slug FROM platform.roles WHERE id = $1`,
+      [invitation.role_id]
+    );
+    const roleSlug = roleResult.rows[0]?.slug || 'member';
+
+    // Get permissions
+    const permResult = await client.query(
+      `SELECT p.key FROM platform.permissions p
+       JOIN platform.role_permissions rp ON rp.permission_id = p.id
+       WHERE rp.role_id = $1`,
+      [invitation.role_id]
+    );
+    const permissions = permResult.rows.map((r: { key: string }) => r.key);
+
+    // Create session for auto-login
+    const refreshToken = signRefreshToken();
+    const refreshTokenHash = hashRefreshToken(refreshToken);
+    const expiresAt = new Date(Date.now() + config.jwt.refreshTokenExpiry);
+
+    const sessionResult = await client.query(
+      `INSERT INTO platform.user_sessions (user_id, tenant_id, refresh_token_hash, expires_at)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [user.id, invitation.tenant_id, refreshTokenHash, expiresAt]
+    );
+
+    const accessToken = signAccessToken({
+      sub: user.id,
+      tid: invitation.tenant_id,
+      role: roleSlug,
+      permissions,
+      is_owner: false,
+      is_platform_admin: false,
+    });
+
     auditService.log({
       tenantId: invitation.tenant_id,
       userId: user.id,
@@ -150,7 +187,38 @@ export async function acceptInvitation(input: { token: string; name: string }) {
       resourceId: invitation.id,
     });
 
-    return { user, tenantId: invitation.tenant_id };
+    return {
+      user,
+      tenantId: invitation.tenant_id,
+      accessToken,
+      refreshToken,
+      sessionId: sessionResult.rows[0].id,
+    };
+  });
+}
+
+export async function getInvitationInfo(token: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT i.id, i.email, i.status, i.expires_at, t.name as tenant_name
+       FROM platform.invitations i
+       JOIN platform.tenants t ON t.id = i.tenant_id
+       WHERE i.id = $1`,
+      [token]
+    );
+    if (result.rows.length === 0) {
+      throw new AppError(404, 'NOT_FOUND', 'Invitation not found');
+    }
+    const inv = result.rows[0];
+    const expired = new Date(inv.expires_at) < new Date();
+    const valid = inv.status === 'pending' && !expired;
+    return {
+      email: inv.email,
+      tenant_name: inv.tenant_name,
+      status: inv.status,
+      valid,
+    };
   });
 }
 

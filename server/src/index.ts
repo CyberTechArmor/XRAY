@@ -111,6 +111,17 @@ app.get('/share/:token', (_req, res) => {
   });
 });
 
+// Serve invite page (serves the main index.html for /invite/:token)
+app.get('/invite/:token', (_req, res) => {
+  const path = require('path');
+  const indexPage = path.resolve(__dirname, '../../frontend/index.html');
+  res.sendFile(indexPage, (err: Error) => {
+    if (err) {
+      res.redirect('/');
+    }
+  });
+});
+
 // Error handler (must be last)
 app.use(errorHandler);
 

@@ -1363,8 +1363,116 @@
     document.addEventListener('keydown', escHandler);
   };
 
-  // Check if we're on a share page before running normal app init
-  if (!handleSharePage()) {
+  // ── Invite page handler ──
+  function handleInvitePage() {
+    var pathname = window.location.pathname;
+    if (!pathname.match(/^\/invite\/.+/)) return false;
+
+    var token = pathname.split('/').pop();
+    if (!token) return false;
+
+    // Hide landing page
+    var landing = document.getElementById('landing-screen');
+    if (landing) landing.style.display = 'none';
+
+    // Create invite accept UI
+    var container = document.createElement('div');
+    container.style.cssText = 'min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg1,#0a0a0a);font-family:-apple-system,BlinkMacSystemFont,sans-serif;';
+    container.innerHTML = '<div style="background:var(--bg2,#141414);border:1px solid var(--border,#222);border-radius:12px;padding:40px;max-width:400px;width:100%;text-align:center;">'
+      + '<div style="margin-bottom:20px"><svg viewBox="0 0 24 24" width="48" height="48" stroke="var(--acc,#10b981)" fill="none" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>'
+      + '<h2 id="invite-title" style="color:var(--t1,#fff);font-size:20px;margin:0 0 8px">Accept Invitation</h2>'
+      + '<p id="invite-desc" style="color:var(--t2,#888);font-size:14px;margin:0 0 24px">Loading invitation details...</p>'
+      + '<div id="invite-form" style="display:none">'
+      + '<div style="text-align:left;margin-bottom:12px"><label style="color:var(--t2,#888);font-size:13px;display:block;margin-bottom:4px">Email</label>'
+      + '<input id="invite-email" type="email" readonly style="width:100%;padding:10px 12px;border:1px solid var(--border,#222);border-radius:6px;background:var(--bg3,#1a1a1a);color:var(--t2,#888);font-size:14px;box-sizing:border-box;" /></div>'
+      + '<div style="text-align:left;margin-bottom:20px"><label style="color:var(--t2,#888);font-size:13px;display:block;margin-bottom:4px">Your Name</label>'
+      + '<input id="invite-name" type="text" placeholder="Enter your name" autofocus style="width:100%;padding:10px 12px;border:1px solid var(--border,#222);border-radius:6px;background:var(--bg3,#1a1a1a);color:var(--t1,#fff);font-size:14px;box-sizing:border-box;" /></div>'
+      + '<button id="invite-accept-btn" class="btn primary" style="width:100%;padding:12px;font-size:15px;border-radius:8px;">Join Team</button>'
+      + '<p id="invite-err" style="color:#ef4444;font-size:13px;margin:12px 0 0;display:none"></p>'
+      + '</div>'
+      + '<div id="invite-invalid" style="display:none"><p style="color:#ef4444;font-size:14px">This invitation is no longer valid. It may have expired or already been used.</p>'
+      + '<a href="/" style="color:var(--acc,#10b981);font-size:14px;text-decoration:none">Go to XRay</a></div>'
+      + '</div>';
+    document.body.appendChild(container);
+
+    // Fetch invitation info
+    fetch('/api/invitations/info/' + token)
+      .then(function(r) { return r.json(); })
+      .then(function(r) {
+        if (!r.ok || !r.data || !r.data.valid) {
+          document.getElementById('invite-desc').style.display = 'none';
+          document.getElementById('invite-invalid').style.display = '';
+          return;
+        }
+        var info = r.data;
+        document.getElementById('invite-desc').textContent = 'You\'ve been invited to join ' + info.tenant_name;
+        document.getElementById('invite-email').value = info.email;
+        document.getElementById('invite-form').style.display = '';
+        document.getElementById('invite-name').focus();
+
+        // Accept handler
+        document.getElementById('invite-accept-btn').onclick = function() {
+          var name = document.getElementById('invite-name').value.trim();
+          if (!name) {
+            document.getElementById('invite-err').textContent = 'Please enter your name';
+            document.getElementById('invite-err').style.display = '';
+            return;
+          }
+          var btn = this;
+          btn.disabled = true;
+          btn.textContent = 'Joining...';
+          document.getElementById('invite-err').style.display = 'none';
+
+          fetch('/api/invitations/accept', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ token: token, name: name })
+          })
+          .then(function(r) { return r.json(); })
+          .then(function(r) {
+            btn.disabled = false;
+            btn.textContent = 'Join Team';
+            if (!r.ok) {
+              document.getElementById('invite-err').textContent = (r.error && r.error.message) || 'Failed to accept invitation';
+              document.getElementById('invite-err').style.display = '';
+              return;
+            }
+            // Auto-login: set token and redirect to app
+            if (r.data && r.data.accessToken) {
+              accessToken = r.data.accessToken;
+              // Clean URL and enter app
+              window.history.replaceState({}, '', '/');
+              container.remove();
+              enterApp();
+            } else {
+              // Fallback: redirect to login
+              window.location.href = '/';
+            }
+          })
+          .catch(function() {
+            btn.disabled = false;
+            btn.textContent = 'Join Team';
+            document.getElementById('invite-err').textContent = 'Network error. Please try again.';
+            document.getElementById('invite-err').style.display = '';
+          });
+        };
+
+        // Enter key handler
+        document.getElementById('invite-name').onkeydown = function(e) {
+          if (e.key === 'Enter') document.getElementById('invite-accept-btn').click();
+        };
+      })
+      .catch(function() {
+        document.getElementById('invite-desc').style.display = 'none';
+        document.getElementById('invite-invalid').style.display = '';
+      });
+
+    return true;
+  }
+
+  // Check if we're on a special page before running normal app init
+  if (!handleSharePage() && !handleInvitePage()) {
     init();
   }
 })();
