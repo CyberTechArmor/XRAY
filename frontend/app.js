@@ -82,6 +82,7 @@
     document.getElementById('toast-container').appendChild(el);
     setTimeout(function() { el.remove(); }, 4000);
   }
+  window.__xrayToast = toast;
 
   // ── Auth UI ──
   function showAuthErr(formId, msg) {
