@@ -15,12 +15,12 @@ CREATE TABLE IF NOT EXISTS platform.file_uploads (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES platform.tenants(id),
     uploaded_by UUID NOT NULL REFERENCES platform.users(id),
-    file_name TEXT NOT NULL,
-    file_size BIGINT NOT NULL DEFAULT 0,
+    original_name TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
     mime_type TEXT,
-    storage_path TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL DEFAULT 0,
     context_type TEXT NOT NULL CHECK (context_type IN ('connection','inbox','invoice','general')),
-    context_id UUID,
+    context_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
