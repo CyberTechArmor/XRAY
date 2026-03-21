@@ -66,9 +66,12 @@ app.use((req, _res, next) => {
   next();
 });
 
-// Rate limiting
+// Rate limiting — auth has its own limit, skip apiRateLimit for auth routes
 app.use('/api/auth', authRateLimit);
-app.use('/api', apiRateLimit);
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/auth')) return next();
+  return apiRateLimit(req, res, next);
+});
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -104,6 +107,17 @@ app.get('/share/:token', (_req, res) => {
     if (err) {
       // Fallback: redirect to API endpoint
       res.redirect('/api/share/' + _req.params.token);
+    }
+  });
+});
+
+// Serve invite page (serves the main index.html for /invite/:token)
+app.get('/invite/:token', (_req, res) => {
+  const path = require('path');
+  const indexPage = path.resolve(__dirname, '../../frontend/index.html');
+  res.sendFile(indexPage, (err: Error) => {
+    if (err) {
+      res.redirect('/');
     }
   });
 });

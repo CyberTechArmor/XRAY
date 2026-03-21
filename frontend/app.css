@@ -307,7 +307,8 @@ input, select, textarea { font-family: var(--font); }
 #mobile-nav { display: none; }
 .mob-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 9000; }
 .mob-overlay.open { display: block; }
-.mob-drawer { position: fixed; top: 0; right: -280px; width: 280px; height: 100vh; background: var(--bg2); border-left: 1px solid var(--bdr); z-index: 9001; transition: right .25s ease; overflow-y: auto; display: flex; flex-direction: column; }
+.mob-drawer { position: fixed; top: 0; right: -280px; width: 280px; height: 100dvh; height: 100vh; background: var(--bg2); border-left: 1px solid var(--bdr); z-index: 9001; transition: right .25s ease; overflow-y: auto; display: flex; flex-direction: column; padding-bottom: env(safe-area-inset-bottom, 0); }
+@supports (height: 100dvh) { .mob-drawer { height: 100dvh; } }
 .mob-drawer.open { right: 0; }
 .mob-drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--bdr); font-size: 16px; font-weight: 600; }
 .mob-drawer-head button { background: none; border: none; color: var(--t2); font-size: 24px; cursor: pointer; line-height: 1; }
@@ -317,7 +318,7 @@ input, select, textarea { font-family: var(--font); }
 #mob-drawer-nav .nav-item:hover { background: var(--bg3); color: var(--t1); }
 #mob-drawer-nav .nav-item.active { color: var(--acc); background: var(--acc-dim); }
 #mob-drawer-nav .nav-item svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.5; flex-shrink: 0; }
-.mob-drawer-foot { padding: 16px 20px; border-top: 1px solid var(--bdr); display: flex; align-items: center; justify-content: space-between; font-size: 14px; color: var(--t2); }
+.mob-drawer-foot { padding: 16px 20px; padding-bottom: calc(16px + env(safe-area-inset-bottom, 0)); border-top: 1px solid var(--bdr); display: flex; align-items: center; justify-content: space-between; font-size: 14px; color: var(--t2); flex-shrink: 0; }
 .mob-drawer-foot button { background: none; border: none; color: var(--t2); font-size: 13px; cursor: pointer; }
 
 /* ── Mobile responsive ── */
@@ -387,8 +388,8 @@ input, select, textarea { font-family: var(--font); }
   /* Meet mobile adjustments */
   .meet-panel { left: 8px !important; right: 8px !important; width: auto !important; }
   .meet-viewport.mode-pip { bottom: 76px; right: 8px; width: calc(100vw - 16px); }
-  /* Meet fullscreen on mobile: keep bottom nav visible */
-  .meet-viewport.mode-fullscreen { bottom: 64px !important; }
+  /* Meet fullscreen on mobile: leave room for bottom nav + raised DASH button */
+  .meet-viewport.mode-fullscreen { bottom: 80px !important; }
   .meet-header-btn span { display: none; }
   .meet-header-btn { padding: 6px 8px !important; }
 }

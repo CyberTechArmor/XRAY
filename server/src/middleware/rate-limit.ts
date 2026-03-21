@@ -12,10 +12,10 @@ export const passkeyRateLimit = rateLimit({
   message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many passkey requests, please try again later' } },
 });
 
-// General auth (login, signup, verify, etc.): 200 requests per 15 minutes per IP
+// General auth (login, signup, verify, etc.): 2000 requests per 15 minutes per IP
 export const authRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 2000,
   keyGenerator: ipKey,
   standardHeaders: true,
   legacyHeaders: false,
@@ -32,10 +32,10 @@ export const apiRateLimit = rateLimit({
   message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
 });
 
-// Magic link / code requests: 5 per hour per email
+// Magic link / code requests: 10 per minute per email (600/hour)
 export const magicLinkRateLimit = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5,
+  windowMs: 60 * 1000,
+  max: 10,
   keyGenerator: (req) => req.body?.email || req.ip || req.socket.remoteAddress || 'no-ip',
   standardHeaders: true,
   legacyHeaders: false,

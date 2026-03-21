@@ -124,14 +124,14 @@ export async function getThreadMessages(
       [threadId, userId]
     );
 
-    // Get messages (newest first)
+    // Get messages (oldest first, newest at bottom)
     const result = await client.query(`
       SELECT m.id, m.thread_id, m.sender_id, m.body, m.created_at,
         u.name AS sender_name, u.email AS sender_email
       FROM platform.inbox_messages m
       JOIN platform.users u ON u.id = m.sender_id
       WHERE m.thread_id = $1
-      ORDER BY m.created_at DESC
+      ORDER BY m.created_at ASC
     `, [threadId]);
 
     return result.rows;
@@ -148,6 +148,7 @@ export async function sendMessage(
     recipientIds?: string[];
     subject?: string;
     body: string;
+    tag?: string;
   }
 ): Promise<{ threadId: string; messageId: string }> {
   return withClient(async (client) => {
@@ -196,8 +197,8 @@ export async function sendMessage(
 
     // Create thread
     const threadResult = await client.query(
-      `INSERT INTO platform.inbox_threads (subject) VALUES ($1) RETURNING id`,
-      [opts.subject]
+      `INSERT INTO platform.inbox_threads (subject, tag) VALUES ($1, $2) RETURNING id`,
+      [opts.subject, opts.tag || null]
     );
     threadId = threadResult.rows[0].id;
 

@@ -43,12 +43,26 @@ export async function listDashboards(
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
 
+    // Subquery for view count (non-platform-admin views only)
+    const viewCountSub = `(SELECT COUNT(*)::int FROM platform.dashboard_views dv
+       JOIN platform.users vu ON vu.id = dv.user_id
+       WHERE dv.dashboard_id = d.id AND vu.is_platform_admin IS NOT TRUE) AS view_count`;
+
+    // Subquery for connector names (aggregated)
+    const connectorsSub = `(SELECT COALESCE(json_agg(json_build_object(
+       'id', ds.id, 'connection_name', c.name, 'source_type', c.source_type, 'source_key', ds.source_key
+     ) ORDER BY c.name), '[]'::json)
+     FROM platform.dashboard_sources ds
+     LEFT JOIN platform.connections c ON c.id = ds.connection_id
+     WHERE ds.dashboard_id = d.id) AS connectors`;
+
     // Platform admin: see ALL dashboards across all tenants
     if (isPlatformAdmin) {
       const result = await client.query(
-        `SELECT d.*, t.name as tenant_name FROM platform.dashboards d
+        `SELECT d.*, t.name as tenant_name, ${viewCountSub}, ${connectorsSub}
+         FROM platform.dashboards d
          JOIN platform.tenants t ON t.id = d.tenant_id
-         ORDER BY d.tenant_id, d.created_at DESC`
+         ORDER BY d.updated_at DESC`
       );
       return result.rows;
     }
@@ -57,9 +71,10 @@ export async function listDashboards(
 
     if (hasManagePermission) {
       const result = await client.query(
-        `SELECT * FROM platform.dashboards
-         WHERE tenant_id = $1
-         ORDER BY created_at DESC`,
+        `SELECT d.*, ${viewCountSub}, ${connectorsSub}
+         FROM platform.dashboards d
+         WHERE d.tenant_id = $1
+         ORDER BY d.updated_at DESC`,
         [tenantId]
       );
       return result.rows;
@@ -67,10 +82,11 @@ export async function listDashboards(
 
     // Return only dashboards the user has access to
     const result = await client.query(
-      `SELECT d.* FROM platform.dashboards d
+      `SELECT d.*, ${viewCountSub}, ${connectorsSub}
+       FROM platform.dashboards d
        JOIN platform.dashboard_access da ON da.dashboard_id = d.id
        WHERE d.tenant_id = $1 AND da.user_id = $2
-       ORDER BY d.created_at DESC`,
+       ORDER BY d.updated_at DESC`,
       [tenantId, userId]
     );
     return result.rows;
@@ -421,6 +437,144 @@ export async function renderPublicDashboard(
   const html = await response.text();
   return { html, css: '', js: '', name: dashboard.name };
 }
+
+// ─── View tracking ──────────────────────────────────────────────────────────
+
+export async function recordView(
+  dashboardId: string,
+  userId: string
+): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    await client.query(
+      `INSERT INTO platform.dashboard_views (dashboard_id, user_id) VALUES ($1, $2)`,
+      [dashboardId, userId]
+    );
+  });
+}
+
+export async function getViewCount(dashboardId: string): Promise<number> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT COUNT(*)::int as count FROM platform.dashboard_views WHERE dashboard_id = $1`,
+      [dashboardId]
+    );
+    return result.rows[0].count;
+  });
+}
+
+// ─── Comments ───────────────────────────────────────────────────────────────
+
+export async function listComments(
+  dashboardId: string,
+  limit: number = 10,
+  offset: number = 0
+): Promise<{ comments: any[]; total: number }> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int as total FROM platform.dashboard_comments WHERE dashboard_id = $1`,
+      [dashboardId]
+    );
+    const result = await client.query(
+      `SELECT c.*, u.name AS author_name, u.email AS author_email
+       FROM platform.dashboard_comments c
+       LEFT JOIN platform.users u ON u.id = c.author_id
+       WHERE c.dashboard_id = $1
+       ORDER BY c.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [dashboardId, limit, offset]
+    );
+    return { comments: result.rows, total: countResult.rows[0].total };
+  });
+}
+
+export async function createComment(
+  dashboardId: string,
+  authorId: string,
+  content: string
+): Promise<any> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `INSERT INTO platform.dashboard_comments (dashboard_id, author_id, content)
+       VALUES ($1, $2, $3) RETURNING *`,
+      [dashboardId, authorId, content]
+    );
+    return result.rows[0];
+  });
+}
+
+export async function deleteComment(commentId: string): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    await client.query(`DELETE FROM platform.dashboard_comments WHERE id = $1`, [commentId]);
+  });
+}
+
+// ─── Connector sources ──────────────────────────────────────────────────────
+
+export async function listDashboardConnectors(
+  dashboardId: string
+): Promise<any[]> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT ds.id, ds.source_key, ds.table_name, ds.refresh_cadence,
+              c.id as connection_id, c.name as connection_name, c.source_type, c.status as connection_status
+       FROM platform.dashboard_sources ds
+       LEFT JOIN platform.connections c ON c.id = ds.connection_id
+       WHERE ds.dashboard_id = $1
+       ORDER BY ds.created_at`,
+      [dashboardId]
+    );
+    return result.rows;
+  });
+}
+
+export async function attachConnector(
+  dashboardId: string,
+  connectionId: string,
+  sourceKey: string,
+  tableName: string,
+  tenantId: string,
+  refreshCadence: string = 'hourly'
+): Promise<any> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `INSERT INTO platform.dashboard_sources (dashboard_id, tenant_id, connection_id, source_key, table_name, refresh_cadence)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [dashboardId, tenantId, connectionId, sourceKey, tableName, refreshCadence]
+    );
+    return result.rows[0];
+  });
+}
+
+export async function detachConnector(sourceId: string): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    await client.query(`DELETE FROM platform.dashboard_sources WHERE id = $1`, [sourceId]);
+  });
+}
+
+// ─── Image ──────────────────────────────────────────────────────────────────
+
+export async function updateTileImage(
+  dashboardId: string,
+  imageUrl: string
+): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    await client.query(
+      `UPDATE platform.dashboards SET tile_image_url = $1, updated_at = now() WHERE id = $2`,
+      [imageUrl, dashboardId]
+    );
+  });
+}
+
+// ─── Embed ──────────────────────────────────────────────────────────────────
 
 export async function getEmbedDashboard(
   embedToken: string
