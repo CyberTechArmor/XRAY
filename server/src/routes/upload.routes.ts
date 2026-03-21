@@ -11,8 +11,12 @@ import { AppError } from '../middleware/error-handler';
 const UPLOAD_DIR = path.resolve(__dirname, '../../../uploads');
 
 // Ensure upload directory exists
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(UPLOAD_DIR)) {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  }
+} catch (e) {
+  console.warn('Could not create uploads directory:', (e as Error).message);
 }
 
 const storage = multer.diskStorage({
