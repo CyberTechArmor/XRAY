@@ -67,6 +67,13 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           `UPDATE platform.dashboards SET last_viewed_at = now() WHERE id = $1`,
           [req.params.id]
         );
+        // Track view count for non-platform-admin users
+        if (!req.user!.is_platform_admin) {
+          client.query(
+            `INSERT INTO platform.dashboard_views (dashboard_id, user_id) VALUES ($1, $2)`,
+            [req.params.id, req.user!.sub]
+          );
+        }
       }
       return result.rows[0];
     });
@@ -223,6 +230,175 @@ router.get('/:id/share', authenticateJWT, async (req, res, next) => {
     next(err);
   }
 });
+
+// ─── Comments ───────────────────────────────────────────────────────────────
+
+// GET /:id/comments - list comments with pagination
+router.get('/:id/comments', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 10, 50);
+    const offset = parseInt(req.query.offset as string, 10) || 0;
+    const result = await dashboardService.listComments(req.params.id, limit, offset);
+    res.json({
+      ok: true,
+      data: result.comments,
+      meta: { total: result.total, limit, offset, request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /:id/comments - add comment
+router.post('/:id/comments', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
+  try {
+    const content = (req.body.content || '').trim();
+    if (!content || content.length > 10000) {
+      return res.status(400).json({ ok: false, error: { code: 'INVALID_INPUT', message: 'Content is required (max 10000 chars)' } });
+    }
+    const result = await dashboardService.createComment(req.params.id, req.user!.sub, content);
+    res.status(201).json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /:id/comments/:cid - delete comment (owner or platform admin)
+router.delete('/:id/comments/:cid', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Not allowed' } });
+    }
+    await dashboardService.deleteComment(req.params.cid);
+    res.json({ ok: true, data: { message: 'Deleted' } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Connectors ─────────────────────────────────────────────────────────────
+
+// GET /:id/connectors - list attached connectors
+router.get('/:id/connectors', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
+  try {
+    const result = await dashboardService.listDashboardConnectors(req.params.id);
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /:id/connectors - attach connector (owner/platform admin)
+router.post('/:id/connectors', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Not allowed' } });
+    }
+    const { connectionId, sourceKey, tableName, refreshCadence } = req.body;
+    if (!connectionId || !sourceKey || !tableName) {
+      return res.status(400).json({ ok: false, error: { code: 'INVALID_INPUT', message: 'connectionId, sourceKey, and tableName are required' } });
+    }
+    const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
+    const result = await dashboardService.attachConnector(req.params.id, connectionId, sourceKey, tableName, tenantId, refreshCadence || 'hourly');
+    res.status(201).json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /:id/connectors/:sid - detach connector (owner/platform admin)
+router.delete('/:id/connectors/:sid', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Not allowed' } });
+    }
+    await dashboardService.detachConnector(req.params.sid);
+    res.json({ ok: true, data: { message: 'Detached' } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /:id/available-connectors - list connectors from dashboard's tenant
+router.get('/:id/available-connectors', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Not allowed' } });
+    }
+    const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
+    const { listConnections } = await import('../services/connection.service');
+    const connections = await listConnections(tenantId);
+    res.json({ ok: true, data: connections });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Image ──────────────────────────────────────────────────────────────────
+
+// PATCH /:id/image - update tile image URL (owner/platform admin)
+router.patch('/:id/image', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Not allowed' } });
+    }
+    const { imageUrl } = req.body;
+    if (!imageUrl) {
+      return res.status(400).json({ ok: false, error: { code: 'INVALID_INPUT', message: 'imageUrl is required' } });
+    }
+    await dashboardService.updateTileImage(req.params.id, imageUrl);
+    res.json({ ok: true, data: { message: 'Image updated' } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /:id/image/upload - upload tile image file (owner/platform admin)
+router.post('/:id/image/upload', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Not allowed' } });
+    }
+    // Use existing upload infrastructure
+    const multer = (await import('multer')).default;
+    const path = await import('path');
+    const crypto = await import('crypto');
+    const uploadDir = path.join(process.cwd(), 'uploads');
+    const storage = multer.diskStorage({
+      destination: uploadDir,
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname);
+        cb(null, crypto.randomUUID() + ext);
+      },
+    });
+    const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } }).single('image');
+    upload(req, res, async (err) => {
+      if (err) return res.status(400).json({ ok: false, error: { code: 'UPLOAD_ERROR', message: err.message } });
+      if (!req.file) return res.status(400).json({ ok: false, error: { code: 'NO_FILE', message: 'No image file provided' } });
+      const imageUrl = `/api/uploads/${req.file.filename}/download`;
+      // Store file record
+      try {
+        const { createFileRecord } = await import('../services/upload.service');
+        await createFileRecord({
+          tenantId: req.user!.tid,
+          uploadedBy: req.user!.sub,
+          originalName: req.file.originalname,
+          storedName: req.file.filename,
+          mimeType: req.file.mimetype,
+          sizeBytes: req.file.size,
+          contextType: 'general',
+          contextId: req.params.id,
+        });
+      } catch (e) { /* file record optional */ }
+      await dashboardService.updateTileImage(req.params.id, imageUrl);
+      res.json({ ok: true, data: { imageUrl } });
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Embeds ─────────────────────────────────────────────────────────────────
 
 // POST /:id/embed - create embed token (JWT, dashboards.embed)
 router.post('/:id/embed', authenticateJWT, requirePermission('dashboards.embed'), async (req, res, next) => {
