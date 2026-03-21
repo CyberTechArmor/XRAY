@@ -638,7 +638,8 @@
       admin_webhooks: 'if(typeof initWebhooks==="function")initWebhooks(container,api,user);',
       admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);',
       admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);',
-      inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);'
+      inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);',
+      files: 'if(typeof initFiles==="function")initFiles(container,api,user);'
     };
     return fnMap[viewName] || '';
   }

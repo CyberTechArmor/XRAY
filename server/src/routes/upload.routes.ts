@@ -39,6 +39,29 @@ const contextTypeSchema = z.enum(['connection', 'inbox', 'invoice', 'general']);
 
 const router = Router();
 
+// GET / - list all files for tenant
+router.get('/', authenticateJWT, async (req, res, next) => {
+  try {
+    const contextType = req.query.contextType as string | undefined;
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+    const offset = parseInt(req.query.offset as string) || 0;
+    const result = await uploadService.listAllFiles(req.user!.tid, { contextType, limit, offset });
+    res.json({
+      ok: true,
+      data: result.rows,
+      meta: {
+        total: result.total,
+        limit,
+        offset,
+        request_id: req.headers['x-request-id'] || '',
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST / - upload files
 router.post('/', authenticateJWT, upload.array('files', 10), async (req, res, next) => {
   try {
