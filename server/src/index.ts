@@ -2,6 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import path from 'path';
 import { config } from './config';
 import { errorHandler } from './middleware/error-handler';
 import { apiRateLimit, authRateLimit } from './middleware/rate-limit';
@@ -99,9 +100,13 @@ app.use('/api/share', shareRoutes);
 app.use('/api/inbox', inboxRoutes);
 if (uploadRoutes) app.use('/api/uploads', uploadRoutes);
 
+// Serve frontend static files (fallback when nginx is not in front)
+const frontendDir = path.resolve(__dirname, '../../frontend');
+app.use(express.static(frontendDir, { maxAge: 0 }));
+
 // Serve public share page (serves the HTML page for /share/:token)
 app.get('/share/:token', (_req, res) => {
-  const path = require('path');
+
   const sharePage = path.resolve(__dirname, '../../frontend/share.html');
   res.sendFile(sharePage, (err: Error) => {
     if (err) {
@@ -113,12 +118,20 @@ app.get('/share/:token', (_req, res) => {
 
 // Serve invite page (serves the main index.html for /invite/:token)
 app.get('/invite/:token', (_req, res) => {
-  const path = require('path');
+
   const indexPage = path.resolve(__dirname, '../../frontend/index.html');
   res.sendFile(indexPage, (err: Error) => {
     if (err) {
       res.redirect('/');
     }
+  });
+});
+
+// SPA fallback — serve index.html for non-API, non-file routes
+app.get('*', (_req, res) => {
+  const indexPage = path.resolve(__dirname, '../../frontend/index.html');
+  res.sendFile(indexPage, (err: Error) => {
+    if (err) res.status(404).end();
   });
 });
 
