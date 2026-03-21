@@ -953,6 +953,7 @@
     var params = new URLSearchParams({ room: room });
     if (currentUser && currentUser.name) params.set('name', currentUser.name);
     params.set('autojoin', 'true');
+    params.set('hideEndCall', 'true');
     var url = meetState.serverUrl + '/?' + params.toString();
 
     var viewport = document.getElementById('meet-viewport');
