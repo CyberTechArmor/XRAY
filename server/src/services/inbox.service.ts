@@ -34,13 +34,17 @@ export async function listThreads(
   isPlatformAdmin: boolean,
   search?: string,
   limit = 50,
-  offset = 0
+  offset = 0,
+  archived = false
 ): Promise<Thread[]> {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
 
     let whereClause = `tp.user_id = $1`;
     const params: any[] = [userId, limit, offset];
+
+    // Filter by archive status
+    whereClause += ` AND COALESCE(tp.is_archived, false) = ${archived}`;
 
     if (search) {
       params.push(`%${search}%`);
@@ -50,8 +54,8 @@ export async function listThreads(
     }
 
     const result = await client.query(`
-      SELECT t.id, t.subject, t.created_at, t.updated_at,
-        tp.is_starred, tp.is_read,
+      SELECT t.id, t.subject, t.created_at, t.updated_at, t.tag,
+        tp.is_starred, tp.is_read, COALESCE(tp.is_archived, false) AS is_archived,
         (SELECT COUNT(*) FROM platform.inbox_messages m WHERE m.thread_id = t.id) AS message_count,
         (SELECT COUNT(*) FROM platform.inbox_thread_participants tp2 WHERE tp2.thread_id = t.id) AS participant_count,
         lm.created_at AS last_message_at,
@@ -228,6 +232,33 @@ export async function toggleStar(threadId: string, userId: string): Promise<bool
     );
     if (result.rows.length === 0) throw Object.assign(new Error('Not found'), { statusCode: 404 });
     return result.rows[0].is_starred;
+  });
+}
+
+// ── Toggle archive ──
+export async function toggleArchive(threadId: string, userId: string): Promise<boolean> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `UPDATE platform.inbox_thread_participants SET is_archived = NOT COALESCE(is_archived, false)
+       WHERE thread_id = $1 AND user_id = $2 RETURNING is_archived`,
+      [threadId, userId]
+    );
+    if (result.rows.length === 0) throw Object.assign(new Error('Not found'), { statusCode: 404 });
+    return result.rows[0].is_archived;
+  });
+}
+
+// ── Set thread tag ──
+export async function setThreadTag(threadId: string, tag: string | null): Promise<string | null> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `UPDATE platform.inbox_threads SET tag = $1 WHERE id = $2 RETURNING tag`,
+      [tag, threadId]
+    );
+    if (result.rows.length === 0) throw Object.assign(new Error('Not found'), { statusCode: 404 });
+    return result.rows[0].tag;
   });
 }
 

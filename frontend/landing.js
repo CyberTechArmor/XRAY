@@ -1,5 +1,7 @@
 /* ── Landing page initialization ── */
 (function(){
+  // Skip landing page init on share pages
+  if (window.location.pathname.match(/^\/share\/.+/)) return;
   var landing = document.getElementById('landing-screen');
   if (!landing) return;
 

@@ -11,16 +11,22 @@ const sendSchema = z.object({
   recipientIds: z.array(z.string().uuid()).optional(),
   subject: z.string().min(1).max(200).optional(),
   body: z.string().min(1).max(10000),
+  tag: z.string().max(50).optional(),
+});
+
+const tagSchema = z.object({
+  tag: z.string().max(50).nullable(),
 });
 
 // GET / - list threads
 router.get('/', authenticateJWT, async (req, res, next) => {
   try {
     const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+    const archived = req.query.archived === 'true';
     const limit = parseInt(req.query.limit as string, 10) || 50;
     const offset = parseInt(req.query.offset as string, 10) || 0;
     const threads = await inboxService.listThreads(
-      req.user!.sub, req.user!.tid, req.user!.is_platform_admin, search, limit, offset
+      req.user!.sub, req.user!.tid, req.user!.is_platform_admin, search, limit, offset, archived
     );
     res.json({
       ok: true,
@@ -103,6 +109,35 @@ router.post('/', authenticateJWT, async (req, res, next) => {
     res.status(201).json({
       ok: true,
       data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /:threadId/archive - toggle archive
+router.patch('/:threadId/archive', authenticateJWT, async (req, res, next) => {
+  try {
+    const isArchived = await inboxService.toggleArchive(req.params.threadId, req.user!.sub);
+    res.json({
+      ok: true,
+      data: { is_archived: isArchived },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /:threadId/tag - set tag on thread
+router.patch('/:threadId/tag', authenticateJWT, async (req, res, next) => {
+  try {
+    const data = validateBody(tagSchema, req.body);
+    const tag = await inboxService.setThreadTag(req.params.threadId, data.tag);
+    res.json({
+      ok: true,
+      data: { tag },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {

@@ -1,0 +1,89 @@
+import { withClient } from '../db/connection';
+import { AppError } from '../middleware/error-handler';
+
+export interface FileRecord {
+  id: string;
+  tenant_id: string;
+  uploaded_by: string;
+  original_name: string;
+  stored_name: string;
+  mime_type: string;
+  size_bytes: number;
+  context_type: string;
+  context_id: string | null;
+  created_at: string;
+}
+
+// ── Create file record ──
+export async function createFileRecord(input: {
+  tenantId: string;
+  uploadedBy: string;
+  originalName: string;
+  storedName: string;
+  mimeType: string;
+  sizeBytes: number;
+  contextType: string;
+  contextId?: string;
+}): Promise<FileRecord> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `INSERT INTO platform.file_uploads
+        (tenant_id, uploaded_by, original_name, stored_name, mime_type, size_bytes, context_type, context_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        input.tenantId, input.uploadedBy, input.originalName, input.storedName,
+        input.mimeType, input.sizeBytes, input.contextType, input.contextId || null,
+      ]
+    );
+    return result.rows[0];
+  });
+}
+
+// ── Get file by ID ──
+export async function getFileById(fileId: string): Promise<FileRecord> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT * FROM platform.file_uploads WHERE id = $1`,
+      [fileId]
+    );
+    if (result.rows.length === 0) {
+      throw new AppError(404, 'NOT_FOUND', 'File not found');
+    }
+    return result.rows[0];
+  });
+}
+
+// ── List files by context ──
+export async function listFilesByContext(
+  contextType: string,
+  contextId: string
+): Promise<FileRecord[]> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT * FROM platform.file_uploads
+       WHERE context_type = $1 AND context_id = $2
+       ORDER BY created_at DESC`,
+      [contextType, contextId]
+    );
+    return result.rows;
+  });
+}
+
+// ── Delete file record ──
+export async function deleteFileRecord(fileId: string): Promise<{ id: string }> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `DELETE FROM platform.file_uploads WHERE id = $1 RETURNING id, stored_name`,
+      [fileId]
+    );
+    if (result.rows.length === 0) {
+      throw new AppError(404, 'NOT_FOUND', 'File not found');
+    }
+    return result.rows[0];
+  });
+}
