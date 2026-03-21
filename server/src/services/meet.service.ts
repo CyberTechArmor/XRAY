@@ -56,39 +56,123 @@ export async function getMeetSettings(): Promise<{ serverUrl: string; configured
 }
 
 /**
- * Make a MEET API request with automatic URL fallback.
- * Tries the API URL (api.subdomain) first; if that fails with a network error
- * or 405, falls back to the frontend URL (in case the deployment doesn't use
- * subdomain routing).
+ * Make a MEET API request. Tries multiple URL strategies:
+ * 1. API subdomain URL (api.meet.example.com)
+ * 2. Frontend URL (meet.example.com) — for single-origin deployments
+ *
+ * Returns detailed errors so the admin can diagnose connectivity issues.
  */
 async function meetApiFetch(
   config: MeetConfig,
   path: string,
   init: RequestInit
 ): Promise<Response> {
-  const urls = [config.apiUrl, config.serverUrl];
-  let lastError: Error | null = null;
-  let lastResponse: Response | null = null;
+  const attempts: { url: string; error: string }[] = [];
 
-  for (const baseUrl of urls) {
-    try {
-      const response = await fetch(`${baseUrl}${path}`, init);
-      // 405 means we hit the frontend nginx, not the API — try next URL
-      if (response.status === 405 && baseUrl !== urls[urls.length - 1]) {
-        lastResponse = response;
-        continue;
-      }
+  // Strategy 1: API subdomain (api.meet.example.com)
+  const apiFullUrl = `${config.apiUrl}${path}`;
+  try {
+    const response = await fetch(apiFullUrl, init);
+    if (response.status !== 405) {
+      return response; // Success or a real API error — return it
+    }
+    attempts.push({ url: apiFullUrl, error: '405 Not Allowed (hit frontend nginx, not API server)' });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    attempts.push({ url: apiFullUrl, error: msg });
+  }
+
+  // Strategy 2: Frontend URL directly (meet.example.com)
+  const frontendFullUrl = `${config.serverUrl}${path}`;
+  try {
+    const response = await fetch(frontendFullUrl, init);
+    if (response.status !== 405) {
       return response;
+    }
+    attempts.push({ url: frontendFullUrl, error: '405 Not Allowed (nginx blocks POST/PUT on frontend)' });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    attempts.push({ url: frontendFullUrl, error: msg });
+  }
+
+  // All strategies failed — build a helpful diagnostic message
+  const details = attempts.map((a) => `  ${a.url} → ${a.error}`).join('\n');
+  throw new AppError(502, 'MEET_API_ERROR',
+    `Could not reach MEET API server. Tried:\n${details}\n\nCheck that the API subdomain (${config.apiUrl}) has DNS configured and is accessible from this server.`
+  );
+}
+
+/**
+ * Test connectivity to the MEET API with detailed diagnostics.
+ * Tries each URL strategy and reports what happened.
+ */
+export async function testConnection(): Promise<{
+  success: boolean;
+  workingUrl: string | null;
+  apiUrl: string;
+  frontendUrl: string;
+  attempts: { url: string; status: string; ok: boolean }[];
+}> {
+  const config = await getMeetConfig();
+  const testPath = '/api/rooms';
+  const testBody = JSON.stringify({
+    roomName: `xray-test-${Date.now()}`,
+    displayName: 'Connection Test',
+    maxParticipants: 2,
+  });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-API-Key': config.apiKey,
+  };
+
+  const attempts: { url: string; status: string; ok: boolean }[] = [];
+  let workingUrl: string | null = null;
+
+  // Test API subdomain URL
+  const apiFullUrl = `${config.apiUrl}${testPath}`;
+  try {
+    const resp = await fetch(apiFullUrl, { method: 'POST', headers, body: testBody });
+    if (resp.ok) {
+      attempts.push({ url: config.apiUrl, status: `${resp.status} OK - Room created`, ok: true });
+      workingUrl = config.apiUrl;
+    } else if (resp.status === 405) {
+      attempts.push({ url: config.apiUrl, status: '405 Not Allowed - Hit frontend nginx, not the API server', ok: false });
+    } else {
+      const text = await resp.text().catch(() => '');
+      attempts.push({ url: config.apiUrl, status: `${resp.status} - ${text.substring(0, 100)}`, ok: false });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    attempts.push({ url: config.apiUrl, status: `Network error: ${msg}`, ok: false });
+  }
+
+  // Test frontend URL (for non-subdomain deployments)
+  if (!workingUrl) {
+    const frontendFullUrl = `${config.serverUrl}${testPath}`;
+    try {
+      const resp = await fetch(frontendFullUrl, { method: 'POST', headers, body: testBody });
+      if (resp.ok) {
+        attempts.push({ url: config.serverUrl, status: `${resp.status} OK - Room created`, ok: true });
+        workingUrl = config.serverUrl;
+      } else if (resp.status === 405) {
+        attempts.push({ url: config.serverUrl, status: '405 Not Allowed - nginx blocks POST requests on this URL', ok: false });
+      } else {
+        const text = await resp.text().catch(() => '');
+        attempts.push({ url: config.serverUrl, status: `${resp.status} - ${text.substring(0, 100)}`, ok: false });
+      }
     } catch (err) {
-      lastError = err as Error;
-      // Network error — try next URL
-      continue;
+      const msg = err instanceof Error ? err.message : String(err);
+      attempts.push({ url: config.serverUrl, status: `Network error: ${msg}`, ok: false });
     }
   }
 
-  // If we got a 405 response from the last URL, return it
-  if (lastResponse) return lastResponse;
-  throw lastError || new Error('Failed to connect to MEET server');
+  return {
+    success: !!workingUrl,
+    workingUrl,
+    apiUrl: config.apiUrl,
+    frontendUrl: config.serverUrl,
+    attempts,
+  };
 }
 
 export async function createRoom(options: {
