@@ -4,7 +4,22 @@ import { decrypt } from '../lib/crypto';
 
 interface MeetConfig {
   serverUrl: string;
+  apiUrl: string;
   apiKey: string;
+}
+
+/**
+ * Derive the API URL from the frontend URL.
+ * For subdomain-routed deployments: https://meet.example.com -> https://api.meet.example.com
+ */
+function deriveApiUrl(frontendUrl: string): string {
+  try {
+    const u = new URL(frontendUrl);
+    u.hostname = `api.${u.hostname}`;
+    return u.origin;
+  } catch {
+    return frontendUrl;
+  }
 }
 
 async function getMeetConfig(): Promise<MeetConfig> {
@@ -24,6 +39,7 @@ async function getMeetConfig(): Promise<MeetConfig> {
 
     return {
       serverUrl: settings.meet_server_url,
+      apiUrl: deriveApiUrl(settings.meet_server_url),
       apiKey: settings.meet_api_key,
     };
   });
@@ -39,6 +55,42 @@ export async function getMeetSettings(): Promise<{ serverUrl: string; configured
   });
 }
 
+/**
+ * Make a MEET API request with automatic URL fallback.
+ * Tries the API URL (api.subdomain) first; if that fails with a network error
+ * or 405, falls back to the frontend URL (in case the deployment doesn't use
+ * subdomain routing).
+ */
+async function meetApiFetch(
+  config: MeetConfig,
+  path: string,
+  init: RequestInit
+): Promise<Response> {
+  const urls = [config.apiUrl, config.serverUrl];
+  let lastError: Error | null = null;
+  let lastResponse: Response | null = null;
+
+  for (const baseUrl of urls) {
+    try {
+      const response = await fetch(`${baseUrl}${path}`, init);
+      // 405 means we hit the frontend nginx, not the API — try next URL
+      if (response.status === 405 && baseUrl !== urls[urls.length - 1]) {
+        lastResponse = response;
+        continue;
+      }
+      return response;
+    } catch (err) {
+      lastError = err as Error;
+      // Network error — try next URL
+      continue;
+    }
+  }
+
+  // If we got a 405 response from the last URL, return it
+  if (lastResponse) return lastResponse;
+  throw lastError || new Error('Failed to connect to MEET server');
+}
+
 export async function createRoom(options: {
   roomId?: string;
   displayName?: string;
@@ -47,7 +99,7 @@ export async function createRoom(options: {
   const config = await getMeetConfig();
   const roomName = options.roomId || `xray-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const response = await fetch(`${config.serverUrl}/api/rooms`, {
+  const response = await meetApiFetch(config, '/api/rooms', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
