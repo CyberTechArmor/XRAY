@@ -66,9 +66,12 @@ app.use((req, _res, next) => {
   next();
 });
 
-// Rate limiting
+// Rate limiting — auth has its own limit, skip apiRateLimit for auth routes
 app.use('/api/auth', authRateLimit);
-app.use('/api', apiRateLimit);
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/auth')) return next();
+  return apiRateLimit(req, res, next);
+});
 
 // Health check
 app.get('/api/health', (_req, res) => {
