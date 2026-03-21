@@ -174,7 +174,7 @@ CREATE TABLE platform.dashboards (
     is_public       BOOLEAN DEFAULT false,
     public_token    TEXT UNIQUE,
     status          TEXT NOT NULL DEFAULT 'draft'
-                    CHECK (status IN ('draft', 'active', 'archived')),
+                    CHECK (status IN ('draft', 'active', 'archived', 'disabled')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -259,7 +259,7 @@ CREATE TABLE platform.billing_state (
     tenant_id               UUID UNIQUE NOT NULL REFERENCES platform.tenants(id),
     stripe_subscription_id  TEXT,
     plan_tier               TEXT NOT NULL DEFAULT 'free'
-                            CHECK (plan_tier IN ('free', 'starter', 'professional')),
+                            CHECK (plan_tier IN ('free', 'starter', 'professional', 'pro5', 'pro10', 'e20', 'e40')),
     dashboard_limit         INTEGER NOT NULL DEFAULT 0,
     connector_limit         INTEGER NOT NULL DEFAULT 0,
     current_period_end      TIMESTAMPTZ,
@@ -329,10 +329,27 @@ CREATE TABLE platform.webhooks (
 CREATE INDEX idx_webhooks_url_token ON platform.webhooks(url_token) WHERE is_active;
 CREATE INDEX idx_webhooks_connection ON platform.webhooks(connection_id);
 
+-- File Uploads
+CREATE TABLE platform.file_uploads (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID NOT NULL REFERENCES platform.tenants(id),
+    uploaded_by     UUID NOT NULL REFERENCES platform.users(id),
+    original_name   TEXT NOT NULL,
+    stored_name     TEXT NOT NULL,
+    mime_type       TEXT,
+    size_bytes      BIGINT NOT NULL DEFAULT 0,
+    context_type    TEXT NOT NULL CHECK (context_type IN ('connection','inbox','invoice','general')),
+    context_id      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_file_uploads_context ON platform.file_uploads(context_type, context_id);
+
 -- Inbox Threads
 CREATE TABLE platform.inbox_threads (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subject         TEXT NOT NULL,
+    tag             TEXT CHECK (tag IN ('dashboards','connectors','billing','other')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -344,6 +361,7 @@ CREATE TABLE platform.inbox_thread_participants (
     user_id         UUID NOT NULL REFERENCES platform.users(id) ON DELETE CASCADE,
     is_read         BOOLEAN NOT NULL DEFAULT false,
     is_starred      BOOLEAN NOT NULL DEFAULT false,
+    is_archived     BOOLEAN NOT NULL DEFAULT false,
     UNIQUE (thread_id, user_id)
 );
 
@@ -393,6 +411,7 @@ ALTER TABLE platform.audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.dashboard_embeds ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.api_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.webhooks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE platform.file_uploads ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies: tenant isolation
 CREATE POLICY tenant_isolation ON platform.users USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
@@ -409,6 +428,7 @@ CREATE POLICY tenant_isolation ON platform.audit_log USING (tenant_id = current_
 CREATE POLICY tenant_isolation ON platform.dashboard_embeds USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
 CREATE POLICY tenant_isolation ON platform.api_keys USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
 CREATE POLICY tenant_isolation ON platform.webhooks USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
+CREATE POLICY tenant_isolation ON platform.file_uploads USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
 
 -- ─── Seed: Roles ────────────────────────────────────────────────────────────
 INSERT INTO platform.roles (name, slug, description, is_system, is_platform) VALUES
@@ -520,3 +540,4 @@ CREATE POLICY platform_admin_bypass ON platform.audit_log USING (current_setting
 CREATE POLICY platform_admin_bypass ON platform.dashboard_embeds USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.api_keys USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.webhooks USING (current_setting('app.is_platform_admin', true)::boolean = true);
+CREATE POLICY platform_admin_bypass ON platform.file_uploads USING (current_setting('app.is_platform_admin', true)::boolean = true);
