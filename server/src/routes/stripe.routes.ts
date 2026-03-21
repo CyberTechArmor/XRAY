@@ -44,11 +44,73 @@ router.post('/webhook', raw({ type: 'application/json' }), async (req, res, next
 router.get('/status', authenticateJWT, requirePermission('billing.view'), async (req, res, next) => {
   try {
     const result = await stripeService.getBillingStatus(req.user!.tid);
+    // Check for billing override
+    const { getSetting } = await import('../services/settings.service');
+    const override = await getSetting('billing.override.' + req.user!.tid);
+    if (override === 'true') {
+      (result as any).billingOverride = true;
+    }
     res.json({
       ok: true,
       data: result,
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /plan - lightweight billing check for dashboard access (JWT, dashboards.view only)
+router.get('/plan', authenticateJWT, async (req, res, next) => {
+  try {
+    const { getSetting } = await import('../services/settings.service');
+    const override = await getSetting('billing.override.' + req.user!.tid);
+    if (override === 'true') {
+      res.json({ ok: true, data: { hasVision: true, dashSlots: 999, billingOverride: true } });
+      return;
+    }
+    const result = await stripeService.getBillingStatus(req.user!.tid);
+    const VISION_PRODUCT = 'prod_UB9nZ8qktPbtyi';
+    const DASHBOARD_PRODUCT = 'prod_UB9fsE1JmQjRgw';
+    let hasVision = false;
+    let dashSlots = 0;
+    for (const s of result.subscriptions) {
+      if (s.status === 'active' || s.status === 'trialing' || (s.cancelAtPeriodEnd && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > new Date())) {
+        if (s.productId === VISION_PRODUCT) hasVision = true;
+        if (s.productId === DASHBOARD_PRODUCT) dashSlots += s.quantity;
+      }
+    }
+    res.json({ ok: true, data: { hasVision, dashSlots } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /override/:tenantId/status - check billing override (platform admin only)
+router.get('/override/:tenantId/status', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Platform admin only' } });
+    }
+    const { getSetting } = await import('../services/settings.service');
+    const override = await getSetting('billing.override.' + req.params.tenantId);
+    res.json({ ok: true, data: { override: override === 'true' } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /override/:tenantId - set billing override for a tenant (platform admin only)
+router.post('/override/:tenantId', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Platform admin only' } });
+    }
+    const { updateSettings } = await import('../services/settings.service');
+    const key = 'billing.override.' + req.params.tenantId;
+    const enabled = req.body && req.body.enabled;
+    await updateSettings({ [key]: enabled ? 'true' : null }, req.user!.sub);
+    res.json({ ok: true, data: { override: !!enabled } });
   } catch (err) {
     next(err);
   }

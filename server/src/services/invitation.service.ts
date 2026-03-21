@@ -8,10 +8,24 @@ import * as auditService from './audit.service';
 export async function createInvitation(
   tenantId: string,
   invitedBy: string,
-  input: { email: string; roleId: string; dashboardIds?: string[] }
+  input: { email: string; roleId?: string; dashboardIds?: string[] }
 ) {
   return withTransaction(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+
+    // If no roleId provided, default to 'member' role
+    let roleId = input.roleId;
+    if (!roleId) {
+      const defaultRole = await client.query(
+        `SELECT id FROM platform.roles WHERE slug = 'member' LIMIT 1`
+      );
+      if (defaultRole.rows.length > 0) {
+        roleId = defaultRole.rows[0].id;
+      } else {
+        throw new AppError(400, 'NO_DEFAULT_ROLE', 'No default role found. Please specify a role.');
+      }
+    }
+
     // Check if user already exists in this tenant
     const existing = await client.query(
       'SELECT id FROM platform.users WHERE email = $1 AND tenant_id = $2',
@@ -35,7 +49,7 @@ export async function createInvitation(
     const result = await client.query(
       `INSERT INTO platform.invitations (tenant_id, email, role_id, invited_by, dashboard_ids, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [tenantId, input.email, input.roleId, invitedBy, input.dashboardIds || [], expiresAt]
+      [tenantId, input.email, roleId, invitedBy, input.dashboardIds || [], expiresAt]
     );
 
     const invitation = result.rows[0];

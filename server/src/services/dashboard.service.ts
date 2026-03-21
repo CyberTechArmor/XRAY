@@ -37,11 +37,23 @@ interface DashboardSource {
 export async function listDashboards(
   tenantId: string,
   userId: string,
-  hasManagePermission: boolean
+  hasManagePermission: boolean,
+  isPlatformAdmin: boolean = false
 ): Promise<Dashboard[]> {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+
+    // Platform admin: see ALL dashboards across all tenants
+    if (isPlatformAdmin) {
+      const result = await client.query(
+        `SELECT d.*, t.name as tenant_name FROM platform.dashboards d
+         JOIN platform.tenants t ON t.id = d.tenant_id
+         ORDER BY d.tenant_id, d.created_at DESC`
+      );
+      return result.rows;
+    }
+
     await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
-    await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
 
     if (hasManagePermission) {
       const result = await client.query(

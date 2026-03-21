@@ -82,6 +82,7 @@
     document.getElementById('toast-container').appendChild(el);
     setTimeout(function() { el.remove(); }, 4000);
   }
+  window.__xrayToast = toast;
 
   // ── Auth UI ──
   function showAuthErr(formId, msg) {
@@ -408,7 +409,8 @@
         var el = document.createElement('div');
         el.className = 'nav-item';
         el.setAttribute('data-view', item.view);
-        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>';
+        var badgeHtml = item.view === 'inbox' ? '<span class="nav-badge" id="inbox-badge" style="display:none"></span>' : '';
+        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>' + badgeHtml;
         el.onclick = function() { navigateTo(item.view); };
         sidebar.appendChild(el);
       });
@@ -416,7 +418,46 @@
 
     // Show MEET header button if configured
     initMeetHeader();
+    // Start inbox unread polling
+    pollInboxUnread();
   }
+
+  // ── Inbox unread count ──
+  var _inboxPollTimer = null;
+  function pollInboxUnread() {
+    if (_inboxPollTimer) clearInterval(_inboxPollTimer);
+    fetchInboxUnread();
+    _inboxPollTimer = setInterval(fetchInboxUnread, 60000); // poll every 60s
+  }
+  function fetchInboxUnread() {
+    if (!accessToken) return;
+    api.get('/api/inbox/unread').then(function(r) {
+      if (!r.ok) return;
+      var count = r.data && r.data.count ? r.data.count : 0;
+      updateInboxBadge(count);
+    }).catch(function() {});
+  }
+  function updateInboxBadge(count) {
+    var badge = document.getElementById('inbox-badge');
+    if (!badge) return;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+    // Also update mobile drawer badge
+    var mobBadge = document.getElementById('mob-inbox-badge');
+    if (mobBadge) {
+      if (count > 0) {
+        mobBadge.textContent = count > 99 ? '99+' : String(count);
+        mobBadge.style.display = '';
+      } else {
+        mobBadge.style.display = 'none';
+      }
+    }
+  }
+  window.__xrayRefreshInbox = function() { fetchInboxUnread(); };
 
   // ── Mobile nav ──
   function buildMobileNav() {
@@ -451,7 +492,8 @@
         var el = document.createElement('div');
         el.className = 'nav-item';
         el.setAttribute('data-view', item.view);
-        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>';
+        var mobBadgeHtml = item.view === 'inbox' ? '<span class="nav-badge" id="mob-inbox-badge" style="display:none"></span>' : '';
+        el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>' + mobBadgeHtml;
         el.onclick = function() { closeMobileMenu(); navigateTo(item.view); };
         drawerNav.appendChild(el);
       });
@@ -1178,6 +1220,148 @@
       '<svg viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" fill="none" stroke-width="1" style="opacity:.3"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
       '<p>' + msg + '</p></div>';
   }
+
+  // ── Document Viewer ──
+  window.__xrayOpenViewer = function(fileUrl, fileName, mimeType) {
+    // Remove existing viewer if any
+    var existing = document.getElementById('xray-doc-viewer');
+    if (existing) existing.remove();
+
+    var ext = (fileName || '').split('.').pop().toLowerCase();
+    mimeType = mimeType || '';
+
+    // Determine content type
+    var isImage = /^(jpg|jpeg|png|gif|svg|webp|bmp|ico)$/.test(ext) || mimeType.startsWith('image/');
+    var isPdf = ext === 'pdf' || mimeType === 'application/pdf';
+    var isCsv = ext === 'csv' || mimeType === 'text/csv';
+    var isVideo = /^(mp4|webm|ogg|mov)$/.test(ext) || mimeType.startsWith('video/');
+    var isAudio = /^(mp3|wav|ogg|flac|aac|m4a)$/.test(ext) || mimeType.startsWith('audio/');
+    var isOffice = /^(doc|docx|ppt|pptx|xls|xlsx)$/.test(ext);
+    var isText = /^(txt|log|json|xml|html|css|js|ts|py|rb|go|rs|java|c|cpp|h|sh|md|yaml|yml|toml|ini|cfg|conf|sql|env)$/.test(ext) || mimeType.startsWith('text/');
+
+    // Build overlay
+    var overlay = document.createElement('div');
+    overlay.id = 'xray-doc-viewer';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.92);display:flex;flex-direction:column;';
+
+    // Top bar
+    var bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;align-items:center;gap:12px;padding:12px 20px;background:rgba(15,17,23,0.95);border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0;';
+    var nameEl = document.createElement('span');
+    nameEl.textContent = fileName || fileUrl;
+    nameEl.style.cssText = 'flex:1;font-size:14px;font-weight:500;color:#f0f1f4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font);';
+    var openBtn = document.createElement('button');
+    openBtn.textContent = 'Open in new tab';
+    openBtn.style.cssText = 'padding:6px 14px;font-size:13px;border-radius:6px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#f0f1f4;cursor:pointer;font-family:var(--font);white-space:nowrap;';
+    openBtn.onmouseover = function() { openBtn.style.background = 'rgba(255,255,255,0.12)'; };
+    openBtn.onmouseout = function() { openBtn.style.background = 'rgba(255,255,255,0.06)'; };
+    openBtn.onclick = function() { window.open(fileUrl, '_blank'); };
+    var closeBtn = document.createElement('button');
+    closeBtn.innerHTML = '&times;';
+    closeBtn.style.cssText = 'width:32px;height:32px;border-radius:6px;border:none;background:transparent;color:#8e91a0;font-size:24px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;';
+    closeBtn.onmouseover = function() { closeBtn.style.background = 'rgba(255,255,255,0.08)'; closeBtn.style.color = '#f0f1f4'; };
+    closeBtn.onmouseout = function() { closeBtn.style.background = 'transparent'; closeBtn.style.color = '#8e91a0'; };
+    closeBtn.onclick = function() { overlay.remove(); document.removeEventListener('keydown', escHandler); };
+    bar.appendChild(nameEl);
+    bar.appendChild(openBtn);
+    bar.appendChild(closeBtn);
+    overlay.appendChild(bar);
+
+    // Content area
+    var content = document.createElement('div');
+    content.style.cssText = 'flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:20px;';
+
+    if (isImage) {
+      var img = document.createElement('img');
+      img.src = fileUrl;
+      img.alt = fileName || '';
+      img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;';
+      content.appendChild(img);
+    } else if (isPdf) {
+      var iframe = document.createElement('iframe');
+      iframe.src = fileUrl;
+      iframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
+      content.style.padding = '0';
+      content.appendChild(iframe);
+    } else if (isCsv) {
+      content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading CSV...</div>';
+      fetch(fileUrl).then(function(r) { return r.text(); }).then(function(text) {
+        var lines = text.trim().split('\n');
+        var html = '<div style="overflow:auto;width:100%;height:100%;"><table style="border-collapse:collapse;font-size:13px;font-family:var(--mono);width:100%;">';
+        for (var i = 0; i < lines.length; i++) {
+          var cells = lines[i].split(',');
+          var tag = i === 0 ? 'th' : 'td';
+          html += '<tr>';
+          for (var j = 0; j < cells.length; j++) {
+            var cellStyle = i === 0
+              ? 'padding:8px 12px;text-align:left;border-bottom:2px solid rgba(62,232,181,0.3);color:#3ee8b5;font-weight:600;white-space:nowrap;background:rgba(15,17,23,0.8);position:sticky;top:0;'
+              : 'padding:6px 12px;border-bottom:1px solid rgba(255,255,255,0.06);color:#f0f1f4;white-space:nowrap;';
+            html += '<' + tag + ' style="' + cellStyle + '">' + cells[j].replace(/^"|"$/g, '') + '</' + tag + '>';
+          }
+          html += '</tr>';
+        }
+        html += '</table></div>';
+        content.innerHTML = html;
+      }).catch(function() {
+        content.innerHTML = '<div style="color:#ef4444;font-size:14px;">Failed to load CSV file.</div>';
+      });
+    } else if (isVideo) {
+      var video = document.createElement('video');
+      video.src = fileUrl;
+      video.controls = true;
+      video.autoplay = false;
+      video.style.cssText = 'max-width:100%;max-height:100%;border-radius:4px;';
+      content.appendChild(video);
+    } else if (isAudio) {
+      var audio = document.createElement('audio');
+      audio.src = fileUrl;
+      audio.controls = true;
+      audio.style.cssText = 'min-width:300px;';
+      content.appendChild(audio);
+    } else if (isOffice) {
+      var officeIframe = document.createElement('iframe');
+      officeIframe.src = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(fileUrl);
+      officeIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
+      officeIframe.setAttribute('allowfullscreen', 'true');
+      content.style.padding = '0';
+      // Fallback to Google Docs viewer if Office viewer fails
+      officeIframe.onerror = function() {
+        officeIframe.src = 'https://docs.google.com/gview?url=' + encodeURIComponent(fileUrl) + '&embedded=true';
+      };
+      content.appendChild(officeIframe);
+    } else if (isText) {
+      content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading...</div>';
+      fetch(fileUrl).then(function(r) { return r.text(); }).then(function(text) {
+        var pre = document.createElement('pre');
+        pre.textContent = text;
+        pre.style.cssText = 'width:100%;max-height:100%;overflow:auto;padding:20px;background:rgba(15,17,23,0.8);border:1px solid rgba(255,255,255,0.06);border-radius:8px;font-size:13px;font-family:var(--mono);color:#f0f1f4;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin:0;';
+        content.innerHTML = '';
+        content.appendChild(pre);
+      }).catch(function() {
+        content.innerHTML = '<div style="color:#ef4444;font-size:14px;">Failed to load file.</div>';
+      });
+    } else {
+      // Fallback: download link
+      var dl = document.createElement('a');
+      dl.href = fileUrl;
+      dl.download = fileName || '';
+      dl.style.cssText = 'display:inline-flex;align-items:center;gap:8px;padding:14px 28px;background:rgba(62,232,181,0.1);border:1px solid rgba(62,232,181,0.3);border-radius:10px;color:#3ee8b5;font-size:15px;font-weight:500;text-decoration:none;font-family:var(--font);';
+      dl.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + (fileName || 'file');
+      content.appendChild(dl);
+    }
+
+    overlay.appendChild(content);
+    document.body.appendChild(overlay);
+
+    // Escape key handler
+    function escHandler(e) {
+      if (e.key === 'Escape') {
+        overlay.remove();
+        document.removeEventListener('keydown', escHandler);
+      }
+    }
+    document.addEventListener('keydown', escHandler);
+  };
 
   // Check if we're on a share page before running normal app init
   if (!handleSharePage()) {

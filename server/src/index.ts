@@ -26,6 +26,7 @@ import webhookRoutes from './routes/webhook.routes';
 import meetRoutes from './routes/meet.routes';
 import shareRoutes from './routes/share.routes';
 import inboxRoutes from './routes/inbox.routes';
+import uploadRoutes from './routes/upload.routes';
 
 const app = express();
 
@@ -87,6 +88,7 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/meet', meetRoutes);
 app.use('/api/share', shareRoutes);
 app.use('/api/inbox', inboxRoutes);
+app.use('/api/uploads', uploadRoutes);
 
 // Serve public share page (serves the HTML page for /share/:token)
 app.get('/share/:token', (_req, res) => {
