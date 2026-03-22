@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#3ee8b5">
 <link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <title>XRay by Fractionate — Data tells a story. Find the Break</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2308090c'/><g transform='translate(16,16)'><circle r='2.5' fill='%233ee8b5'/><path d='M-2.2,-3.8L-4.8,-8.3A9.6,9.6,0,0,1,4.8,-8.3L2.2,-3.8A4.4,4.4,0,0,0,-2.2,-3.8Z' fill='%233ee8b5'/><path d='M-2.2,-3.8L-4.8,-8.3A9.6,9.6,0,0,1,4.8,-8.3L2.2,-3.8A4.4,4.4,0,0,0,-2.2,-3.8Z' fill='%233ee8b5' transform='rotate(120)'/><path d='M-2.2,-3.8L-4.8,-8.3A9.6,9.6,0,0,1,4.8,-8.3L2.2,-3.8A4.4,4.4,0,0,0,-2.2,-3.8Z' fill='%233ee8b5' transform='rotate(240)'/></g></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -275,6 +276,18 @@
   <div class="meet-viewport-iframe" id="meet-viewport-iframe"></div>
 </div>
 
+<div id="pwa-install-banner" style="display:none">
+  <div class="pwa-install-inner">
+    <img src="/icon-192.png" alt="XRay" width="40" height="40" style="border-radius:10px">
+    <div class="pwa-install-text">
+      <strong>Install XRay</strong>
+      <span>Add to your home screen for quick access</span>
+    </div>
+    <button id="pwa-install-btn" class="btn primary">Install</button>
+    <button id="pwa-install-dismiss" class="btn" style="padding:6px 10px;min-width:0">&times;</button>
+  </div>
+</div>
+
 <div id="toast-container"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -284,6 +297,43 @@
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(function(){});
 }
+
+// PWA install prompt
+(function() {
+  var deferredPrompt = null;
+  var banner = document.getElementById('pwa-install-banner');
+  var installBtn = document.getElementById('pwa-install-btn');
+  var dismissBtn = document.getElementById('pwa-install-dismiss');
+  var dismissed = localStorage.getItem('pwa-install-dismissed');
+
+  window.addEventListener('beforeinstallprompt', function(e) {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (dismissed) return;
+    banner.style.display = '';
+  });
+
+  if (installBtn) installBtn.onclick = function() {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function(result) {
+      if (result.outcome === 'accepted') {
+        banner.style.display = 'none';
+      }
+      deferredPrompt = null;
+    });
+  };
+
+  if (dismissBtn) dismissBtn.onclick = function() {
+    banner.style.display = 'none';
+    localStorage.setItem('pwa-install-dismissed', Date.now());
+  };
+
+  window.addEventListener('appinstalled', function() {
+    banner.style.display = 'none';
+    deferredPrompt = null;
+  });
+})();
 </script>
 </body>
 </html>

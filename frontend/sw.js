@@ -1,4 +1,4 @@
-var CACHE_NAME = 'xray-v1';
+var CACHE_NAME = 'xray-v2';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -6,7 +6,10 @@ var SHELL_ASSETS = [
   '/app.js',
   '/landing.css',
   '/landing.js',
-  '/bundles/general.json'
+  '/bundles/general.json',
+  '/manifest.json',
+  '/icon-192.png',
+  '/icon-512.png'
 ];
 
 // Install: cache app shell
@@ -84,8 +87,8 @@ self.addEventListener('push', function(e) {
   var title = data.title || 'XRay BI';
   var options = {
     body: data.body || '',
-    icon: '/icon.svg',
-    badge: '/icon.svg',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
     tag: data.tag || 'xray-notification',
     data: data
   };
