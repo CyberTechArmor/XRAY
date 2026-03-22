@@ -707,9 +707,9 @@
       }).catch(function() {});
       setupMeetPanel();
       setupMeetViewport();
-      // Platform admin: poll for incoming support calls
+      // Platform admin: connect SSE for real-time support calls
       if (currentUser && currentUser.is_platform_admin) {
-        startSupportCallPolling();
+        startSupportCallStream();
       }
     }).catch(function() {});
   }
@@ -1096,17 +1096,26 @@
     updateMobileMeetState();
   }
 
-  // ── Platform admin: poll for support calls ──
-  var supportPollTimer = null;
+  // ── Platform admin: SSE for real-time support calls ──
+  var supportEventSource = null;
   var knownSupportCalls = {};
-  function startSupportCallPolling() {
-    pollSupportCalls();
-    supportPollTimer = setInterval(pollSupportCalls, 5000);
-  }
-  function pollSupportCalls() {
-    api.get('/api/meet/support-calls').then(function(r) {
-      if (!r.ok || !r.data) return;
-      r.data.forEach(function(call) {
+  var supportCallConfig = { ring_duration: 120, sound_enabled: true, vibration_enabled: true };
+
+  function startSupportCallStream() {
+    // Load support config first
+    api.get('/api/meet/support-config').then(function(r) {
+      if (r.ok && r.data) supportCallConfig = r.data;
+    }).catch(function() {});
+
+    if (supportEventSource) { supportEventSource.close(); supportEventSource = null; }
+    var token = window.getAccessToken ? window.getAccessToken() : '';
+    if (!token) return;
+    supportEventSource = new EventSource('/api/meet/support-calls/stream?token=' + encodeURIComponent(token));
+    supportEventSource.onmessage = function(e) {
+      try {
+        var call = JSON.parse(e.data);
+        if (call.type === 'connected') return;
+        if (call.type !== 'support_call') return;
         if (knownSupportCalls[call.id]) return;
         knownSupportCalls[call.id] = true;
         showSupportCallAlert(call);
@@ -1118,19 +1127,18 @@
             tag: 'meet-call',
             data: { url: '/#meet-support-' + call.room_code }
           });
-          n.onclick = function() {
-            window.focus();
-            joinSupportCall(call);
-            n.close();
-          };
+          n.onclick = function() { window.focus(); joinSupportCall(call); n.close(); };
         } else if ('Notification' in window && Notification.permission === 'default') {
           Notification.requestPermission();
         }
-      });
-    }).catch(function() {});
+      } catch(err) {}
+    };
+    supportEventSource.onerror = function() {
+      // EventSource auto-reconnects, no manual retry needed
+    };
   }
+
   function showSupportCallAlert(call) {
-    // Remove existing alerts for same call
     var existing = document.getElementById('sca-' + call.id);
     if (existing) existing.remove();
     var alert = document.createElement('div');
@@ -1142,23 +1150,32 @@
     document.body.appendChild(alert);
     alert.querySelector('.sca-join').onclick = function() { joinSupportCall(call); alert.remove(); };
     alert.querySelector('.sca-dismiss').onclick = function() { alert.remove(); };
-    // Auto-dismiss after 2 minutes
-    setTimeout(function() { if (document.getElementById('sca-' + call.id)) alert.remove(); }, 120000);
-    // Play alert sound via AudioContext
-    try {
-      var ctx = new (window.AudioContext || window.webkitAudioContext)();
-      function beep(freq, start, dur) {
-        var osc = ctx.createOscillator(); var gain = ctx.createGain();
-        osc.connect(gain); gain.connect(ctx.destination);
-        osc.frequency.value = freq; osc.type = 'sine';
-        gain.gain.setValueAtTime(0.15, ctx.currentTime + start);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
-        osc.start(ctx.currentTime + start); osc.stop(ctx.currentTime + start + dur);
-      }
-      beep(880, 0, 0.2); beep(1100, 0.25, 0.2); beep(880, 0.5, 0.2);
-    } catch(e) {}
+    // Auto-dismiss after configurable ring duration
+    var ringMs = (supportCallConfig.ring_duration || 120) * 1000;
+    setTimeout(function() { if (document.getElementById('sca-' + call.id)) alert.remove(); }, ringMs);
+    // Play alert sound if enabled
+    if (supportCallConfig.sound_enabled !== false) {
+      try {
+        var ctx = new (window.AudioContext || window.webkitAudioContext)();
+        function beep(freq, start, dur) {
+          var osc = ctx.createOscillator(); var gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.frequency.value = freq; osc.type = 'sine';
+          gain.gain.setValueAtTime(0.15, ctx.currentTime + start);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+          osc.start(ctx.currentTime + start); osc.stop(ctx.currentTime + start + dur);
+        }
+        beep(880, 0, 0.2); beep(1100, 0.25, 0.2); beep(880, 0.5, 0.2);
+      } catch(e) {}
+    }
+    // Vibrate if enabled and available
+    if (supportCallConfig.vibration_enabled !== false && navigator.vibrate) {
+      try { navigator.vibrate([200, 100, 200, 100, 400]); } catch(e) {}
+    }
   }
   function joinSupportCall(call) {
+    // Stop vibration on answer
+    if (navigator.vibrate) try { navigator.vibrate(0); } catch(e) {}
     api.post('/api/meet/support-calls/' + call.id + '/answer', {}).catch(function() {});
     if (!meetState.configured) {
       window.open(call.join_url, '_blank');
