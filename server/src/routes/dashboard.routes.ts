@@ -44,7 +44,10 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
 
     // Separate SELECT then UPDATE to avoid RLS issues with UPDATE...RETURNING
     const dashboard = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      await client.query(`SELECT set_config('app.is_platform_admin', $1, true)`, [String(req.user!.is_platform_admin)]);
+      if (req.user!.tid) {
+        await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [req.user!.tid]);
+      }
       // Platform admin can render any dashboard regardless of tenant
       const query = req.user!.is_platform_admin
         ? {
@@ -63,12 +66,11 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           };
       const result = await client.query(query);
       if (result.rows[0]) {
-        // Await side-effects so they complete before the client is released
+        // Side-effects: update last_viewed_at and track views
         await client.query(
           `UPDATE platform.dashboards SET last_viewed_at = now() WHERE id = $1`,
           [req.params.id]
         ).catch(() => {});
-        // Track view count for non-platform-admin users
         if (!req.user!.is_platform_admin) {
           await client.query(
             `INSERT INTO platform.dashboard_views (dashboard_id, user_id) VALUES ($1, $2)`,
