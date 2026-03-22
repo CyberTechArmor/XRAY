@@ -948,6 +948,14 @@
     });
   }
 
+  function showMeetFallback(iframeWrap, url) {
+    iframeWrap.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;color:var(--t2);text-align:center;padding:20px">'
+      + '<p style="font-size:15px">The MEET server blocked embedding in this page.<br>This usually means the MEET server needs to allow framing from this domain.</p>'
+      + '<a href="' + url + '" target="_blank" rel="noopener" class="btn primary" style="font-size:15px;padding:12px 28px;text-decoration:none">Open meeting in new tab</a>'
+      + '<p style="font-size:12px;color:var(--t3)">To fix embedding: configure your MEET server to set<br><code>X-Frame-Options: ALLOWALL</code> or remove the header entirely.</p>'
+      + '</div>';
+  }
+
   function launchMeetCall(room) {
     meetState.inCall = true;
     meetState.roomCode = room;
@@ -960,7 +968,24 @@
     var viewport = document.getElementById('meet-viewport');
     var iframeWrap = document.getElementById('meet-viewport-iframe');
     if (!viewport || !iframeWrap) return;
-    iframeWrap.innerHTML = '<iframe src="' + url + '" allow="camera; microphone; display-capture; autoplay" allowfullscreen></iframe>';
+    iframeWrap.innerHTML = '<iframe src="' + url + '" allow="camera; microphone; display-capture; autoplay" referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe>';
+
+    // Detect iframe load failure (X-Frame-Options blocking) and offer fallback
+    var meetIframeEl = iframeWrap.querySelector('iframe');
+    if (meetIframeEl) {
+      meetIframeEl.addEventListener('load', function() {
+        try {
+          // If we CAN access contentDocument, the iframe is same-origin (about:blank = blocked)
+          var doc = meetIframeEl.contentDocument;
+          if (doc && (!doc.body || doc.body.children.length === 0 || doc.body.innerHTML.length < 50)) {
+            showMeetFallback(iframeWrap, url);
+          }
+        } catch (e) {
+          // Cross-origin SecurityError = MEET page loaded successfully (different origin)
+        }
+      });
+      meetIframeEl.onerror = function() { showMeetFallback(iframeWrap, url); };
+    }
 
     // Listen for end-call events from the iframe
     var meetIframe = iframeWrap.querySelector('iframe');
