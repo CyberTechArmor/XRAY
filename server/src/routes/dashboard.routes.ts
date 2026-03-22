@@ -63,16 +63,17 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           };
       const result = await client.query(query);
       if (result.rows[0]) {
-        client.query(
+        // Await side-effects so they complete before the client is released
+        await client.query(
           `UPDATE platform.dashboards SET last_viewed_at = now() WHERE id = $1`,
           [req.params.id]
-        );
+        ).catch(() => {});
         // Track view count for non-platform-admin users
         if (!req.user!.is_platform_admin) {
-          client.query(
+          await client.query(
             `INSERT INTO platform.dashboard_views (dashboard_id, user_id) VALUES ($1, $2)`,
             [req.params.id, req.user!.sub]
-          );
+          ).catch(() => {});
         }
       }
       return result.rows[0];
