@@ -27,7 +27,7 @@
     <div class="logo-text">XRay <span>/ fractionate</span></div>
   </a>
   <div class="nav-r">
-    <a href="#pricing" class="nav-link-text">Pricing</a>
+    <a href="#pricing" class="nav-link-text">Assessment</a>
     <a href="#how" class="nav-link-text">How it works</a>
     <button class="btn-login" onclick="openModal('login')">Sign in</button>
   </div>
@@ -52,62 +52,50 @@
   </div>
 </section>
 
-<!-- How it works & Pricing -->
+<!-- Business Health Assessment -->
 <section class="section" id="how">
-  <div class="sec-label" id="pricing">// How it works &amp; pricing</div>
-  <div class="steps">
-    <div class="step">
-      <div class="step-num">01 — Connect</div>
-      <div class="step-icon c1"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></div>
-      <h3>Data connection</h3>
-      <div class="price">$500 <span>one-time</span></div>
-      <p>We plug into your API, CSV, or data model. Set up once, reuse across every dashboard.</p>
+  <div class="sec-label" id="pricing">// Business Health Assessment</div>
+
+  <!-- Intro (shown before starting) -->
+  <div id="assess-intro" class="assess-intro">
+    <h2 class="assess-intro-title">Find the money hiding in your business</h2>
+    <p class="assess-intro-sub">20 questions. 5 minutes. A clear picture of where recoverable value is sitting in your operations — unbilled work, pricing gaps, idle capacity, and more.</p>
+    <div class="assess-intro-pockets">
+      <div class="assess-pocket-tag">Unbilled work</div>
+      <div class="assess-pocket-tag">Pricing erosion</div>
+      <div class="assess-pocket-tag">Labor misallocation</div>
+      <div class="assess-pocket-tag">Unprofitable customers</div>
+      <div class="assess-pocket-tag">Empty slots</div>
+      <div class="assess-pocket-tag">Expired memberships</div>
+      <div class="assess-pocket-tag">Callbacks &amp; rework</div>
+      <div class="assess-pocket-tag">Untracked marketing</div>
+      <div class="assess-pocket-tag">Scheduling overtime</div>
+      <div class="assess-pocket-tag">Late payments</div>
     </div>
-    <div class="step">
-      <div class="step-num">02 — See</div>
-      <div class="step-icon c2"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
-      <h3>Dashboard / Insight</h3>
-      <div class="price">$500 <span>one-time</span></div>
-      <p>A custom view with the diagnostic layer. See the numbers, understand the gap, know what to do.</p>
-    </div>
-    <div class="step">
-      <div class="step-num">03 — Run</div>
-      <div class="step-icon c3"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
-      <h3>Monthly access</h3>
-      <div class="price">$500 <span>/mo &middot; up to 5</span></div>
-      <p>Dashboards always current. Data refreshes, maintenance, and support included.</p>
-      <div class="tier-note">$500/mo &rarr; 1–5 dashboards<br>$1,000/mo &rarr; 6–10 dashboards</div>
-    </div>
+    <button class="assess-start-btn" onclick="startAssessment()">
+      <svg viewBox="0 0 36 36" fill="none"><g transform="translate(18,18)"><circle r="3" fill="#3ee8b5"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" opacity=".9"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" opacity=".9" transform="rotate(120)"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" opacity=".9" transform="rotate(240)"/></g></svg>
+      Start the assessment
+    </button>
+    <div class="assess-intro-note">Free. No email required. Results are instant.</div>
   </div>
 
-  <!-- Calculator -->
-  <div class="calc">
-    <div class="calc-top">
-      <div class="calc-title">Estimate your investment</div>
-      <div class="calc-sub">Adjust the sliders to see setup and ongoing costs.</div>
-    </div>
-    <div class="calc-controls">
-      <div class="ctrl"><label>Data sources <b id="srcVal">2</b></label><input type="range" min="1" max="6" value="2" step="1" id="srcSlider" oninput="updateCalc()"></div>
-      <div class="ctrl"><label>Dashboards <b id="dashVal">4</b></label><input type="range" min="1" max="10" value="4" step="1" id="dashSlider" oninput="updateCalc()"></div>
-      <div class="ctrl"><label>Months <b id="moVal">3</b></label><input type="range" min="1" max="12" value="3" step="1" id="moSlider" oninput="updateCalc()"></div>
-    </div>
-    <div class="calc-viz">
-      <div class="legend">
-        <div class="legend-item"><div class="leg-dot c"></div>Connections</div>
-        <div class="legend-item"><div class="leg-dot d"></div>Dashboards</div>
-        <div class="legend-item"><div class="leg-dot m"></div>Monthly</div>
+  <!-- Question flow (hidden until started) -->
+  <div id="assess-flow" class="assess-flow" style="display:none">
+    <div class="assess-progress">
+      <div class="assess-progress-info">
+        <span id="assess-q-label">Question 1 of 20</span>
+        <span id="assess-q-pct">5%</span>
       </div>
-      <div class="bars" id="calcBars"></div>
-      <div class="calc-footer">
-        <div class="cf-l"><div class="cf-label">Total investment</div><div class="cf-val" id="calcTotal">$4,500</div></div>
-        <div class="cf-r" id="calcNote"></div>
-      </div>
+      <div class="assess-progress-track"><div class="assess-progress-fill" id="assess-progress-fill" style="width:5%"></div></div>
     </div>
+    <div id="assess-section-label" class="assess-section-label"></div>
+    <h2 id="assess-question" class="assess-question"></h2>
+    <div id="assess-options" class="assess-options"></div>
+    <button id="assess-back" class="assess-back" onclick="assessBack()" style="display:none">&larr; Back</button>
   </div>
-  <div class="pause-note">
-    <div class="pause-icon"><svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></div>
-    <p><strong>Pause anytime.</strong> Monthly access runs month-to-month. If you need to pause, all your dashboards and data are saved — just not viewable. Pick up exactly where you left off when you're ready.</p>
-  </div>
+
+  <!-- Results (hidden until complete) -->
+  <div id="assess-results" class="assess-results" style="display:none"></div>
 </section>
 
 <!-- Footer -->
