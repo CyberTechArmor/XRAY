@@ -51,14 +51,16 @@ export async function getTenantDetail(tenantId: string) {
     const tenantResult = await client.query('SELECT * FROM platform.tenants WHERE id = $1', [tenantId]);
     if (tenantResult.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Tenant not found');
     const tenant = tenantResult.rows[0];
-    const [uc, dc, cc, bs] = await Promise.all([
+    const [uc, dc, cc, bs, ow] = await Promise.all([
       client.query('SELECT COUNT(*) FROM platform.users WHERE tenant_id = $1', [tenantId]),
       client.query('SELECT COUNT(*) FROM platform.dashboards WHERE tenant_id = $1', [tenantId]),
       client.query('SELECT COUNT(*) FROM platform.connections WHERE tenant_id = $1', [tenantId]),
       client.query('SELECT * FROM platform.billing_state WHERE tenant_id = $1', [tenantId]),
+      tenant.owner_user_id ? client.query('SELECT email FROM platform.users WHERE id = $1', [tenant.owner_user_id]) : Promise.resolve({ rows: [] }),
     ]);
     return {
       ...tenant,
+      owner_email: ow.rows[0]?.email || null,
       user_count: parseInt(uc.rows[0].count, 10),
       dashboard_count: parseInt(dc.rows[0].count, 10),
       connection_count: parseInt(cc.rows[0].count, 10),
@@ -95,6 +97,75 @@ export async function updateTenantPlan(tenantId: string, input: {
     );
 
     auditService.log({ tenantId, action: 'tenant.plan_update', resourceType: 'tenant', resourceId: tenantId, metadata: { planTier: input.planTier, dashboardLimit: input.dashboardLimit, connectorLimit: input.connectorLimit, paymentStatus: input.paymentStatus } });
+    return result.rows[0];
+  });
+}
+
+// ─── Tenant Status & Members ──────────────────────────────
+
+export async function updateTenantStatus(tenantId: string, status: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `UPDATE platform.tenants SET status = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [status, tenantId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Tenant not found');
+    auditService.log({ tenantId, action: 'tenant.status_update', resourceType: 'tenant', resourceId: tenantId, metadata: { status } });
+    return result.rows[0];
+  });
+}
+
+export async function listTenantMembers(tenantId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
+              r.name AS role_name, r.slug AS role_slug
+       FROM platform.users u
+       LEFT JOIN platform.roles r ON r.id = u.role_id
+       WHERE u.tenant_id = $1
+       ORDER BY u.is_owner DESC, u.created_at ASC`,
+      [tenantId]
+    );
+    return result.rows;
+  });
+}
+
+export async function addTenantMember(tenantId: string, input: { name: string; email: string; role: string }) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    // Verify tenant exists
+    const tenant = await client.query('SELECT id FROM platform.tenants WHERE id = $1', [tenantId]);
+    if (tenant.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Tenant not found');
+    // Check for duplicate email in this tenant
+    const existing = await client.query(
+      'SELECT id FROM platform.users WHERE tenant_id = $1 AND email = $2',
+      [tenantId, input.email]
+    );
+    if (existing.rows.length > 0) throw new AppError(409, 'DUPLICATE', 'A user with this email already exists in this tenant');
+    // Get role ID
+    const roleResult = await client.query(
+      'SELECT id FROM platform.roles WHERE slug = $1',
+      [input.role]
+    );
+    if (roleResult.rows.length === 0) throw new AppError(400, 'INVALID_ROLE', 'Role not found: ' + input.role);
+    const roleId = roleResult.rows[0].id;
+    const isOwner = input.role === 'owner';
+    // Create user
+    const result = await client.query(
+      `INSERT INTO platform.users (tenant_id, email, name, role_id, is_owner, status)
+       VALUES ($1, $2, $3, $4, $5, 'active') RETURNING *`,
+      [tenantId, input.email, input.name, roleId, isOwner]
+    );
+    // If owner, update tenant owner_user_id
+    if (isOwner) {
+      await client.query(
+        'UPDATE platform.tenants SET owner_user_id = $1 WHERE id = $2',
+        [result.rows[0].id, tenantId]
+      );
+    }
+    auditService.log({ tenantId, action: 'user.create', resourceType: 'user', resourceId: result.rows[0].id, metadata: { name: input.name, email: input.email, role: input.role } });
     return result.rows[0];
   });
 }
