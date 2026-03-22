@@ -59,10 +59,20 @@ export async function getFileById(fileId: string): Promise<FileRecord> {
 // ── List files by context ──
 export async function listFilesByContext(
   contextType: string,
-  contextId: string
+  contextId: string,
+  tenantId?: string
 ): Promise<FileRecord[]> {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    if (tenantId) {
+      const result = await client.query(
+        `SELECT * FROM platform.file_uploads
+         WHERE context_type = $1 AND context_id = $2 AND tenant_id = $3
+         ORDER BY created_at DESC`,
+        [contextType, contextId, tenantId]
+      );
+      return result.rows;
+    }
     const result = await client.query(
       `SELECT * FROM platform.file_uploads
        WHERE context_type = $1 AND context_id = $2
@@ -70,6 +80,31 @@ export async function listFilesByContext(
       [contextType, contextId]
     );
     return result.rows;
+  });
+}
+
+// ── List all billing files across tenants (platform admin) ──
+export async function listAllBillingFiles(
+  opts: { limit?: number; offset?: number }
+): Promise<{ rows: any[]; total: number }> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const countResult = await client.query(
+      `SELECT count(*)::int AS total FROM platform.file_uploads WHERE context_type = 'invoice'`
+    );
+    const limit = opts.limit || 50;
+    const offset = opts.offset || 0;
+    const result = await client.query(
+      `SELECT fu.*, u.email AS uploader_email, u.name AS uploader_name, t.name AS tenant_name
+       FROM platform.file_uploads fu
+       LEFT JOIN platform.users u ON u.id = fu.uploaded_by
+       LEFT JOIN platform.tenants t ON t.id = fu.tenant_id
+       WHERE fu.context_type = 'invoice'
+       ORDER BY fu.created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    return { rows: result.rows, total: countResult.rows[0].total };
   });
 }
 

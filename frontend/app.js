@@ -1160,8 +1160,8 @@
 
     // Build share page UI
     document.body.insertAdjacentHTML('afterbegin',
-      '<div id="share-page" style="min-height:100vh;background:var(--bg,#08090c);color:var(--t1,#f0f1f4)">' +
-        '<div style="height:48px;background:var(--bg2,#0f1117);border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;padding:0 20px;gap:12px">' +
+      '<div id="share-page" style="position:fixed;inset:0;display:flex;flex-direction:column;background:var(--bg,#08090c);color:var(--t1,#f0f1f4);overflow:hidden">' +
+        '<div style="height:48px;flex-shrink:0;background:var(--bg2,#0f1117);border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;padding:0 20px;gap:12px">' +
           '<a href="/" style="text-decoration:none;display:flex;align-items:center;gap:4px">' +
             '<span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center">' +
               '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:22px;height:22px">' +
@@ -1176,7 +1176,7 @@
             '<span style="font-size:18px;font-weight:700;letter-spacing:-0.02em"><span style="color:#fff">X</span><span style="color:#3ee8b5">Ray</span></span>' +
           '</a>' +
         '</div>' +
-        '<div id="share-content" style="width:100%;height:calc(100vh - 48px)">' +
+        '<div id="share-content" style="width:100%;flex:1;min-height:0;overflow:hidden">' +
           '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--t2,#8e91a0);gap:10px;font-size:14px">' +
             '<div class="spinner"></div> Loading dashboard...' +
           '</div>' +
@@ -1385,15 +1385,43 @@
         audio.style.cssText = 'min-width:300px;';
         content.appendChild(audio);
       } else if (isOffice) {
-        var officeIframe = document.createElement('iframe');
-        officeIframe.src = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(tokenUrl);
-        officeIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
-        officeIframe.setAttribute('allowfullscreen', 'true');
+        // Office Online and Google Docs viewers require a publicly accessible URL.
+        // Since our files are behind auth, fetch the file as a blob and display it.
+        var officeExts = { doc: true, docx: true, ppt: true, pptx: true, xls: true, xlsx: true };
+        content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading document...</div>';
         content.style.padding = '0';
-        officeIframe.onerror = function() {
-          officeIframe.src = 'https://docs.google.com/gview?url=' + encodeURIComponent(tokenUrl) + '&embedded=true';
-        };
-        content.appendChild(officeIframe);
+        fetch(fileUrl, { headers: authHeaders, credentials: 'include' }).then(function(r) {
+          if (!r.ok) throw new Error('Failed to fetch');
+          return r.blob();
+        }).then(function(blob) {
+          var blobUrl = URL.createObjectURL(blob);
+          // Try Google Docs viewer with a public URL first, fall back to download
+          var officeIframe = document.createElement('iframe');
+          officeIframe.src = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(tokenUrl);
+          officeIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
+          officeIframe.setAttribute('allowfullscreen', 'true');
+          // Detect load failure after timeout and show fallback
+          var loadFailed = false;
+          var fallbackTimer = setTimeout(function() {
+            loadFailed = true;
+            content.innerHTML = '';
+            var fallbackMsg = document.createElement('div');
+            fallbackMsg.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;padding:40px;';
+            fallbackMsg.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" stroke="#8e91a0" fill="none" stroke-width="1" style="opacity:.4"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' +
+              '<p style="color:#f0f1f4;font-size:15px;text-align:center">This document type cannot be previewed inline.</p>' +
+              '<p style="color:#8e91a0;font-size:13px">Use "Open in new tab" or "Download" to view it.</p>';
+            content.appendChild(fallbackMsg);
+          }, 8000);
+          officeIframe.onload = function() {
+            if (!loadFailed) clearTimeout(fallbackTimer);
+          };
+          content.innerHTML = '';
+          content.appendChild(officeIframe);
+        }).catch(function() {
+          content.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;padding:40px;">' +
+            '<p style="color:#f0f1f4;font-size:15px">Could not load document preview.</p>' +
+            '<p style="color:#8e91a0;font-size:13px">Use "Open in new tab" or "Download" to view it.</p></div>';
+        });
       } else if (isText) {
         content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading...</div>';
         fetch(fileUrl, { headers: authHeaders, credentials: 'include' }).then(function(r) { return r.text(); }).then(function(text) {
