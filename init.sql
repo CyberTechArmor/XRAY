@@ -169,6 +169,7 @@ CREATE TABLE platform.dashboards (
     fetch_method    TEXT DEFAULT 'GET' CHECK (fetch_method IN ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')),
     fetch_headers   JSONB DEFAULT '{}',
     fetch_body      JSONB,
+    fetch_query_params JSONB,
     tile_image_url  TEXT,
     last_viewed_at  TIMESTAMPTZ,
     is_public       BOOLEAN DEFAULT false,
@@ -541,3 +542,16 @@ CREATE POLICY platform_admin_bypass ON platform.dashboard_embeds USING (current_
 CREATE POLICY platform_admin_bypass ON platform.api_keys USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.webhooks USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.file_uploads USING (current_setting('app.is_platform_admin', true)::boolean = true);
+
+-- Support calls table (for XRay Support feature)
+CREATE TABLE IF NOT EXISTS platform.support_calls (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    room_code   TEXT NOT NULL,
+    join_url    TEXT NOT NULL,
+    caller_id   UUID NOT NULL REFERENCES platform.users(id),
+    tenant_id   UUID NOT NULL REFERENCES platform.tenants(id),
+    status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','answered','missed','expired')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    answered_at TIMESTAMPTZ,
+    expired_at  TIMESTAMPTZ
+);

@@ -707,6 +707,10 @@
       }).catch(function() {});
       setupMeetPanel();
       setupMeetViewport();
+      // Platform admin: poll for incoming support calls
+      if (currentUser && currentUser.is_platform_admin) {
+        startSupportCallPolling();
+      }
     }).catch(function() {});
   }
 
@@ -937,6 +941,28 @@
     var joinCodeInput = document.getElementById('meet-join-code');
     if (joinCodeInput) joinCodeInput.onkeydown = function(e) { if (e.key === 'Enter' && joinBtn) joinBtn.click(); };
 
+    // XRay Support button
+    var supportBtn = document.getElementById('meet-opt-support');
+    if (supportBtn) supportBtn.onclick = function() {
+      supportBtn.disabled = true;
+      supportBtn.textContent = 'Connecting...';
+      api.post('/api/meet/support-call', {}).then(function(r) {
+        supportBtn.disabled = false;
+        supportBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>XRay Support';
+        if (!r.ok) {
+          toast('Failed to connect: ' + (r.error ? r.error.message : 'Unknown error'), 'error');
+          return;
+        }
+        closeMeetPanel();
+        launchMeetCall(r.data.roomCode);
+        toast('Support call started. Waiting for XRay team...', 'info');
+      }).catch(function() {
+        supportBtn.disabled = false;
+        supportBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>XRay Support';
+        toast('Network error', 'error');
+      });
+    };
+
     // Close panel when clicking outside
     document.addEventListener('mousedown', function(e) {
       if (!meetState.panelOpen) return;
@@ -1068,6 +1094,78 @@
     setMeetViewMode(null);
     updateMeetHeaderState();
     updateMobileMeetState();
+  }
+
+  // ── Platform admin: poll for support calls ──
+  var supportPollTimer = null;
+  var knownSupportCalls = {};
+  function startSupportCallPolling() {
+    pollSupportCalls();
+    supportPollTimer = setInterval(pollSupportCalls, 5000);
+  }
+  function pollSupportCalls() {
+    api.get('/api/meet/support-calls').then(function(r) {
+      if (!r.ok || !r.data) return;
+      r.data.forEach(function(call) {
+        if (knownSupportCalls[call.id]) return;
+        knownSupportCalls[call.id] = true;
+        showSupportCallAlert(call);
+        // Browser notification (PWA)
+        if ('Notification' in window && Notification.permission === 'granted') {
+          var n = new Notification('XRay Support Call', {
+            body: (call.caller_name || call.caller_email || 'A user') + ' from ' + (call.tenant_name || 'a tenant') + ' needs support',
+            icon: '/icon-192.png',
+            tag: 'meet-call',
+            data: { url: '/#meet-support-' + call.room_code }
+          });
+          n.onclick = function() {
+            window.focus();
+            joinSupportCall(call);
+            n.close();
+          };
+        } else if ('Notification' in window && Notification.permission === 'default') {
+          Notification.requestPermission();
+        }
+      });
+    }).catch(function() {});
+  }
+  function showSupportCallAlert(call) {
+    // Remove existing alerts for same call
+    var existing = document.getElementById('sca-' + call.id);
+    if (existing) existing.remove();
+    var alert = document.createElement('div');
+    alert.id = 'sca-' + call.id;
+    alert.className = 'support-call-alert';
+    alert.innerHTML = '<div class="sca-title"><svg viewBox="0 0 24 24" width="18" height="18" stroke="#3b82f6" fill="none" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>Incoming Support Call</div>' +
+      '<div class="sca-info"><strong>' + escapeHtml(call.caller_name || call.caller_email || 'User') + '</strong> from <strong>' + escapeHtml(call.tenant_name || 'Unknown') + '</strong></div>' +
+      '<div class="sca-actions"><button class="sca-join">Join Call</button><button class="sca-dismiss">Dismiss</button></div>';
+    document.body.appendChild(alert);
+    alert.querySelector('.sca-join').onclick = function() { joinSupportCall(call); alert.remove(); };
+    alert.querySelector('.sca-dismiss').onclick = function() { alert.remove(); };
+    // Auto-dismiss after 2 minutes
+    setTimeout(function() { if (document.getElementById('sca-' + call.id)) alert.remove(); }, 120000);
+    // Play alert sound via AudioContext
+    try {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      function beep(freq, start, dur) {
+        var osc = ctx.createOscillator(); var gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = freq; osc.type = 'sine';
+        gain.gain.setValueAtTime(0.15, ctx.currentTime + start);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+        osc.start(ctx.currentTime + start); osc.stop(ctx.currentTime + start + dur);
+      }
+      beep(880, 0, 0.2); beep(1100, 0.25, 0.2); beep(880, 0.5, 0.2);
+    } catch(e) {}
+  }
+  function joinSupportCall(call) {
+    api.post('/api/meet/support-calls/' + call.id + '/answer', {}).catch(function() {});
+    if (!meetState.configured) {
+      window.open(call.join_url, '_blank');
+      return;
+    }
+    closeMeetPanel();
+    launchMeetCall(call.room_code);
   }
 
   function updateMeetHeaderState() {

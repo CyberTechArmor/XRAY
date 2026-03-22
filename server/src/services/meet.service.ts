@@ -223,6 +223,80 @@ export function getJoinUrl(serverUrl: string, roomName: string, participantName?
   return `${serverUrl}/?${params.toString()}`;
 }
 
+// ── Support call functions ──
+
+export async function createSupportCall(callerId: string, tenantId: string, roomCode: string, joinUrl: string): Promise<Record<string, unknown>> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    // Ensure table exists (idempotent)
+    await client.query(`CREATE TABLE IF NOT EXISTS platform.support_calls (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      room_code TEXT NOT NULL, join_url TEXT NOT NULL,
+      caller_id UUID NOT NULL, tenant_id UUID NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      answered_at TIMESTAMPTZ, expired_at TIMESTAMPTZ
+    )`);
+    const result = await client.query(
+      `INSERT INTO platform.support_calls (room_code, join_url, caller_id, tenant_id, status)
+       VALUES ($1, $2, $3, $4, 'pending') RETURNING *`,
+      [roomCode, joinUrl, callerId, tenantId]
+    );
+    return result.rows[0];
+  });
+}
+
+export async function getPendingSupportCalls(): Promise<any[]> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    // Check if table exists
+    const tableCheck = await client.query(
+      `SELECT to_regclass('platform.support_calls') AS tbl`
+    );
+    if (!tableCheck.rows[0].tbl) return [];
+    // Expire calls older than 2 minutes
+    await client.query(
+      `UPDATE platform.support_calls SET status = 'expired', expired_at = now()
+       WHERE status = 'pending' AND created_at < now() - interval '2 minutes'`
+    );
+    const result = await client.query(
+      `SELECT sc.*, u.name AS caller_name, u.email AS caller_email, t.name AS tenant_name
+       FROM platform.support_calls sc
+       LEFT JOIN platform.users u ON u.id = sc.caller_id
+       LEFT JOIN platform.tenants t ON t.id = sc.tenant_id
+       WHERE sc.status = 'pending'
+       ORDER BY sc.created_at DESC`
+    );
+    return result.rows;
+  });
+}
+
+export async function answerSupportCall(callId: string): Promise<void> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    await client.query(
+      `UPDATE platform.support_calls SET status = 'answered', answered_at = now() WHERE id = $1`,
+      [callId]
+    );
+  });
+}
+
+export async function getSupportWebhookConfig(): Promise<{ enabled: boolean; url: string }> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `SELECT key, value FROM platform.platform_settings WHERE key IN ('support_webhook_enabled', 'support_webhook_url')`
+    );
+    const settings: Record<string, string> = {};
+    for (const row of result.rows) {
+      settings[row.key] = row.value;
+    }
+    return {
+      enabled: settings.support_webhook_enabled === 'true',
+      url: settings.support_webhook_url || '',
+    };
+  });
+}
+
 export async function getTenantMembers(tenantId: string): Promise<{ id: string; name: string; email: string }[]> {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.current_tenant_id', $1, true)`, [tenantId]);

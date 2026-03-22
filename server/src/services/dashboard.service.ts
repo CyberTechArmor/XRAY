@@ -436,7 +436,21 @@ export async function renderPublicDashboard(
   }
   fetchOpts.signal = AbortSignal.timeout(90_000);
 
-  const response = await fetch(dashboard.fetch_url, fetchOpts);
+  // Append query params if configured
+  let fetchUrl = dashboard.fetch_url;
+  if ((dashboard as any).fetch_query_params) {
+    const qp = typeof (dashboard as any).fetch_query_params === 'string'
+      ? JSON.parse((dashboard as any).fetch_query_params) : (dashboard as any).fetch_query_params;
+    if (qp && typeof qp === 'object' && Object.keys(qp).length > 0) {
+      const url = new URL(fetchUrl);
+      for (const [k, v] of Object.entries(qp)) {
+        url.searchParams.set(k, String(v));
+      }
+      fetchUrl = url.toString();
+    }
+  }
+
+  const response = await fetch(fetchUrl, fetchOpts);
   if (!response.ok) {
     throw new AppError(502, 'UPSTREAM_ERROR', `Connection returned ${response.status}`);
   }
