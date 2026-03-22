@@ -53,10 +53,11 @@ export async function listDashboards(
       )
     `);
 
-    // Subquery for view count (non-platform-admin views only)
+    // Subquery for view count (excludes platform admin role views)
     const viewCountSub = `(SELECT COUNT(*)::int FROM platform.dashboard_views dv
        JOIN platform.users vu ON vu.id = dv.user_id
-       WHERE dv.dashboard_id = d.id AND vu.is_platform_admin IS NOT TRUE) AS view_count`;
+       JOIN platform.roles vr ON vr.id = vu.role_id
+       WHERE dv.dashboard_id = d.id AND vr.is_platform IS NOT TRUE) AS view_count`;
 
     // Subquery for connector names (aggregated)
     const connectorsSub = `(SELECT COALESCE(json_agg(json_build_object(

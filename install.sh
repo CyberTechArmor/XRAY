@@ -114,11 +114,7 @@ DEFAULT_PORT=$(find_available_port 3000)
 read -rp "  Application port [${DEFAULT_PORT}]: " APP_PORT
 APP_PORT="${APP_PORT:-$DEFAULT_PORT}"
 
-read -rp "  Embed subdomain (e.g. embed.xray.example.com) [embed.${DOMAIN}]: " EMBED_DOMAIN
-EMBED_DOMAIN="${EMBED_DOMAIN:-embed.${DOMAIN}}"
-
 ok "Domain: ${DOMAIN}"
-ok "Embed domain: ${EMBED_DOMAIN}"
 ok "Admin email: ${ADMIN_EMAIL}"
 ok "App port: ${APP_PORT}"
 
@@ -210,7 +206,7 @@ fi
 # Generate nginx config from template
 sed \
   -e "s|__DOMAIN__|${DOMAIN}|g" \
-  -e "s|__EMBED_DOMAIN__|${EMBED_DOMAIN}|g" \
+  -e "s|__EMBED_DOMAIN__|${DOMAIN}|g" \
   -e "s|__APP_PORT__|${APP_PORT}|g" \
   "$TEMPLATE" > "$NGINX_CONF"
 
@@ -230,7 +226,7 @@ upstream xray_server {
 
 server {
     listen 80;
-    server_name ${DOMAIN} ${EMBED_DOMAIN};
+    server_name ${DOMAIN};
 
     root /var/www/xray;
 
@@ -306,10 +302,9 @@ else
       apt-get install -y -qq certbot python3-certbot-nginx >/dev/null
     fi
 
-    info "Requesting certificate for ${DOMAIN} and ${EMBED_DOMAIN}..."
+    info "Requesting certificate for ${DOMAIN}..."
     certbot --nginx \
       -d "$DOMAIN" \
-      -d "$EMBED_DOMAIN" \
       --non-interactive \
       --agree-tos \
       --email "$ADMIN_EMAIL" \
@@ -318,7 +313,7 @@ else
     # Now regenerate nginx config with full HTTPS
     sed \
       -e "s|__DOMAIN__|${DOMAIN}|g" \
-      -e "s|__EMBED_DOMAIN__|${EMBED_DOMAIN}|g" \
+      -e "s|__EMBED_DOMAIN__|${DOMAIN}|g" \
       -e "s|__APP_PORT__|${APP_PORT}|g" \
       "$TEMPLATE" > "$NGINX_CONF"
 
@@ -326,7 +321,7 @@ else
     ok "TLS certificate installed and Nginx updated to HTTPS"
   else
     warn "Skipping TLS — site will run on HTTP only"
-    warn "Run 'sudo certbot --nginx -d ${DOMAIN} -d ${EMBED_DOMAIN}' later to enable HTTPS"
+    warn "Run 'sudo certbot --nginx -d ${DOMAIN}' later to enable HTTPS"
   fi
 fi
 
@@ -402,10 +397,8 @@ echo ""
 
 if [ "$HAS_CERTS" = true ] || [[ "${INSTALL_TLS:-N}" =~ ^[Yy] ]]; then
   echo -e "  ${BOLD}App URL:${NC}       https://${DOMAIN}"
-  echo -e "  ${BOLD}Embed URL:${NC}     https://${EMBED_DOMAIN}"
 else
   echo -e "  ${BOLD}App URL:${NC}       http://${DOMAIN}"
-  echo -e "  ${BOLD}Embed URL:${NC}     http://${EMBED_DOMAIN}"
 fi
 
 echo -e "  ${BOLD}Admin email:${NC}   ${ADMIN_EMAIL}"

@@ -20,6 +20,8 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_FROM=${SMTP_FROM:-}
+    volumes:
+      - uploads_data:/app/uploads
     restart: unless-stopped
     depends_on:
       postgres:
@@ -43,3 +45,4 @@ services:
 
 volumes:
   pg_data:
+  uploads_data:
