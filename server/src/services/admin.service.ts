@@ -170,6 +170,35 @@ export async function addTenantMember(tenantId: string, input: { name: string; e
   });
 }
 
+export async function removeTenantMember(tenantId: string, userId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    // Check user exists and belongs to this tenant
+    const user = await client.query(
+      'SELECT id, is_owner, email, name FROM platform.users WHERE id = $1 AND tenant_id = $2',
+      [userId, tenantId]
+    );
+    if (user.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found in this tenant');
+    // If this user is the tenant owner, clear the owner reference
+    if (user.rows[0].is_owner) {
+      await client.query('UPDATE platform.tenants SET owner_user_id = NULL WHERE id = $1 AND owner_user_id = $2', [tenantId, userId]);
+    }
+    // Clean up FK references that don't cascade
+    await client.query('DELETE FROM platform.invitations WHERE invited_by = $1', [userId]).catch(() => {});
+    await client.query('UPDATE platform.tenant_notes SET author_id = NULL WHERE author_id = $1', [userId]).catch(() => {});
+    await client.query('UPDATE platform.connections SET updated_by = NULL WHERE updated_by = $1', [userId]).catch(() => {});
+    await client.query('UPDATE platform.dashboards SET updated_by = NULL WHERE updated_by = $1', [userId]).catch(() => {});
+    await client.query('DELETE FROM platform.support_calls WHERE caller_id = $1', [userId]).catch(() => {});
+    // Delete records that reference user (sessions, magic links cascade automatically)
+    await client.query('DELETE FROM platform.user_sessions WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM platform.magic_links WHERE email = $1', [user.rows[0].email]);
+    // Delete the user
+    await client.query('DELETE FROM platform.users WHERE id = $1', [userId]);
+    auditService.log({ tenantId, action: 'user.delete', resourceType: 'user', resourceId: userId, metadata: { name: user.rows[0].name, email: user.rows[0].email } });
+    return { deleted: true };
+  });
+}
+
 // ─── Dashboards ───────────────────────────────────────────
 
 export async function listAllDashboards(query: { page: number; limit: number }) {

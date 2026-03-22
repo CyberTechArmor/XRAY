@@ -146,6 +146,20 @@ router.post('/tenants/:id/members', async (req, res, next) => {
   }
 });
 
+// DELETE /tenants/:id/members/:userId - remove user from tenant
+router.delete('/tenants/:id/members/:userId', async (req, res, next) => {
+  try {
+    await adminService.removeTenantMember(req.params.id, req.params.userId);
+    res.json({
+      ok: true,
+      data: { deleted: true },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /dashboards - list all dashboards
 router.get('/dashboards', async (req, res, next) => {
   try {
