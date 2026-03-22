@@ -28,7 +28,7 @@ banner() {
   echo ""
 }
 
-step() { echo -e "\n${GREEN}${BOLD}[$1/10]${NC} ${BOLD}$2${NC}\n"; }
+step() { echo -e "\n${GREEN}${BOLD}[$1/11]${NC} ${BOLD}$2${NC}\n"; }
 info() { echo -e "  ${CYAN}→${NC} $1"; }
 warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
 ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
@@ -339,8 +339,38 @@ docker compose up -d --build
 
 ok "Containers started"
 
-# ── Step 9: Health Check ──────────────────────────────────
-step 9 "Waiting for application to become healthy"
+# ── Step 9: Run database migrations ──────────────────────
+step 9 "Running database migrations"
+
+PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null)
+if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
+  # Wait for postgres to be ready
+  for i in $(seq 1 15); do
+    if docker exec "$PG_CONTAINER" pg_isready -U "${DB_USER:-xray}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+
+  MIGRATION_COUNT=0
+  for migration in "$SCRIPT_DIR"/migrations/*.sql; do
+    [ -f "$migration" ] || continue
+    MNAME=$(basename "$migration")
+    info "Running $MNAME..."
+    docker cp "$migration" "$PG_CONTAINER:/tmp/$MNAME"
+    if docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$MNAME" >/dev/null 2>&1; then
+      MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
+    else
+      warn "Migration $MNAME had errors (may already be applied)"
+    fi
+  done
+  ok "$MIGRATION_COUNT migration(s) applied"
+else
+  warn "Could not run migrations (postgres container not found or no migrations/)"
+fi
+
+# ── Step 10: Health Check ─────────────────────────────────
+step "10" "Waiting for application to become healthy"
 
 HEALTH_URL="http://127.0.0.1:${APP_PORT}/api/health"
 MAX_WAIT=60
@@ -361,8 +391,8 @@ if [ $ELAPSED -ge $MAX_WAIT ]; then
   warn "The app may still be starting. Check: docker compose logs -f server"
 fi
 
-# ── Step 10: Summary ──────────────────────────────────────
-step 10 "Installation complete"
+# ── Step 11: Summary ──────────────────────────────────────
+step 11 "Installation complete"
 
 echo ""
 echo -e "${GREEN}${BOLD}  ┌─────────────────────────────────────────────────┐${NC}"
