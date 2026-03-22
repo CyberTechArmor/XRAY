@@ -138,9 +138,9 @@ export async function getDashboardDetail(dashboardId: string) {
 export async function createDashboard(input: {
   tenantId: string; name: string; description?: string; status?: string;
   viewHtml?: string; viewCss?: string; viewJs?: string;
-  fetchUrl?: string; fetchMethod?: string; fetchHeaders?: Record<string, string>; fetchBody?: unknown;
-  fetchQueryParams?: Record<string, string>;
-  tileImageUrl?: string;
+  fetchUrl?: string | null; fetchMethod?: string; fetchHeaders?: Record<string, string> | null; fetchBody?: unknown;
+  fetchQueryParams?: Record<string, string> | null;
+  tileImageUrl?: string | null;
 }) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);

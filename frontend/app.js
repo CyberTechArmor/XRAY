@@ -707,9 +707,9 @@
       }).catch(function() {});
       setupMeetPanel();
       setupMeetViewport();
-      // Platform admin: connect SSE for real-time support calls
+      // Platform admin: poll for incoming support calls
       if (currentUser && currentUser.is_platform_admin) {
-        startSupportCallStream();
+        startSupportCallPolling();
       }
     }).catch(function() {});
   }
@@ -1096,26 +1096,23 @@
     updateMobileMeetState();
   }
 
-  // ── Platform admin: SSE for real-time support calls ──
-  var supportEventSource = null;
+  // ── Platform admin: poll for support calls ──
+  var supportPollTimer = null;
   var knownSupportCalls = {};
   var supportCallConfig = { ring_duration: 120, sound_enabled: true, vibration_enabled: true };
 
-  function startSupportCallStream() {
-    // Load support config first
+  function startSupportCallPolling() {
+    // Load support config
     api.get('/api/meet/support-config').then(function(r) {
       if (r.ok && r.data) supportCallConfig = r.data;
     }).catch(function() {});
-
-    if (supportEventSource) { supportEventSource.close(); supportEventSource = null; }
-    var token = window.getAccessToken ? window.getAccessToken() : '';
-    if (!token) return;
-    supportEventSource = new EventSource('/api/meet/support-calls/stream?token=' + encodeURIComponent(token));
-    supportEventSource.onmessage = function(e) {
-      try {
-        var call = JSON.parse(e.data);
-        if (call.type === 'connected') return;
-        if (call.type !== 'support_call') return;
+    pollSupportCalls();
+    supportPollTimer = setInterval(pollSupportCalls, 5000);
+  }
+  function pollSupportCalls() {
+    api.get('/api/meet/support-calls').then(function(r) {
+      if (!r.ok || !r.data) return;
+      r.data.forEach(function(call) {
         if (knownSupportCalls[call.id]) return;
         knownSupportCalls[call.id] = true;
         showSupportCallAlert(call);
@@ -1131,13 +1128,9 @@
         } else if ('Notification' in window && Notification.permission === 'default') {
           Notification.requestPermission();
         }
-      } catch(err) {}
-    };
-    supportEventSource.onerror = function() {
-      // EventSource auto-reconnects, no manual retry needed
-    };
+      });
+    }).catch(function() {});
   }
-
   function showSupportCallAlert(call) {
     var existing = document.getElementById('sca-' + call.id);
     if (existing) existing.remove();
