@@ -80,7 +80,7 @@ export async function updateTenantPlan(tenantId: string, input: {
     const tenant = await client.query('SELECT id, name FROM platform.tenants WHERE id = $1', [tenantId]);
     if (tenant.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Tenant not found');
 
-    // Upsert billing state
+    // Upsert billing state (use 0 defaults for NOT NULL integer columns)
     const result = await client.query(
       `INSERT INTO platform.billing_state (tenant_id, plan_tier, dashboard_limit, connector_limit, payment_status, updated_at)
        VALUES ($1, $2, $3, $4, $5, now())
@@ -91,7 +91,7 @@ export async function updateTenantPlan(tenantId: string, input: {
          payment_status = COALESCE($5, platform.billing_state.payment_status),
          updated_at = now()
        RETURNING *`,
-      [tenantId, input.planTier, input.dashboardLimit ?? null, input.connectorLimit ?? null, input.paymentStatus ?? 'active']
+      [tenantId, input.planTier, input.dashboardLimit ?? 0, input.connectorLimit ?? 0, input.paymentStatus ?? 'active']
     );
 
     auditService.log({ tenantId, action: 'tenant.plan_update', resourceType: 'tenant', resourceId: tenantId, metadata: { planTier: input.planTier, dashboardLimit: input.dashboardLimit, connectorLimit: input.connectorLimit, paymentStatus: input.paymentStatus } });

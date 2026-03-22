@@ -69,15 +69,32 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
       res.json({ ok: true, data: { hasVision: true, dashSlots: 999, billingOverride: true } });
       return;
     }
-    const result = await stripeService.getBillingStatus(req.user!.tid);
-    const VISION_PRODUCT = 'prod_UB9nZ8qktPbtyi';
-    const DASHBOARD_PRODUCT = 'prod_UB9fsE1JmQjRgw';
     let hasVision = false;
     let dashSlots = 0;
-    for (const s of result.subscriptions) {
-      if (s.status === 'active' || s.status === 'trialing' || (s.cancelAtPeriodEnd && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > new Date())) {
-        if (s.productId === VISION_PRODUCT) hasVision = true;
-        if (s.productId === DASHBOARD_PRODUCT) dashSlots += s.quantity;
+    try {
+      const result = await stripeService.getBillingStatus(req.user!.tid);
+      const VISION_PRODUCT = 'prod_UB9nZ8qktPbtyi';
+      const DASHBOARD_PRODUCT = 'prod_UB9fsE1JmQjRgw';
+      for (const s of result.subscriptions) {
+        if (s.status === 'active' || s.status === 'trialing' || (s.cancelAtPeriodEnd && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > new Date())) {
+          if (s.productId === VISION_PRODUCT) hasVision = true;
+          if (s.productId === DASHBOARD_PRODUCT) dashSlots += s.quantity;
+        }
+      }
+      // Fall back to billing_state limits if no Stripe subscriptions
+      if (!hasVision && result.plan !== 'free') { hasVision = true; }
+      if (dashSlots === 0 && result.dashboardLimit > 0) { dashSlots = result.dashboardLimit; }
+    } catch {
+      // Stripe not configured — fall back to billing_state table directly
+      const { withClient } = await import('../db/connection');
+      const bs = await withClient(async (client) => {
+        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        const r = await client.query('SELECT * FROM platform.billing_state WHERE tenant_id = $1', [req.user!.tid]);
+        return r.rows[0];
+      });
+      if (bs && bs.plan_tier !== 'free') {
+        hasVision = true;
+        dashSlots = bs.dashboard_limit || 0;
       }
     }
     res.json({ ok: true, data: { hasVision, dashSlots } });
