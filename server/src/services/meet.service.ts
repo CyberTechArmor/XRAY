@@ -217,6 +217,15 @@ export async function getUserDisplayName(userId: string): Promise<string | null>
   });
 }
 
+export async function getUserInfo(userId: string): Promise<{ name: string | null; email: string } | null> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query('SELECT name, email FROM platform.users WHERE id = $1', [userId]);
+    if (result.rows.length === 0) return null;
+    return { name: result.rows[0].name || null, email: result.rows[0].email };
+  });
+}
+
 export function getJoinUrl(serverUrl: string, roomName: string, participantName?: string): string {
   const params = new URLSearchParams({ room: roomName });
   if (participantName) params.set('name', participantName);
@@ -254,10 +263,14 @@ export async function getPendingSupportCalls(): Promise<any[]> {
       `SELECT to_regclass('platform.support_calls') AS tbl`
     );
     if (!tableCheck.rows[0].tbl) return [];
-    // Expire calls older than 2 minutes
+    // Get configurable ring duration
+    const config = await getSupportCallConfig();
+    const ringDuration = config.ring_duration || 120;
+    // Expire calls older than ring duration
     await client.query(
       `UPDATE platform.support_calls SET status = 'expired', expired_at = now()
-       WHERE status = 'pending' AND created_at < now() - interval '2 minutes'`
+       WHERE status = 'pending' AND created_at < now() - interval '1 second' * $1`,
+      [ringDuration]
     );
     const result = await client.query(
       `SELECT sc.*, u.name AS caller_name, u.email AS caller_email, t.name AS tenant_name
@@ -295,6 +308,50 @@ export async function getSupportWebhookConfig(): Promise<{ enabled: boolean; url
       url: settings.support_webhook_url || '',
     };
   });
+}
+
+// ── Support call configuration ──
+
+export interface SupportCallConfig {
+  enabled: boolean;
+  ring_duration: number; // seconds
+  active_hours_enabled: boolean;
+  active_hours_start: string; // HH:MM
+  active_hours_end: string; // HH:MM
+  sound_enabled: boolean;
+  vibration_enabled: boolean;
+}
+
+export async function getSupportCallConfig(): Promise<SupportCallConfig> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `SELECT key, value FROM platform.platform_settings WHERE key IN (
+        'support_enabled', 'support_ring_duration',
+        'support_active_hours_enabled', 'support_active_hours_start', 'support_active_hours_end',
+        'support_sound_enabled', 'support_vibration_enabled'
+      )`
+    );
+    const settings: Record<string, string> = {};
+    for (const row of result.rows) {
+      settings[row.key] = row.value;
+    }
+    return {
+      enabled: settings.support_enabled !== 'false', // default true
+      ring_duration: parseInt(settings.support_ring_duration || '120', 10),
+      active_hours_enabled: settings.support_active_hours_enabled === 'true',
+      active_hours_start: settings.support_active_hours_start || '00:00',
+      active_hours_end: settings.support_active_hours_end || '23:59',
+      sound_enabled: settings.support_sound_enabled !== 'false', // default true
+      vibration_enabled: settings.support_vibration_enabled !== 'false', // default true
+    };
+  });
+}
+
+export function isWithinActiveHours(config: SupportCallConfig): boolean {
+  if (!config.active_hours_enabled) return true;
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  return hhmm >= config.active_hours_start && hhmm <= config.active_hours_end;
 }
 
 export async function getTenantMembers(tenantId: string): Promise<{ id: string; name: string; email: string }[]> {
