@@ -12,7 +12,7 @@ CREATE TABLE platform.tenants (
     stripe_customer_id TEXT UNIQUE,
     warehouse_host    TEXT,
     status            TEXT NOT NULL DEFAULT 'active'
-                      CHECK (status IN ('active', 'suspended', 'cancelled')),
+                      CHECK (status IN ('active', 'suspended', 'cancelled', 'archived')),
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );

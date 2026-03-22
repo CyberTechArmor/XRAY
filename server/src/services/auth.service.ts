@@ -514,6 +514,17 @@ export async function completeLogin(magicLink: MagicLink): Promise<TokenPair> {
 
     const user = userResult.rows[0];
 
+    // Check if tenant is archived/suspended (skip for platform admins)
+    if (user.role_slug !== 'platform_admin') {
+      const tenantResult = await client.query(
+        'SELECT status FROM platform.tenants WHERE id = $1',
+        [user.tenant_id]
+      );
+      if (tenantResult.rows.length > 0 && ['archived', 'suspended'].includes(tenantResult.rows[0].status)) {
+        throw new AppError(403, 'TENANT_INACTIVE', 'This organization is currently inactive. Please contact support.');
+      }
+    }
+
     // Update last login
     await client.query(
       'UPDATE platform.users SET last_login_at = now() WHERE id = $1',

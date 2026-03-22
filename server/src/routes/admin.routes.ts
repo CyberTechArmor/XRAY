@@ -92,6 +92,60 @@ router.patch('/tenants/:id/plan', async (req, res, next) => {
   }
 });
 
+// PATCH /tenants/:id/status - archive/activate tenant
+router.patch('/tenants/:id/status', async (req, res, next) => {
+  try {
+    const { status } = req.body;
+    if (!status || !['active', 'suspended', 'archived'].includes(status)) {
+      return res.status(400).json({ ok: false, error: { code: 'INVALID_STATUS', message: 'Status must be active, suspended, or archived' } });
+    }
+    const result = await adminService.updateTenantStatus(req.params.id, status);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /tenants/:id/members - list tenant members
+router.get('/tenants/:id/members', async (req, res, next) => {
+  try {
+    const result = await adminService.listTenantMembers(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /tenants/:id/members - add user to tenant
+router.post('/tenants/:id/members', async (req, res, next) => {
+  try {
+    const { name, email, role } = req.body;
+    if (!name || !email) {
+      return res.status(400).json({ ok: false, error: { code: 'MISSING_FIELDS', message: 'Name and email are required' } });
+    }
+    const result = await adminService.addTenantMember(req.params.id, {
+      name,
+      email,
+      role: role || 'member',
+    });
+    res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /dashboards - list all dashboards
 router.get('/dashboards', async (req, res, next) => {
   try {
