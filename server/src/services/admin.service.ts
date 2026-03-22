@@ -139,13 +139,14 @@ export async function createDashboard(input: {
   tenantId: string; name: string; description?: string; status?: string;
   viewHtml?: string; viewCss?: string; viewJs?: string;
   fetchUrl?: string; fetchMethod?: string; fetchHeaders?: Record<string, string>; fetchBody?: unknown;
+  fetchQueryParams?: Record<string, string>;
   tileImageUrl?: string;
 }) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, tile_image_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, tile_image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
       [
         input.tenantId, input.name, input.description || null,
         input.status || 'draft',
@@ -153,6 +154,7 @@ export async function createDashboard(input: {
         input.fetchUrl || null, input.fetchMethod || 'GET',
         input.fetchHeaders ? JSON.stringify(input.fetchHeaders) : '{}',
         input.fetchBody ? JSON.stringify(input.fetchBody) : null,
+        input.fetchQueryParams ? JSON.stringify(input.fetchQueryParams) : null,
         input.tileImageUrl || null,
       ]
     );
@@ -173,6 +175,7 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       viewCss: 'view_css', viewJs: 'view_js', status: 'status',
       fetchUrl: 'fetch_url', fetchMethod: 'fetch_method',
       fetchHeaders: 'fetch_headers', fetchBody: 'fetch_body',
+      fetchQueryParams: 'fetch_query_params',
       tileImageUrl: 'tile_image_url',
     };
     for (const [key, value] of Object.entries(updates)) {
@@ -180,7 +183,7 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       if (col && value !== undefined) {
         fields.push(`${col} = $${idx}`);
         // JSON fields need stringification
-        if (col === 'fetch_headers' || col === 'fetch_body') {
+        if (col === 'fetch_headers' || col === 'fetch_body' || col === 'fetch_query_params') {
           values.push(value ? JSON.stringify(value) : null);
         } else {
           values.push(value);
@@ -249,7 +252,7 @@ export async function fetchDashboardContent(dashboardId: string) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      'SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body, status FROM platform.dashboards WHERE id = $1',
+      'SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, status FROM platform.dashboards WHERE id = $1',
       [dashboardId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
@@ -267,7 +270,21 @@ export async function fetchDashboardContent(dashboardId: string) {
       fetchOpts.body = typeof dash.fetch_body === 'string' ? dash.fetch_body : JSON.stringify(dash.fetch_body);
     }
 
-    const response = await fetch(dash.fetch_url, fetchOpts);
+    // Append query params if configured
+    let fetchUrl = dash.fetch_url;
+    if (dash.fetch_query_params) {
+      const qp = typeof dash.fetch_query_params === 'string'
+        ? JSON.parse(dash.fetch_query_params) : dash.fetch_query_params;
+      if (qp && typeof qp === 'object' && Object.keys(qp).length > 0) {
+        const url = new URL(fetchUrl);
+        for (const [k, v] of Object.entries(qp)) {
+          url.searchParams.set(k, String(v));
+        }
+        fetchUrl = url.toString();
+      }
+    }
+
+    const response = await fetch(fetchUrl, fetchOpts);
     if (!response.ok) {
       throw new AppError(502, 'UPSTREAM_ERROR', `Connection returned ${response.status}: ${response.statusText}`);
     }

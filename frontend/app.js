@@ -707,6 +707,10 @@
       }).catch(function() {});
       setupMeetPanel();
       setupMeetViewport();
+      // Platform admin: poll for incoming support calls
+      if (currentUser && currentUser.is_platform_admin) {
+        startSupportCallPolling();
+      }
     }).catch(function() {});
   }
 
@@ -937,6 +941,28 @@
     var joinCodeInput = document.getElementById('meet-join-code');
     if (joinCodeInput) joinCodeInput.onkeydown = function(e) { if (e.key === 'Enter' && joinBtn) joinBtn.click(); };
 
+    // XRay Support button
+    var supportBtn = document.getElementById('meet-opt-support');
+    if (supportBtn) supportBtn.onclick = function() {
+      supportBtn.disabled = true;
+      supportBtn.textContent = 'Connecting...';
+      api.post('/api/meet/support-call', {}).then(function(r) {
+        supportBtn.disabled = false;
+        supportBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>XRay Support';
+        if (!r.ok) {
+          toast('Failed to connect: ' + (r.error ? r.error.message : 'Unknown error'), 'error');
+          return;
+        }
+        closeMeetPanel();
+        launchMeetCall(r.data.roomCode);
+        toast('Support call started. Waiting for XRay team...', 'info');
+      }).catch(function() {
+        supportBtn.disabled = false;
+        supportBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>XRay Support';
+        toast('Network error', 'error');
+      });
+    };
+
     // Close panel when clicking outside
     document.addEventListener('mousedown', function(e) {
       if (!meetState.panelOpen) return;
@@ -1070,6 +1096,78 @@
     updateMobileMeetState();
   }
 
+  // ── Platform admin: poll for support calls ──
+  var supportPollTimer = null;
+  var knownSupportCalls = {};
+  function startSupportCallPolling() {
+    pollSupportCalls();
+    supportPollTimer = setInterval(pollSupportCalls, 5000);
+  }
+  function pollSupportCalls() {
+    api.get('/api/meet/support-calls').then(function(r) {
+      if (!r.ok || !r.data) return;
+      r.data.forEach(function(call) {
+        if (knownSupportCalls[call.id]) return;
+        knownSupportCalls[call.id] = true;
+        showSupportCallAlert(call);
+        // Browser notification (PWA)
+        if ('Notification' in window && Notification.permission === 'granted') {
+          var n = new Notification('XRay Support Call', {
+            body: (call.caller_name || call.caller_email || 'A user') + ' from ' + (call.tenant_name || 'a tenant') + ' needs support',
+            icon: '/icon-192.png',
+            tag: 'meet-call',
+            data: { url: '/#meet-support-' + call.room_code }
+          });
+          n.onclick = function() {
+            window.focus();
+            joinSupportCall(call);
+            n.close();
+          };
+        } else if ('Notification' in window && Notification.permission === 'default') {
+          Notification.requestPermission();
+        }
+      });
+    }).catch(function() {});
+  }
+  function showSupportCallAlert(call) {
+    // Remove existing alerts for same call
+    var existing = document.getElementById('sca-' + call.id);
+    if (existing) existing.remove();
+    var alert = document.createElement('div');
+    alert.id = 'sca-' + call.id;
+    alert.className = 'support-call-alert';
+    alert.innerHTML = '<div class="sca-title"><svg viewBox="0 0 24 24" width="18" height="18" stroke="#3b82f6" fill="none" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>Incoming Support Call</div>' +
+      '<div class="sca-info"><strong>' + escapeHtml(call.caller_name || call.caller_email || 'User') + '</strong> from <strong>' + escapeHtml(call.tenant_name || 'Unknown') + '</strong></div>' +
+      '<div class="sca-actions"><button class="sca-join">Join Call</button><button class="sca-dismiss">Dismiss</button></div>';
+    document.body.appendChild(alert);
+    alert.querySelector('.sca-join').onclick = function() { joinSupportCall(call); alert.remove(); };
+    alert.querySelector('.sca-dismiss').onclick = function() { alert.remove(); };
+    // Auto-dismiss after 2 minutes
+    setTimeout(function() { if (document.getElementById('sca-' + call.id)) alert.remove(); }, 120000);
+    // Play alert sound via AudioContext
+    try {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      function beep(freq, start, dur) {
+        var osc = ctx.createOscillator(); var gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = freq; osc.type = 'sine';
+        gain.gain.setValueAtTime(0.15, ctx.currentTime + start);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+        osc.start(ctx.currentTime + start); osc.stop(ctx.currentTime + start + dur);
+      }
+      beep(880, 0, 0.2); beep(1100, 0.25, 0.2); beep(880, 0.5, 0.2);
+    } catch(e) {}
+  }
+  function joinSupportCall(call) {
+    api.post('/api/meet/support-calls/' + call.id + '/answer', {}).catch(function() {});
+    if (!meetState.configured) {
+      window.open(call.join_url, '_blank');
+      return;
+    }
+    closeMeetPanel();
+    launchMeetCall(call.room_code);
+  }
+
   function updateMeetHeaderState() {
     var btn = document.getElementById('btn-meet-header');
     if (!btn) return;
@@ -1160,8 +1258,8 @@
 
     // Build share page UI
     document.body.insertAdjacentHTML('afterbegin',
-      '<div id="share-page" style="min-height:100vh;background:var(--bg,#08090c);color:var(--t1,#f0f1f4)">' +
-        '<div style="height:48px;background:var(--bg2,#0f1117);border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;padding:0 20px;gap:12px">' +
+      '<div id="share-page" style="position:fixed;inset:0;display:flex;flex-direction:column;background:var(--bg,#08090c);color:var(--t1,#f0f1f4);overflow:hidden">' +
+        '<div style="height:48px;flex-shrink:0;background:var(--bg2,#0f1117);border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;padding:0 20px;gap:12px">' +
           '<a href="/" style="text-decoration:none;display:flex;align-items:center;gap:4px">' +
             '<span style="width:28px;height:28px;display:flex;align-items:center;justify-content:center">' +
               '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:22px;height:22px">' +
@@ -1176,7 +1274,7 @@
             '<span style="font-size:18px;font-weight:700;letter-spacing:-0.02em"><span style="color:#fff">X</span><span style="color:#3ee8b5">Ray</span></span>' +
           '</a>' +
         '</div>' +
-        '<div id="share-content" style="width:100%;height:calc(100vh - 48px)">' +
+        '<div id="share-content" style="width:100%;flex:1;min-height:0;overflow:hidden">' +
           '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--t2,#8e91a0);gap:10px;font-size:14px">' +
             '<div class="spinner"></div> Loading dashboard...' +
           '</div>' +
@@ -1385,15 +1483,43 @@
         audio.style.cssText = 'min-width:300px;';
         content.appendChild(audio);
       } else if (isOffice) {
-        var officeIframe = document.createElement('iframe');
-        officeIframe.src = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(tokenUrl);
-        officeIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
-        officeIframe.setAttribute('allowfullscreen', 'true');
+        // Office Online and Google Docs viewers require a publicly accessible URL.
+        // Since our files are behind auth, fetch the file as a blob and display it.
+        var officeExts = { doc: true, docx: true, ppt: true, pptx: true, xls: true, xlsx: true };
+        content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading document...</div>';
         content.style.padding = '0';
-        officeIframe.onerror = function() {
-          officeIframe.src = 'https://docs.google.com/gview?url=' + encodeURIComponent(tokenUrl) + '&embedded=true';
-        };
-        content.appendChild(officeIframe);
+        fetch(fileUrl, { headers: authHeaders, credentials: 'include' }).then(function(r) {
+          if (!r.ok) throw new Error('Failed to fetch');
+          return r.blob();
+        }).then(function(blob) {
+          var blobUrl = URL.createObjectURL(blob);
+          // Try Google Docs viewer with a public URL first, fall back to download
+          var officeIframe = document.createElement('iframe');
+          officeIframe.src = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(tokenUrl);
+          officeIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
+          officeIframe.setAttribute('allowfullscreen', 'true');
+          // Detect load failure after timeout and show fallback
+          var loadFailed = false;
+          var fallbackTimer = setTimeout(function() {
+            loadFailed = true;
+            content.innerHTML = '';
+            var fallbackMsg = document.createElement('div');
+            fallbackMsg.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;padding:40px;';
+            fallbackMsg.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" stroke="#8e91a0" fill="none" stroke-width="1" style="opacity:.4"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' +
+              '<p style="color:#f0f1f4;font-size:15px;text-align:center">This document type cannot be previewed inline.</p>' +
+              '<p style="color:#8e91a0;font-size:13px">Use "Open in new tab" or "Download" to view it.</p>';
+            content.appendChild(fallbackMsg);
+          }, 8000);
+          officeIframe.onload = function() {
+            if (!loadFailed) clearTimeout(fallbackTimer);
+          };
+          content.innerHTML = '';
+          content.appendChild(officeIframe);
+        }).catch(function() {
+          content.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;padding:40px;">' +
+            '<p style="color:#f0f1f4;font-size:15px">Could not load document preview.</p>' +
+            '<p style="color:#8e91a0;font-size:13px">Use "Open in new tab" or "Download" to view it.</p></div>';
+        });
       } else if (isText) {
         content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading...</div>';
         fetch(fileUrl, { headers: authHeaders, credentials: 'include' }).then(function(r) { return r.text(); }).then(function(text) {

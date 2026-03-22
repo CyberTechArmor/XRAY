@@ -102,6 +102,31 @@ router.post('/', authenticateJWT, upload.array('files', 10), async (req, res, ne
   }
 });
 
+// GET /billing-files - list all billing files across tenants (platform admin only)
+router.get('/billing-files', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      throw new AppError(403, 'FORBIDDEN', 'Platform admin access required');
+    }
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+    const offset = parseInt(req.query.offset as string) || 0;
+    const result = await uploadService.listAllBillingFiles({ limit, offset });
+    res.json({
+      ok: true,
+      data: result.rows,
+      meta: {
+        total: result.total,
+        limit,
+        offset,
+        request_id: req.headers['x-request-id'] || '',
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /:id - get file info
 router.get('/:id', authenticateJWT, async (req, res, next) => {
   try {
@@ -195,7 +220,8 @@ router.delete('/:id', authenticateJWT, async (req, res, next) => {
 router.get('/context/:contextType/:contextId', authenticateJWT, async (req, res, next) => {
   try {
     const contextType = contextTypeSchema.parse(req.params.contextType);
-    const files = await uploadService.listFilesByContext(contextType, req.params.contextId);
+    // Filter by tenant so users only see their own files
+    const files = await uploadService.listFilesByContext(contextType, req.params.contextId, req.user!.tid);
     res.json({
       ok: true,
       data: files,

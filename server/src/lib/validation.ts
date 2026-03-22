@@ -72,6 +72,7 @@ export const dashboardCreateSchema = z.object({
   fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
   fetchHeaders: z.record(z.string()).optional(),
   fetchBody: z.any().optional(),
+  fetchQueryParams: z.record(z.string()).optional(),
   tileImageUrl: z.string().url().max(2000).optional(),
 });
 
@@ -86,6 +87,7 @@ export const dashboardUpdateSchema = z.object({
   fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
   fetchHeaders: z.record(z.string()).optional(),
   fetchBody: z.any().optional(),
+  fetchQueryParams: z.record(z.string()).optional().nullable(),
   tileImageUrl: z.string().url().max(2000).optional().nullable(),
 });
 

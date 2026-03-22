@@ -96,6 +96,83 @@ router.post('/test-connection', authenticateJWT, requirePermission('platform.adm
   }
 });
 
+// POST /support-call - tenant user requests XRay support (creates room + notifies admin)
+router.post('/support-call', authenticateJWT, async (req, res, next) => {
+  try {
+    // Generate room code and create room
+    const roomCode = `xr-support-${Date.now().toString(36)}`;
+    const roomResult = await meetService.createRoom({ roomId: roomCode, displayName: 'XRay Support' });
+
+    // Store support call record
+    const supportCall = await meetService.createSupportCall(
+      req.user!.sub, req.user!.tid, roomCode, roomResult.joinUrl
+    );
+
+    // Fire webhook if configured
+    const webhookConfig = await meetService.getSupportWebhookConfig();
+    if (webhookConfig.enabled && webhookConfig.url) {
+      const webhookUrl = new URL(webhookConfig.url);
+      webhookUrl.searchParams.set('room', roomCode);
+      webhookUrl.searchParams.set('joinUrl', roomResult.joinUrl);
+      webhookUrl.searchParams.set('callId', (supportCall as any).id);
+      // Fire and forget
+      fetch(webhookUrl.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'support_call',
+          room: roomCode,
+          joinUrl: roomResult.joinUrl,
+          callId: (supportCall as any).id,
+          callerEmail: req.user!.sub,
+          tenantId: req.user!.tid,
+          timestamp: new Date().toISOString(),
+        }),
+      }).catch(() => {});
+    }
+
+    res.status(201).json({
+      ok: true,
+      data: { room: roomResult.room, joinUrl: roomResult.joinUrl, roomCode, supportCallId: (supportCall as any).id },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /support-calls - list pending support calls (platform admin only)
+router.get('/support-calls', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      res.json({ ok: true, data: [] });
+      return;
+    }
+    const calls = await meetService.getPendingSupportCalls();
+    res.json({
+      ok: true,
+      data: calls,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /support-calls/:id/answer - mark support call as answered
+router.post('/support-calls/:id/answer', authenticateJWT, async (req, res, next) => {
+  try {
+    await meetService.answerSupportCall(req.params.id);
+    res.json({
+      ok: true,
+      data: { answered: true },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /members - list tenant members for meeting invites
 router.get('/members', authenticateJWT, async (req, res, next) => {
   try {

@@ -152,6 +152,32 @@ input, select, textarea { font-family: var(--font); }
 .meet-panel-option:hover { background: var(--bg4); border-color: var(--acc); color: var(--acc); }
 .meet-panel-option svg { stroke: var(--acc); flex-shrink: 0; }
 
+/* XRay Support option - blue style */
+.meet-support-option { border-color: rgba(59,130,246,0.3) !important; }
+.meet-support-option:hover { background: rgba(59,130,246,0.1) !important; border-color: rgba(59,130,246,0.6) !important; color: #3b82f6 !important; }
+.meet-support-option svg { stroke: #3b82f6 !important; }
+.meet-support-option { color: #3b82f6 !important; }
+
+/* Support call alert (platform admin) */
+@keyframes support-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(59,130,246,0); }
+}
+.support-call-alert {
+  position: fixed; top: 60px; right: 20px; z-index: 9999;
+  background: linear-gradient(135deg, #1e3a5f, #0f1117); border: 1px solid rgba(59,130,246,0.4);
+  border-radius: 14px; padding: 16px 20px; min-width: 320px; max-width: 420px;
+  animation: support-ring 2s ease-in-out infinite;
+  font-family: var(--font);
+}
+.support-call-alert .sca-title { color: #3b82f6; font-size: 15px; font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.support-call-alert .sca-info { color: var(--t2); font-size: 13px; margin-bottom: 12px; }
+.support-call-alert .sca-actions { display: flex; gap: 8px; }
+.support-call-alert .sca-join { padding: 8px 20px; border-radius: 8px; border: none; background: #3b82f6; color: #fff; font-weight: 600; font-size: 14px; cursor: pointer; font-family: var(--font); }
+.support-call-alert .sca-join:hover { background: #2563eb; }
+.support-call-alert .sca-dismiss { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--bdr); background: transparent; color: var(--t2); font-size: 13px; cursor: pointer; font-family: var(--font); }
+.support-call-alert .sca-dismiss:hover { background: rgba(255,255,255,0.05); }
+
 /* Meet new meeting panel */
 .meet-room-row {
   display: flex; align-items: center; gap: 8px; margin-bottom: 16px;

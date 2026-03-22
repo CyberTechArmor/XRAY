@@ -7,10 +7,11 @@
 <style>
   :root { --bg:#08090c; --bg2:#0f1117; --t1:#f0f1f4; --t2:#8e91a0; --acc:#3ee8b5; --bdr:rgba(255,255,255,0.06); }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--t1); height: 100%; overflow: hidden; }
+  html, body { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--t1); height: 100%; margin: 0; padding: 0; overflow: hidden; display: flex; flex-direction: column; }
   .share-bar {
     height: 48px; background: var(--bg2); border-bottom: 1px solid var(--bdr);
     display: flex; align-items: center; padding: 0 20px; gap: 12px;
+    flex-shrink: 0;
   }
   .share-bar a { text-decoration: none; display: flex; align-items: center; gap: 4px; }
   .share-bar .logo { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
@@ -20,11 +21,11 @@
     width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
   }
   .share-bar .logo-icon svg { width: 22px; height: 22px; }
-  .share-content { width: 100%; height: calc(100vh - 48px); }
+  .share-content { width: 100%; flex: 1; min-height: 0; overflow: hidden; }
   .share-content iframe { width: 100%; height: 100%; border: none; background: var(--bg); }
   .share-loading {
     display: flex; align-items: center; justify-content: center;
-    height: calc(100vh - 48px); color: var(--t2); gap: 10px; font-size: 14px;
+    height: 100%; color: var(--t2); gap: 10px; font-size: 14px;
   }
   .spinner {
     width: 20px; height: 20px; border: 2px solid var(--bdr);
@@ -33,12 +34,12 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .share-error {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    height: calc(100vh - 48px); color: var(--t2); gap: 12px; font-size: 15px;
+    height: 100%; color: var(--t2); gap: 12px; font-size: 15px;
   }
   .share-error svg { opacity: .3; }
 </style>
 </head>
-<body>
+<body style="display:flex;flex-direction:column;height:100vh;overflow:hidden;">
 <div class="share-bar">
   <a href="/">
     <span class="logo-icon">

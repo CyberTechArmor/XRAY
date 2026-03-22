@@ -51,14 +51,14 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       // Platform admin can render any dashboard regardless of tenant
       const query = req.user!.is_platform_admin
         ? {
-            text: `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body,
+            text: `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
                     view_html, view_css, view_js
              FROM platform.dashboards
              WHERE id = $1 AND status = 'active'`,
             values: [req.params.id],
           }
         : {
-            text: `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body,
+            text: `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
                     view_html, view_css, view_js
              FROM platform.dashboards
              WHERE id = $1 AND tenant_id = $2 AND status = 'active'`,
@@ -108,7 +108,21 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     // 90-second timeout for upstream fetches (some data flows take time)
     fetchOpts.signal = AbortSignal.timeout(90_000);
 
-    const response = await fetch(dashboard.fetch_url, fetchOpts);
+    // Append query params if configured
+    let fetchUrl = dashboard.fetch_url;
+    if (dashboard.fetch_query_params) {
+      const qp = typeof dashboard.fetch_query_params === 'string'
+        ? JSON.parse(dashboard.fetch_query_params) : dashboard.fetch_query_params;
+      if (qp && typeof qp === 'object' && Object.keys(qp).length > 0) {
+        const url = new URL(fetchUrl);
+        for (const [k, v] of Object.entries(qp)) {
+          url.searchParams.set(k, String(v));
+        }
+        fetchUrl = url.toString();
+      }
+    }
+
+    const response = await fetch(fetchUrl, fetchOpts);
     if (!response.ok) {
       return res.status(502).json({ ok: false, error: { code: 'UPSTREAM_ERROR', message: `Connection returned ${response.status}` } });
     }
