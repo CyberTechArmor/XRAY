@@ -80,12 +80,13 @@ export async function listDashboards(
       return result.rows;
     }
 
-    // Return only dashboards the user has access to
+    // Return active dashboards for the tenant, plus any with explicit access
     const result = await client.query(
       `SELECT d.*, ${viewCountSub}, ${connectorsSub}
        FROM platform.dashboards d
-       JOIN platform.dashboard_access da ON da.dashboard_id = d.id
-       WHERE d.tenant_id = $1 AND da.user_id = $2
+       WHERE d.tenant_id = $1
+         AND (d.status = 'active' OR d.status = 'disabled'
+              OR EXISTS (SELECT 1 FROM platform.dashboard_access da WHERE da.dashboard_id = d.id AND da.user_id = $2))
        ORDER BY d.updated_at DESC`,
       [tenantId, userId]
     );
