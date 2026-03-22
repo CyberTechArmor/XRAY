@@ -83,7 +83,7 @@ input, select, textarea { font-family: var(--font); }
 
 /* ── App layout ── */
 #app-shell { display: none; height: 100vh; overflow: hidden; }
-#app-header { height: var(--header-h); background: var(--bg2); border-bottom: 1px solid var(--bdr); display: flex; align-items: center; padding: 0 20px; gap: 16px; z-index: 100; position: relative; }
+#app-header { height: var(--header-h); background: var(--bg2); border-bottom: 1px solid var(--bdr); display: flex; align-items: center; padding: 0 20px; gap: 16px; z-index: 100; position: relative; flex-shrink: 0; }
 #app-header .logo { font-size: 18px; font-weight: 700; letter-spacing: -.02em; flex-shrink: 0; }
 #app-header .spacer { flex: 1; }
 #app-header .user-menu { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--t2); }
@@ -361,7 +361,8 @@ input, select, textarea { font-family: var(--font); }
 /* ── Mobile responsive ── */
 @media (max-width: 768px) {
   :root { --header-h: 48px; --sidebar-w: 0px; }
-  #app-header { padding: 0 12px; gap: 8px; }
+  #app-header { padding: 0 12px; gap: 8px; position: fixed; top: 0; left: 0; right: 0; }
+  #app-body { margin-top: var(--header-h); height: calc(100vh - var(--header-h)); height: calc(100dvh - var(--header-h)); }
   #app-header .logo { font-size: 16px; }
   #app-header .user-menu { display: none; }
   #sidebar { display: none !important; }
@@ -410,8 +411,10 @@ input, select, textarea { font-family: var(--font); }
   .tbl { font-size: 13px; }
   .tbl th, .tbl td { padding: 8px 10px; }
   /* Cards */
-  .sec-head { flex-wrap: wrap; gap: 8px; }
+  .sec-head { flex-wrap: wrap; gap: 8px; width: 100%; }
   .sec-title { font-size: 18px; }
+  .sec-actions { width: 100%; }
+  .sec-actions .btn { width: 100%; justify-content: center; white-space: nowrap; box-sizing: border-box; }
   /* Toast above bottom nav */
   #toast-container { bottom: 80px; right: 12px; left: 12px; }
   .toast { max-width: 100%; }
