@@ -43,6 +43,16 @@ export async function listDashboards(
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
 
+    // Ensure dashboard_views table exists (added in migration 007)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS platform.dashboard_views (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        dashboard_id UUID NOT NULL REFERENCES platform.dashboards(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES platform.users(id),
+        viewed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+
     // Subquery for view count (non-platform-admin views only)
     const viewCountSub = `(SELECT COUNT(*)::int FROM platform.dashboard_views dv
        JOIN platform.users vu ON vu.id = dv.user_id
@@ -80,13 +90,13 @@ export async function listDashboards(
       return result.rows;
     }
 
-    // Return active dashboards for the tenant, plus any with explicit access
+    // Regular users: only dashboards they have explicit access to
     const result = await client.query(
       `SELECT d.*, ${viewCountSub}, ${connectorsSub}
        FROM platform.dashboards d
-       WHERE d.tenant_id = $1
-         AND (d.status = 'active' OR d.status = 'disabled'
-              OR EXISTS (SELECT 1 FROM platform.dashboard_access da WHERE da.dashboard_id = d.id AND da.user_id = $2))
+       JOIN platform.dashboard_access da ON da.dashboard_id = d.id
+       WHERE d.tenant_id = $1 AND da.user_id = $2
+         AND d.status IN ('active', 'disabled')
        ORDER BY d.updated_at DESC`,
       [tenantId, userId]
     );
