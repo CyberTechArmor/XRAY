@@ -8,7 +8,9 @@ import * as uploadService from '../services/upload.service';
 import { z } from 'zod';
 import { AppError } from '../middleware/error-handler';
 
-const UPLOAD_DIR = path.resolve(__dirname, '../../../uploads');
+// In Docker: __dirname=/app/dist/routes → resolve to /app/uploads
+// In dev: __dirname=.../server/src/routes → resolve to .../server/uploads
+const UPLOAD_DIR = path.resolve(__dirname, '../../uploads');
 
 // Ensure upload directory exists
 try {

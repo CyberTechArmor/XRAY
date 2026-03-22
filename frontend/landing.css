@@ -85,6 +85,17 @@
 .pause-note p{font-size:15px;color:var(--t2);font-weight:400;line-height:1.6}
 .pause-note strong{color:var(--t1);font-weight:500}
 
+/* Calculator mobile */
+@media(max-width:600px){
+  .bar-row{flex-wrap:wrap;gap:4px}
+  .bar-label{width:auto;text-align:left;font-size:13px}
+  .bar-total{width:auto;text-align:left;font-size:13px}
+  .bar-track{min-width:100%;order:3}
+  .bar-seg{overflow:visible;padding:0 6px;font-size:11px}
+  .calc-controls{flex-direction:column;gap:14px}
+  .ctrl{min-width:0}
+}
+
 /* FOOTER */
 .land-footer{padding:clamp(28px,4vw,48px) clamp(20px,4vw,48px);border-top:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center;max-width:1080px;margin:0 auto;flex-wrap:wrap;gap:12px}
 .foot-l{font-size:14px;color:var(--t3);font-weight:400}
