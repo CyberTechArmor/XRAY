@@ -1277,12 +1277,26 @@
     var nameEl = document.createElement('span');
     nameEl.textContent = fileName || fileUrl;
     nameEl.style.cssText = 'flex:1;font-size:14px;font-weight:500;color:#f0f1f4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font);';
+    var btnStyle = 'padding:6px 14px;font-size:13px;border-radius:6px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#f0f1f4;cursor:pointer;font-family:var(--font);white-space:nowrap;';
     var openBtn = document.createElement('button');
     openBtn.textContent = 'Open in new tab';
-    openBtn.style.cssText = 'padding:6px 14px;font-size:13px;border-radius:6px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#f0f1f4;cursor:pointer;font-family:var(--font);white-space:nowrap;';
+    openBtn.style.cssText = btnStyle;
     openBtn.onmouseover = function() { openBtn.style.background = 'rgba(255,255,255,0.12)'; };
     openBtn.onmouseout = function() { openBtn.style.background = 'rgba(255,255,255,0.06)'; };
-    openBtn.onclick = function() { window.open(fileUrl, '_blank'); };
+    openBtn.onclick = function() { window.open(tokenUrl, '_blank'); };
+    var dlBtn = document.createElement('button');
+    dlBtn.textContent = 'Download';
+    dlBtn.style.cssText = btnStyle;
+    dlBtn.onmouseover = function() { dlBtn.style.background = 'rgba(255,255,255,0.12)'; };
+    dlBtn.onmouseout = function() { dlBtn.style.background = 'rgba(255,255,255,0.06)'; };
+    dlBtn.onclick = function() {
+      var a = document.createElement('a');
+      a.href = tokenUrl;
+      a.download = fileName || 'file';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
     var closeBtn = document.createElement('button');
     closeBtn.innerHTML = '&times;';
     closeBtn.style.cssText = 'width:32px;height:32px;border-radius:6px;border:none;background:transparent;color:#8e91a0;font-size:24px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;';
@@ -1291,92 +1305,14 @@
     closeBtn.onclick = function() { overlay.remove(); document.removeEventListener('keydown', escHandler); };
     bar.appendChild(nameEl);
     bar.appendChild(openBtn);
+    bar.appendChild(dlBtn);
     bar.appendChild(closeBtn);
     overlay.appendChild(bar);
 
     // Content area
     var content = document.createElement('div');
     content.style.cssText = 'flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:20px;';
-
-    if (isImage) {
-      var img = document.createElement('img');
-      img.src = fileUrl;
-      img.alt = fileName || '';
-      img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;';
-      content.appendChild(img);
-    } else if (isPdf) {
-      var iframe = document.createElement('iframe');
-      iframe.src = fileUrl;
-      iframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
-      content.style.padding = '0';
-      content.appendChild(iframe);
-    } else if (isCsv) {
-      content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading CSV...</div>';
-      fetch(fileUrl).then(function(r) { return r.text(); }).then(function(text) {
-        var lines = text.trim().split('\n');
-        var html = '<div style="overflow:auto;width:100%;height:100%;"><table style="border-collapse:collapse;font-size:13px;font-family:var(--mono);width:100%;">';
-        for (var i = 0; i < lines.length; i++) {
-          var cells = lines[i].split(',');
-          var tag = i === 0 ? 'th' : 'td';
-          html += '<tr>';
-          for (var j = 0; j < cells.length; j++) {
-            var cellStyle = i === 0
-              ? 'padding:8px 12px;text-align:left;border-bottom:2px solid rgba(62,232,181,0.3);color:#3ee8b5;font-weight:600;white-space:nowrap;background:rgba(15,17,23,0.8);position:sticky;top:0;'
-              : 'padding:6px 12px;border-bottom:1px solid rgba(255,255,255,0.06);color:#f0f1f4;white-space:nowrap;';
-            html += '<' + tag + ' style="' + cellStyle + '">' + cells[j].replace(/^"|"$/g, '') + '</' + tag + '>';
-          }
-          html += '</tr>';
-        }
-        html += '</table></div>';
-        content.innerHTML = html;
-      }).catch(function() {
-        content.innerHTML = '<div style="color:#ef4444;font-size:14px;">Failed to load CSV file.</div>';
-      });
-    } else if (isVideo) {
-      var video = document.createElement('video');
-      video.src = fileUrl;
-      video.controls = true;
-      video.autoplay = false;
-      video.style.cssText = 'max-width:100%;max-height:100%;border-radius:4px;';
-      content.appendChild(video);
-    } else if (isAudio) {
-      var audio = document.createElement('audio');
-      audio.src = fileUrl;
-      audio.controls = true;
-      audio.style.cssText = 'min-width:300px;';
-      content.appendChild(audio);
-    } else if (isOffice) {
-      var officeIframe = document.createElement('iframe');
-      officeIframe.src = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(fileUrl);
-      officeIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
-      officeIframe.setAttribute('allowfullscreen', 'true');
-      content.style.padding = '0';
-      // Fallback to Google Docs viewer if Office viewer fails
-      officeIframe.onerror = function() {
-        officeIframe.src = 'https://docs.google.com/gview?url=' + encodeURIComponent(fileUrl) + '&embedded=true';
-      };
-      content.appendChild(officeIframe);
-    } else if (isText) {
-      content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading...</div>';
-      fetch(fileUrl).then(function(r) { return r.text(); }).then(function(text) {
-        var pre = document.createElement('pre');
-        pre.textContent = text;
-        pre.style.cssText = 'width:100%;max-height:100%;overflow:auto;padding:20px;background:rgba(15,17,23,0.8);border:1px solid rgba(255,255,255,0.06);border-radius:8px;font-size:13px;font-family:var(--mono);color:#f0f1f4;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin:0;';
-        content.innerHTML = '';
-        content.appendChild(pre);
-      }).catch(function() {
-        content.innerHTML = '<div style="color:#ef4444;font-size:14px;">Failed to load file.</div>';
-      });
-    } else {
-      // Fallback: download link
-      var dl = document.createElement('a');
-      dl.href = fileUrl;
-      dl.download = fileName || '';
-      dl.style.cssText = 'display:inline-flex;align-items:center;gap:8px;padding:14px 28px;background:rgba(62,232,181,0.1);border:1px solid rgba(62,232,181,0.3);border-radius:10px;color:#3ee8b5;font-size:15px;font-weight:500;text-decoration:none;font-family:var(--font);';
-      dl.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + (fileName || 'file');
-      content.appendChild(dl);
-    }
-
+    content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading...</div>';
     overlay.appendChild(content);
     document.body.appendChild(overlay);
 
@@ -1388,6 +1324,96 @@
       }
     }
     document.addEventListener('keydown', escHandler);
+
+    // Get a short-lived token for browser-direct access, then render content
+    var fileId = fileUrl.replace(/.*\/uploads\//, '').replace('/download', '');
+    var tokenUrl = fileUrl;
+    var authHeaders = accessToken ? { 'Authorization': 'Bearer ' + accessToken } : {};
+    api.post('/api/uploads/' + fileId + '/token', {}).then(function(r) {
+      if (r.ok && r.data && r.data.token) {
+        tokenUrl = fileUrl + '?token=' + r.data.token;
+      }
+    }).catch(function(){}).then(function() {
+      // Use tokenUrl for elements that set src (browser fetches without JS headers)
+      // Use authHeaders for JS fetch calls (CSV, text)
+      content.innerHTML = '';
+      if (isImage) {
+        var img = document.createElement('img');
+        img.src = tokenUrl;
+        img.alt = fileName || '';
+        img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;';
+        content.appendChild(img);
+      } else if (isPdf) {
+        var iframe = document.createElement('iframe');
+        iframe.src = tokenUrl;
+        iframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
+        content.style.padding = '0';
+        content.appendChild(iframe);
+      } else if (isCsv) {
+        content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading CSV...</div>';
+        fetch(fileUrl, { headers: authHeaders, credentials: 'include' }).then(function(r) { return r.text(); }).then(function(text) {
+          var lines = text.trim().split('\n');
+          var html = '<div style="overflow:auto;width:100%;height:100%;"><table style="border-collapse:collapse;font-size:13px;font-family:var(--mono);width:100%;">';
+          for (var i = 0; i < lines.length; i++) {
+            var cells = lines[i].split(',');
+            var tag = i === 0 ? 'th' : 'td';
+            html += '<tr>';
+            for (var j = 0; j < cells.length; j++) {
+              var cellStyle = i === 0
+                ? 'padding:8px 12px;text-align:left;border-bottom:2px solid rgba(62,232,181,0.3);color:#3ee8b5;font-weight:600;white-space:nowrap;background:rgba(15,17,23,0.8);position:sticky;top:0;'
+                : 'padding:6px 12px;border-bottom:1px solid rgba(255,255,255,0.06);color:#f0f1f4;white-space:nowrap;';
+              html += '<' + tag + ' style="' + cellStyle + '">' + cells[j].replace(/^"|"$/g, '') + '</' + tag + '>';
+            }
+            html += '</tr>';
+          }
+          html += '</table></div>';
+          content.innerHTML = html;
+        }).catch(function() {
+          content.innerHTML = '<div style="color:#ef4444;font-size:14px;">Failed to load CSV file.</div>';
+        });
+      } else if (isVideo) {
+        var video = document.createElement('video');
+        video.src = tokenUrl;
+        video.controls = true;
+        video.autoplay = false;
+        video.style.cssText = 'max-width:100%;max-height:100%;border-radius:4px;';
+        content.appendChild(video);
+      } else if (isAudio) {
+        var audio = document.createElement('audio');
+        audio.src = tokenUrl;
+        audio.controls = true;
+        audio.style.cssText = 'min-width:300px;';
+        content.appendChild(audio);
+      } else if (isOffice) {
+        var officeIframe = document.createElement('iframe');
+        officeIframe.src = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(tokenUrl);
+        officeIframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:4px;background:#fff;';
+        officeIframe.setAttribute('allowfullscreen', 'true');
+        content.style.padding = '0';
+        officeIframe.onerror = function() {
+          officeIframe.src = 'https://docs.google.com/gview?url=' + encodeURIComponent(tokenUrl) + '&embedded=true';
+        };
+        content.appendChild(officeIframe);
+      } else if (isText) {
+        content.innerHTML = '<div style="color:#8e91a0;font-size:14px;">Loading...</div>';
+        fetch(fileUrl, { headers: authHeaders, credentials: 'include' }).then(function(r) { return r.text(); }).then(function(text) {
+          var pre = document.createElement('pre');
+          pre.textContent = text;
+          pre.style.cssText = 'width:100%;max-height:100%;overflow:auto;padding:20px;background:rgba(15,17,23,0.8);border:1px solid rgba(255,255,255,0.06);border-radius:8px;font-size:13px;font-family:var(--mono);color:#f0f1f4;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin:0;';
+          content.innerHTML = '';
+          content.appendChild(pre);
+        }).catch(function() {
+          content.innerHTML = '<div style="color:#ef4444;font-size:14px;">Failed to load file.</div>';
+        });
+      } else {
+        var dl = document.createElement('a');
+        dl.href = tokenUrl;
+        dl.download = fileName || '';
+        dl.style.cssText = 'display:inline-flex;align-items:center;gap:8px;padding:14px 28px;background:rgba(62,232,181,0.1);border:1px solid rgba(62,232,181,0.3);border-radius:10px;color:#3ee8b5;font-size:15px;font-weight:500;text-decoration:none;font-family:var(--font);';
+        dl.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + (fileName || 'file');
+        content.appendChild(dl);
+      }
+    });
   };
 
   // ── Invite page handler ──

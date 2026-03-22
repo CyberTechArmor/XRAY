@@ -3,10 +3,12 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 import { authenticateJWT } from '../middleware/auth';
 import * as uploadService from '../services/upload.service';
 import { z } from 'zod';
 import { AppError } from '../middleware/error-handler';
+import { config } from '../config';
 
 // In Docker: __dirname=/app/dist/routes → resolve to /app/uploads
 // In dev: __dirname=.../server/src/routes → resolve to .../server/uploads
@@ -114,9 +116,45 @@ router.get('/:id', authenticateJWT, async (req, res, next) => {
   }
 });
 
-// GET /:id/download - download/serve file
-router.get('/:id/download', authenticateJWT, async (req, res, next) => {
+// POST /:id/token - generate short-lived token for browser-direct access
+router.post('/:id/token', authenticateJWT, async (req, res, next) => {
   try {
+    // Verify file exists and user has access
+    await uploadService.getFileById(req.params.id);
+    // Create a short-lived token (5 minutes) with file id + user id
+    const token = jwt.sign(
+      { fid: req.params.id, sub: req.user!.sub },
+      config.jwtSecret,
+      { expiresIn: '5m' }
+    );
+    res.json({ ok: true, data: { token } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /:id/download - download/serve file (supports JWT header or ?token= query param)
+router.get('/:id/download', async (req, res, next) => {
+  try {
+    // Try token query param for browser-direct access (Open in new tab / Download)
+    const tokenParam = req.query.token as string | undefined;
+    if (tokenParam) {
+      try {
+        const payload = jwt.verify(tokenParam, config.jwtSecret) as { fid: string; sub: string };
+        if (payload.fid !== req.params.id) {
+          throw new AppError(403, 'FORBIDDEN', 'Token does not match file');
+        }
+      } catch (e) {
+        if (e instanceof AppError) throw e;
+        throw new AppError(401, 'UNAUTHORIZED', 'Invalid or expired file token');
+      }
+    } else {
+      // Fall back to JWT header auth for in-app fetches (images, CSV, text preview)
+      await new Promise<void>((resolve, reject) => {
+        authenticateJWT(req, res, (err?: any) => err ? reject(err) : resolve());
+      });
+    }
+
     const file = await uploadService.getFileById(req.params.id);
     const filePath = path.join(UPLOAD_DIR, file.stored_name);
 
