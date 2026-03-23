@@ -450,18 +450,56 @@ export async function renderPublicDashboard(
     }
   }
 
-  const response = await fetch(fetchUrl, fetchOpts);
-  if (!response.ok) {
-    throw new AppError(502, 'UPSTREAM_ERROR', `Connection returned ${response.status}`);
+  // Retry upstream fetch up to 3 times
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAYS = [1500, 3000];
+  let lastError = '';
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const attemptOpts: RequestInit = {
+        method: fetchOpts.method,
+        headers: fetchOpts.headers,
+        body: fetchOpts.body,
+        signal: AbortSignal.timeout(30_000),
+      };
+      const response = await fetch(fetchUrl, attemptOpts);
+      if (!response.ok) {
+        lastError = `Connection returned ${response.status}`;
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 1]));
+          continue;
+        }
+        break;
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await response.json() as Record<string, string>;
+        return { html: data.html || '', css: data.css || '', js: data.js || '', name: dashboard.name };
+      }
+      const html = await response.text();
+      return { html, css: '', js: '', name: dashboard.name };
+    } catch (fetchErr) {
+      lastError = 'Connection unreachable';
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 1]));
+        continue;
+      }
+    }
   }
 
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    const data = await response.json() as Record<string, string>;
-    return { html: data.html || '', css: data.css || '', js: data.js || '', name: dashboard.name };
+  // All attempts failed — fall back to cached content
+  if (dashboard.view_html) {
+    return {
+      html: dashboard.view_html,
+      css: dashboard.view_css || '',
+      js: dashboard.view_js || '',
+      name: dashboard.name,
+    };
   }
-  const html = await response.text();
-  return { html, css: '', js: '', name: dashboard.name };
+
+  throw new AppError(502, 'UPSTREAM_ERROR', lastError || 'Connection failed');
 }
 
 // ─── View tracking ──────────────────────────────────────────────────────────

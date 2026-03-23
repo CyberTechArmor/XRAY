@@ -99,7 +99,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Dashboard not found or inactive' } });
     }
 
-    // If dashboard has static content, return it directly
+    // If dashboard has no fetch_url, return static content directly
     if (!dashboard.fetch_url) {
       return res.json({
         ok: true,
@@ -107,22 +107,11 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       });
     }
 
-    // Proxy fetch to n8n
-    const headers: Record<string, string> = typeof dashboard.fetch_headers === 'string'
+    // Proxy fetch to n8n with retry
+    const parsedHeaders: Record<string, string> = typeof dashboard.fetch_headers === 'string'
       ? JSON.parse(dashboard.fetch_headers) : (dashboard.fetch_headers || {});
-    const fetchOpts: RequestInit = {
-      method: dashboard.fetch_method || 'GET',
-      headers: { 'Content-Type': 'application/json', ...headers },
-    };
-    if (dashboard.fetch_body && dashboard.fetch_method !== 'GET') {
-      fetchOpts.body = typeof dashboard.fetch_body === 'string'
-        ? dashboard.fetch_body : JSON.stringify(dashboard.fetch_body);
-    }
 
-    // 90-second timeout for upstream fetches (some data flows take time)
-    fetchOpts.signal = AbortSignal.timeout(90_000);
-
-    // Append query params if configured
+    // Build fetch URL with query params
     let fetchUrl = dashboard.fetch_url;
     if (dashboard.fetch_query_params) {
       const qp = typeof dashboard.fetch_query_params === 'string'
@@ -136,41 +125,75 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       }
     }
 
-    let response: Response;
-    try {
-      response = await fetch(fetchUrl, fetchOpts);
-    } catch (fetchErr) {
-      // Network error / timeout — fall back to static content if available
-      if (dashboard.view_html) {
-        return res.json({
-          ok: true,
-          data: { html: dashboard.view_html, css: dashboard.view_css || '', js: dashboard.view_js || '' },
-          meta: { fallback: true },
-        });
+    // Attempt upstream fetch with up to 3 tries (initial + 2 retries)
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAYS = [1500, 3000]; // ms between retries
+    let lastError: string = '';
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const fetchOpts: RequestInit = {
+          method: dashboard.fetch_method || 'GET',
+          headers: { 'Content-Type': 'application/json', ...parsedHeaders },
+          signal: AbortSignal.timeout(30_000),
+        };
+        if (dashboard.fetch_body && dashboard.fetch_method !== 'GET') {
+          fetchOpts.body = typeof dashboard.fetch_body === 'string'
+            ? dashboard.fetch_body : JSON.stringify(dashboard.fetch_body);
+        }
+
+        const response = await fetch(fetchUrl, fetchOpts);
+
+        if (!response.ok) {
+          lastError = `Connection returned ${response.status}`;
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 1]));
+            continue;
+          }
+          break;
+        }
+
+        // Success — parse the response
+        const contentType = response.headers.get('content-type') || '';
+        let data: { html?: string; css?: string; js?: string };
+        if (contentType.includes('application/json')) {
+          data = await response.json();
+        } else {
+          const html = await response.text();
+          data = { html, css: '', js: '' };
+        }
+
+        // Cache successful render to view_html/view_css/view_js for future fallback
+        if (data && (data.html || data.css || data.js)) {
+          withClient(async (client) => {
+            await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+            await client.query(
+              `UPDATE platform.dashboards SET view_html = $1, view_css = $2, view_js = $3 WHERE id = $4`,
+              [data.html || '', data.css || '', data.js || '', dashboard.id]
+            );
+          }).catch(() => {}); // fire-and-forget cache write
+        }
+
+        return res.json({ ok: true, data });
+      } catch (fetchErr) {
+        lastError = 'Connection unreachable';
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 1]));
+          continue;
+        }
       }
-      return res.status(502).json({ ok: false, error: { code: 'UPSTREAM_ERROR', message: 'Connection unreachable' } });
     }
 
-    if (!response.ok) {
-      // Upstream returned an error — fall back to static content if available
-      if (dashboard.view_html) {
-        return res.json({
-          ok: true,
-          data: { html: dashboard.view_html, css: dashboard.view_css || '', js: dashboard.view_js || '' },
-          meta: { fallback: true },
-        });
-      }
-      return res.status(502).json({ ok: false, error: { code: 'UPSTREAM_ERROR', message: `Connection returned ${response.status}` } });
+    // All attempts failed — fall back to cached static content if available
+    if (dashboard.view_html) {
+      return res.json({
+        ok: true,
+        data: { html: dashboard.view_html, css: dashboard.view_css || '', js: dashboard.view_js || '' },
+        meta: { fallback: true },
+      });
     }
 
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await response.json();
-      res.json({ ok: true, data });
-    } else {
-      const html = await response.text();
-      res.json({ ok: true, data: { html, css: '', js: '' } });
-    }
+    return res.status(502).json({ ok: false, error: { code: 'UPSTREAM_ERROR', message: lastError || 'Connection failed' } });
   } catch (err) {
     next(err);
   }
