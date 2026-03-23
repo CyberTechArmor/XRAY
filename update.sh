@@ -32,14 +32,18 @@ else
 fi
 
 # ── Step 2: Deploy frontend files ──
-echo "  [2/5] Deploying frontend..."
+echo "  [2/6] Deploying frontend..."
 WEBROOT="/var/www/xray"
 if [ -d "$WEBROOT" ]; then
   mkdir -p "$WEBROOT/bundles"
-  if [ -f "$SCRIPT_DIR/frontend/index.html" ]; then
-    cp "$SCRIPT_DIR/frontend/index.html" "$WEBROOT/"
-    ok "index.html updated"
-  fi
+  FCOUNT=0
+  for f in index.html app.css app.js landing.css landing.js manifest.json sw.js icon.svg icon-192.png icon-512.png share.html; do
+    if [ -f "$SCRIPT_DIR/frontend/$f" ]; then
+      cp "$SCRIPT_DIR/frontend/$f" "$WEBROOT/"
+      FCOUNT=$((FCOUNT + 1))
+    fi
+  done
+  ok "$FCOUNT frontend files updated"
   if [ -d "$SCRIPT_DIR/frontend/bundles" ]; then
     cp "$SCRIPT_DIR/frontend/bundles/"* "$WEBROOT/bundles/"
     ok "Bundles updated ($(ls "$SCRIPT_DIR/frontend/bundles/" | wc -l) files)"
@@ -50,7 +54,7 @@ else
 fi
 
 # ── Step 3: Update nginx config from template ──
-echo "  [3/5] Updating nginx config..."
+echo "  [3/6] Updating nginx config..."
 NGINX_CONF="/etc/nginx/sites-available/xray.conf"
 if [ -f "$NGINX_CONF" ] && [ -f "$SCRIPT_DIR/nginx/xray.conf.template" ]; then
   # Extract current domain, embed domain, and app port from existing config
@@ -73,7 +77,7 @@ else
 fi
 
 # ── Step 4: Rebuild and restart backend ──
-echo "  [4/5] Rebuilding backend..."
+echo "  [4/6] Rebuilding backend..."
 if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
   cd "$SCRIPT_DIR"
   docker compose build --quiet 2>/dev/null && ok "Backend rebuilt" || warn "Docker build failed"
@@ -82,8 +86,34 @@ else
   warn "No docker-compose.yml found — skipping backend rebuild"
 fi
 
-# ── Step 5: Reload nginx ──
-echo "  [5/5] Reloading nginx..."
+# ── Step 5: Run database migrations ──
+echo "  [5/6] Running database migrations..."
+PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null || echo "")
+if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
+  # Wait for postgres to be ready
+  for i in $(seq 1 10); do
+    if docker exec "$PG_CONTAINER" pg_isready -U "${DB_USER:-xray}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+
+  MIGRATION_COUNT=0
+  for migration in "$SCRIPT_DIR"/migrations/*.sql; do
+    [ -f "$migration" ] || continue
+    MNAME=$(basename "$migration")
+    docker cp "$migration" "$PG_CONTAINER:/tmp/$MNAME"
+    if docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$MNAME" >/dev/null 2>&1; then
+      MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
+    fi
+  done
+  ok "$MIGRATION_COUNT migration(s) applied"
+else
+  warn "Skipping migrations (no postgres container or migrations/ dir)"
+fi
+
+# ── Step 6: Reload nginx ──
+echo "  [6/6] Reloading nginx..."
 if command -v nginx &>/dev/null; then
   nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && ok "Nginx reloaded" || warn "Nginx reload failed"
 else
