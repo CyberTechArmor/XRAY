@@ -305,6 +305,20 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
   });
 }
 
+export async function deleteDashboard(dashboardId: string) {
+  return withClient(async (client) => {
+    await bypassRLS(client);
+    const result = await client.query(
+      'DELETE FROM platform.dashboards WHERE id = $1 RETURNING id, name, tenant_id',
+      [dashboardId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
+    const dash = result.rows[0];
+    auditService.log({ tenantId: dash.tenant_id, action: 'dashboard.delete', resourceType: 'dashboard', resourceId: dashboardId, metadata: { name: dash.name } });
+    return { deleted: true };
+  });
+}
+
 // ─── Connection Templates ────────────────────────────────
 
 export async function listConnectionTemplates() {
