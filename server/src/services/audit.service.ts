@@ -120,24 +120,24 @@ export async function query(params: AuditQueryParams): Promise<PaginatedAuditLog
     const limit = Math.min(params.limit || 50, 200);
     const offset = (page - 1) * limit;
 
-    const conditions: string[] = ['tenant_id = $1'];
+    const conditions: string[] = ['a.tenant_id = $1'];
     const values: unknown[] = [params.tenantId];
     let paramIdx = 2;
 
     if (params.action) {
-      conditions.push(`action = $${paramIdx}`);
+      conditions.push(`a.action = $${paramIdx}`);
       values.push(params.action);
       paramIdx++;
     }
 
     if (params.userId) {
-      conditions.push(`user_id = $${paramIdx}`);
+      conditions.push(`a.user_id = $${paramIdx}`);
       values.push(params.userId);
       paramIdx++;
     }
 
     if (params.resourceType) {
-      conditions.push(`resource_type = $${paramIdx}`);
+      conditions.push(`a.resource_type = $${paramIdx}`);
       values.push(params.resourceType);
       paramIdx++;
     }
@@ -145,16 +145,18 @@ export async function query(params: AuditQueryParams): Promise<PaginatedAuditLog
     const whereClause = conditions.join(' AND ');
 
     const countResult = await client.query(
-      `SELECT COUNT(*) FROM platform.audit_log WHERE ${whereClause}`,
+      `SELECT COUNT(*) FROM platform.audit_log a WHERE ${whereClause}`,
       values
     );
     const total = parseInt(countResult.rows[0].count, 10);
 
     const dataResult = await client.query(
-      `SELECT id, tenant_id, user_id, action, resource_type, resource_id, metadata, created_at
-       FROM platform.audit_log
+      `SELECT a.id, a.tenant_id, a.user_id, a.action, a.resource_type, a.resource_id, a.metadata, a.created_at,
+              u.email AS user_email, u.name AS user_name
+       FROM platform.audit_log a
+       LEFT JOIN platform.users u ON u.id = a.user_id
        WHERE ${whereClause}
-       ORDER BY created_at DESC
+       ORDER BY a.created_at DESC
        LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
       [...values, limit, offset]
     );

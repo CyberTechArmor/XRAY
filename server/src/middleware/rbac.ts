@@ -17,6 +17,12 @@ export function requirePermission(...requiredPermissions: string[]) {
       return;
     }
 
+    // Owners bypass permission checks (except platform.admin)
+    if (req.user.is_owner && !requiredPermissions.includes('platform.admin')) {
+      next();
+      return;
+    }
+
     const hasPermission = requiredPermissions.every(
       (perm) => req.user!.permissions.includes(perm)
     );

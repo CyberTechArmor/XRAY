@@ -783,6 +783,44 @@
     if (hash && hash !== currentView) navigateTo(hash);
   };
 
+  // Mobile back button: close modals/drawers/sidebars before navigating back
+  window.addEventListener('popstate', function(e) {
+    // Close mobile menu drawer if open
+    var drawer = document.getElementById('mobile-menu-drawer');
+    if (drawer && drawer.classList.contains('open')) {
+      if (window._closeMobileMenu) window._closeMobileMenu();
+      e.preventDefault();
+      return;
+    }
+    // Close any modal overlay
+    var modals = document.querySelectorAll('.modal-overlay[style*="flex"], .modal-overlay.active');
+    for (var i = 0; i < modals.length; i++) {
+      if (modals[i].style.display === 'flex' || modals[i].classList.contains('active')) {
+        modals[i].style.display = 'none';
+        modals[i].classList.remove('active');
+        return;
+      }
+    }
+    // Close login modal if open
+    var loginModal = document.getElementById('loginModal');
+    if (loginModal && loginModal.classList.contains('active')) {
+      if (window.closeModal) window.closeModal();
+      return;
+    }
+    // Close meet panel
+    var meetPanel = document.getElementById('meet-panel');
+    if (meetPanel && meetPanel.style.display !== 'none') {
+      meetPanel.style.display = 'none';
+      return;
+    }
+    // Close mobile inbox thread view
+    var inboxLayout = document.querySelector('.inbox-layout.mob-thread-open');
+    if (inboxLayout) {
+      inboxLayout.classList.remove('mob-thread-open');
+      return;
+    }
+  });
+
   // ── Init ──
   function init() {
     if (checkUrlToken()) return;

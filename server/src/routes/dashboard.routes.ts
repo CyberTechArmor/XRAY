@@ -27,6 +27,20 @@ router.get('/', authenticateJWT, requirePermission('dashboards.view'), async (re
 router.get('/:id', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
   try {
     const result = await dashboardService.getDashboard(req.params.id, req.user!.tid);
+
+    // Audit log: dashboard opened
+    try {
+      const auditService = await import('../services/audit.service');
+      auditService.log({
+        tenantId: req.user!.tid,
+        userId: req.user!.sub,
+        action: 'dashboard.opened',
+        resourceType: 'dashboard',
+        resourceId: req.params.id,
+        metadata: { name: result.name || '' },
+      });
+    } catch (_) {}
+
     res.json({
       ok: true,
       data: result,
