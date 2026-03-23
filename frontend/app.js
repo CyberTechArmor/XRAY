@@ -88,6 +88,7 @@
           if (d.ok && d.data && d.data.accessToken) {
             accessToken = d.data.accessToken;
             _lastRefreshTime = Date.now();
+            if (typeof reconnectWebSocket === 'function') reconnectWebSocket();
             return true;
           }
           return false;
@@ -417,6 +418,7 @@
   // ── Logout ──
   function logout() {
     stopTokenRefresh();
+    if (typeof closeWebSocket === 'function') closeWebSocket();
     if (accessToken) api.post('/api/auth/logout').catch(function() {});
     accessToken = null;
     currentUser = null;
@@ -941,9 +943,9 @@
       }).catch(function() {});
       setupMeetPanel();
       setupMeetViewport();
-      // Platform admin: poll for incoming support calls
+      // Platform admin: WebSocket for incoming support calls
       if (currentUser && currentUser.is_platform_admin) {
-        startSupportCallPolling();
+        startSupportCallWebSocket();
       }
     }).catch(function() {});
   }
@@ -1330,40 +1332,102 @@
     updateMobileMeetState();
   }
 
-  // ── Platform admin: poll for support calls ──
-  var supportPollTimer = null;
+  // ── Platform admin: WebSocket for support calls ──
   var knownSupportCalls = {};
   var supportCallConfig = { ring_duration: 120, sound_enabled: true, vibration_enabled: true };
+  var _ws = null;
+  var _wsReconnectTimer = null;
+  var _wsReconnectDelay = 1000;
+  var _wsMaxDelay = 30000;
+  var _wsIntentionalClose = false;
 
-  function startSupportCallPolling() {
+  function startSupportCallWebSocket() {
     // Load support config
     api.get('/api/meet/support-config').then(function(r) {
       if (r.ok && r.data) supportCallConfig = r.data;
     }).catch(function() {});
-    pollSupportCalls();
-    supportPollTimer = setInterval(pollSupportCalls, 5000);
-  }
-  function pollSupportCalls() {
+    // Load any existing pending calls first
     api.get('/api/meet/support-calls').then(function(r) {
       if (!r.ok || !r.data) return;
       r.data.forEach(function(call) {
         if (knownSupportCalls[call.id]) return;
         knownSupportCalls[call.id] = true;
         showSupportCallAlert(call);
-        // Browser notification (PWA)
-        if ('Notification' in window && Notification.permission === 'granted') {
-          var n = new Notification('XRay Support Call', {
-            body: (call.caller_name || call.caller_email || 'A user') + ' from ' + (call.tenant_name || 'a tenant') + ' needs support',
-            icon: '/icon-192.png',
-            tag: 'meet-call',
-            data: { url: '/#meet-support-' + call.room_code }
-          });
-          n.onclick = function() { window.focus(); joinSupportCall(call); n.close(); };
-        } else if ('Notification' in window && Notification.permission === 'default') {
-          Notification.requestPermission();
-        }
       });
     }).catch(function() {});
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    connectWebSocket();
+  }
+
+  function connectWebSocket() {
+    if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) return;
+    if (!accessToken) return;
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = proto + '//' + location.host + '/ws?token=' + encodeURIComponent(accessToken);
+    try { _ws = new WebSocket(wsUrl); } catch(e) { scheduleWsReconnect(); return; }
+
+    _ws.onopen = function() {
+      _wsReconnectDelay = 1000;
+    };
+
+    _ws.onmessage = function(evt) {
+      try {
+        var msg = JSON.parse(evt.data);
+        if (msg.type === 'support-call:new' && msg.data) {
+          var call = msg.data;
+          if (knownSupportCalls[call.id]) return;
+          knownSupportCalls[call.id] = true;
+          showSupportCallAlert(call);
+          // Browser notification
+          if ('Notification' in window && Notification.permission === 'granted') {
+            var n = new Notification('XRay Support Call', {
+              body: (call.caller_name || call.caller_email || call.caller_id || 'A user') + ' needs support',
+              icon: '/icon-192.png',
+              tag: 'meet-call-' + call.id
+            });
+            n.onclick = function() { window.focus(); joinSupportCall(call); n.close(); };
+          }
+        } else if (msg.type === 'support-call:answered' && msg.data) {
+          var el = document.getElementById('sca-' + msg.data.id);
+          if (el) el.remove();
+        }
+      } catch(e) {}
+    };
+
+    _ws.onclose = function(evt) {
+      _ws = null;
+      if (!_wsIntentionalClose) scheduleWsReconnect();
+    };
+
+    _ws.onerror = function() {
+      // onclose will fire after this
+    };
+  }
+
+  function scheduleWsReconnect() {
+    if (_wsReconnectTimer) return;
+    _wsReconnectTimer = setTimeout(function() {
+      _wsReconnectTimer = null;
+      connectWebSocket();
+    }, _wsReconnectDelay);
+    _wsReconnectDelay = Math.min(_wsReconnectDelay * 2, _wsMaxDelay);
+  }
+
+  function reconnectWebSocket() {
+    // Called after token refresh to reconnect with new token
+    if (_ws) { _wsIntentionalClose = true; _ws.close(); _ws = null; _wsIntentionalClose = false; }
+    _wsReconnectDelay = 1000;
+    connectWebSocket();
+  }
+
+  function closeWebSocket() {
+    _wsIntentionalClose = true;
+    if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
+    if (_ws) { _ws.close(); _ws = null; }
+    _wsIntentionalClose = false;
   }
   function showSupportCallAlert(call) {
     var existing = document.getElementById('sca-' + call.id);
