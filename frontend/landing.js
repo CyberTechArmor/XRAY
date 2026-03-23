@@ -19,7 +19,7 @@
 
   /* ── Show form within modal ── */
   window.showLandingForm = function(name) {
-    var forms = ['land-login','land-signup','land-setup','land-verify'];
+    var forms = ['land-login','land-signup','land-setup','land-verify','land-tenant-picker'];
     for (var i=0;i<forms.length;i++) {
       var el = document.getElementById(forms[i]);
       if(el) el.style.display = forms[i] === 'land-'+name ? '' : 'none';
@@ -154,7 +154,7 @@
     var pocketResults = Object.keys(pocketScores).map(function(key) {
       var score = pocketScores[key];
       var maxScore = pocketMaxScores[key] || 1;
-      var severity = score / maxScore;
+      var severity = 0.5 + (score / maxScore) * 0.5;
       var cfg = POCKET_CONFIG[key];
       var scaledBase = [cfg.baseRange[0] * revMultiplier, cfg.baseRange[1] * revMultiplier];
       var pocketLow = scaledBase[0] * severity;
@@ -179,17 +179,17 @@
     var roiHigh = (totalRecoverableHigh / annualCost).toFixed(1);
     var clears5x = totalRecoverableMid >= annualCost * 5;
 
-    var topPockets = pocketResults.filter(function(p) { return p.severity >= 0.34; });
-    var lowPockets = pocketResults.filter(function(p) { return p.severity < 0.34; });
+    var topPockets = pocketResults.filter(function(p) { return p.severity >= 0.72; });
+    var lowPockets = pocketResults.filter(function(p) { return p.severity < 0.72; });
 
     function sevClass(s) {
-      if (s >= 0.67) return 'high';
-      if (s >= 0.34) return 'moderate';
+      if (s >= 0.85) return 'high';
+      if (s >= 0.72) return 'moderate';
       return 'low';
     }
     function sevText(s) {
-      if (s >= 0.67) return 'High';
-      if (s >= 0.34) return 'Moderate';
+      if (s >= 0.85) return 'High';
+      if (s >= 0.72) return 'Moderate';
       return 'Low';
     }
 
@@ -213,7 +213,7 @@
     if (clears5x) {
       html += 'At the likely estimate of ' + fmt(totalRecoverableMid) + ', the recoverable value in your business is ' + roiMid + 'x the annual cost of working together. The 5x threshold is met \u2014 there\u2019s enough here to justify a deeper look.';
     } else {
-      html += 'At the likely estimate of ' + fmt(totalRecoverableMid) + ', the recoverable value is ' + roiMid + 'x the annual cost. This is below the 5x threshold required. We would need to validate the findings in discovery before proceeding \u2014 the numbers may look different once we connect the data.';
+      html += 'At the likely estimate of ' + fmt(totalRecoverableMid) + ', the recoverable value is ' + roiMid + 'x the annual cost. A discovery session would confirm whether the real numbers push past 5x \u2014 they often do once we connect the actual data.';
     }
     html += '</div>';
 
@@ -238,8 +238,8 @@
     // Low priority
     if (lowPockets.length > 0) {
       html += '<div class="assess-pocket-section">';
-      html += '<h3 class="assess-pocket-heading">Lower priority</h3>';
-      html += '<p class="assess-pocket-desc">These areas look healthier based on your answers, but may still warrant a look during discovery</p>';
+      html += '<h3 class="assess-pocket-heading">Looks healthier</h3>';
+      html += '<p class="assess-pocket-desc">These areas look healthier based on your answers, but a discovery session may uncover more</p>';
       html += '<div class="assess-pocket-list">';
       lowPockets.forEach(function(p) {
         var sc = sevClass(p.severity), st = sevText(p.severity);

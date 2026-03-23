@@ -163,6 +163,14 @@
       <button class="btn-p" id="btn-verify">Verify</button>
       <div class="m-foot"><a onclick="showLandingForm(window.__pendingFlow||'login')">Back</a></div>
     </div>
+
+    <!-- Tenant picker form -->
+    <div id="land-tenant-picker" style="display:none">
+      <h2>Choose organization</h2>
+      <p class="modal-sub">Your account is linked to multiple organizations. Select one to continue.</p>
+      <div id="tenant-picker-err" class="auth-err"></div>
+      <div id="tenant-picker-list" class="tenant-picker-list"></div>
+    </div>
   </div>
 </div>
 

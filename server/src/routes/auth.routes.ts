@@ -4,7 +4,7 @@ import { validateBody, signupSchema, verifySchema, verifyTokenSchema, loginBegin
 import { hashRefreshToken } from '../lib/crypto';
 import { config } from '../config';
 import * as authService from '../services/auth.service';
-import { passkeyRateLimit, magicLinkRateLimit } from '../middleware/rate-limit';
+// Rate limiting removed
 
 const router = Router();
 
@@ -82,6 +82,15 @@ router.post('/verify', async (req, res, next) => {
     } else {
       tokens = await authService.completeLogin(magicLink);
     }
+    // If multi-tenant, return tenant list for user to pick
+    if ((tokens as any).tenants) {
+      res.json({
+        ok: true,
+        data: { tenants: (tokens as any).tenants, email: magicLink.email },
+        meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+      });
+      return;
+    }
     sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
@@ -99,6 +108,29 @@ router.post('/verify-token', async (req, res, next) => {
     } else {
       tokens = await authService.completeLogin(magicLink);
     }
+    if ((tokens as any).tenants) {
+      res.json({
+        ok: true,
+        data: { tenants: (tokens as any).tenants, email: magicLink.email },
+        meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+    sendTokenPair(res, tokens, req);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /select-tenant - select tenant after multi-tenant login (no auth)
+router.post('/select-tenant', async (req, res, next) => {
+  try {
+    const { email, tenantId } = req.body;
+    if (!email || !tenantId) {
+      return res.status(400).json({ ok: false, error: { code: 'MISSING_FIELDS', message: 'Email and tenantId are required' } });
+    }
+    // Create a temporary magic link for the tenant selection (short-lived)
+    const tokens = await authService.loginToTenant(email, tenantId);
     sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
@@ -106,7 +138,7 @@ router.post('/verify-token', async (req, res, next) => {
 });
 
 // POST /login/begin - start email login, return challenge (no auth)
-router.post('/login/begin', magicLinkRateLimit, async (req, res, next) => {
+router.post('/login/begin', async (req, res, next) => {
   try {
     const data = validateBody(loginBeginSchema, req.body);
     const result = await authService.initiateLogin(data.email);
@@ -126,6 +158,14 @@ router.post('/login/complete', async (req, res, next) => {
     const data = validateBody(verifySchema, req.body);
     const magicLink = await authService.verifyCode(data);
     const tokens = await authService.completeLogin(magicLink);
+    if ((tokens as any).tenants) {
+      res.json({
+        ok: true,
+        data: { tenants: (tokens as any).tenants, email: magicLink.email },
+        meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+      });
+      return;
+    }
     sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
@@ -133,7 +173,7 @@ router.post('/login/complete', async (req, res, next) => {
 });
 
 // POST /passkey/begin - start passkey authentication (no auth)
-router.post('/passkey/begin', passkeyRateLimit, async (req, res, next) => {
+router.post('/passkey/begin', async (req, res, next) => {
   try {
     const result = await authService.beginPasskeyAuth(req.body.email);
     res.json({
@@ -147,7 +187,7 @@ router.post('/passkey/begin', passkeyRateLimit, async (req, res, next) => {
 });
 
 // POST /passkey/complete - complete passkey authentication (no auth)
-router.post('/passkey/complete', passkeyRateLimit, async (req, res, next) => {
+router.post('/passkey/complete', async (req, res, next) => {
   try {
     const tokens = await authService.completePasskeyAuth(req.body);
     sendTokenPair(res, tokens, req);
@@ -157,7 +197,7 @@ router.post('/passkey/complete', passkeyRateLimit, async (req, res, next) => {
 });
 
 // POST /magic-link - send magic link for login (no auth)
-router.post('/magic-link', magicLinkRateLimit, async (req, res, next) => {
+router.post('/magic-link', async (req, res, next) => {
   try {
     const data = validateBody(magicLinkSchema, req.body);
     const result = await authService.initiateLogin(data.email);

@@ -217,8 +217,7 @@ else
   # Replace the HTTPS block with HTTP-only for now
   cat > "$NGINX_CONF" <<HTTPCONF
 # XRay BI Platform — HTTP-only (run certbot for HTTPS)
-limit_req_zone \$binary_remote_addr zone=xray_auth:10m rate=10r/s;
-limit_req_zone \$binary_remote_addr zone=xray_api:10m  rate=100r/s;
+# Rate limiting removed
 
 upstream xray_server {
     server 127.0.0.1:${APP_PORT};
@@ -243,7 +242,7 @@ server {
     }
 
     location /api/auth/ {
-        limit_req zone=xray_auth burst=5 nodelay;
+
         proxy_pass http://xray_server;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -252,7 +251,7 @@ server {
     }
 
     location /api/ {
-        limit_req zone=xray_api burst=20 nodelay;
+
         proxy_pass http://xray_server;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
