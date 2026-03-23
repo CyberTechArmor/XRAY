@@ -154,5 +154,11 @@
 .btn-pk svg{width:16px;height:16px;stroke:var(--t2);fill:none;stroke-width:1.5}
 .m-foot{margin-top:20px;text-align:center;font-size:14px;color:var(--t3);font-weight:400}
 .m-foot a{color:var(--acc);text-decoration:none;font-weight:500;cursor:pointer}
+.tenant-picker-list{display:flex;flex-direction:column;gap:10px}
+.tenant-picker-btn{width:100%;font-family:var(--font);font-size:15px;font-weight:400;padding:16px 18px;border-radius:12px;border:1px solid rgba(255,255,255,0.12);background:var(--bg3);color:var(--t1);cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:space-between;text-align:left}
+.tenant-picker-btn:hover{border-color:var(--acc);background:var(--bg4)}
+.tenant-picker-btn:disabled{opacity:.5;cursor:not-allowed}
+.tenant-picker-btn .tp-name{font-weight:500;font-size:15px}
+.tenant-picker-btn .tp-role{font-size:13px;color:var(--t3);font-weight:400}
 .land-modal .auth-err{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:10px 14px;font-size:13px;color:#ef4444;margin-bottom:14px;display:none}
 .land-modal .auth-info{background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--acc);margin-bottom:14px;display:none}

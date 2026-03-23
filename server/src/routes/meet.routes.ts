@@ -120,8 +120,10 @@ router.post('/support-call', authenticateJWT, async (req, res, next) => {
       return;
     }
 
-    // Generate room code and create room
-    const roomCode = `xr-support-${Date.now().toString(36)}`;
+    // Generate a 6-character dynamic room code (no prefix)
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    let roomCode = '';
+    for (let i = 0; i < 6; i++) roomCode += chars.charAt(Math.floor(Math.random() * chars.length));
     const roomResult = await meetService.createRoom({ roomId: roomCode, displayName: 'XRay Support' });
 
     // Store support call record

@@ -259,6 +259,11 @@
     api.post('/api/auth/verify', { email: pendingEmail, code: code }).then(function(d) {
       btn.disabled = false;
       if (!d.ok) { showAuthErr('verify-err', (d.error && d.error.message) || 'Invalid code.'); return; }
+      // Multi-tenant: show tenant picker
+      if (d.data.tenants && d.data.tenants.length > 1) {
+        showTenantPicker(d.data.tenants, d.data.email);
+        return;
+      }
       accessToken = d.data.accessToken;
       enterApp();
     }).catch(function() { btn.disabled = false; showAuthErr('verify-err', 'Network error.'); });
@@ -268,6 +273,37 @@
     if (e.key === 'Enter') document.getElementById('btn-verify').click();
   };
 
+  // Tenant picker for multi-tenant users
+  function showTenantPicker(tenants, email) {
+    showLandingForm('tenant-picker');
+    var list = document.getElementById('tenant-picker-list');
+    var html = '';
+    tenants.forEach(function(t) {
+      var roleLabel = t.role === 'owner' ? 'Owner' : t.role === 'admin' ? 'Admin' : t.role === 'platform_admin' ? 'Platform Admin' : 'Member';
+      html += '<button class="tenant-picker-btn" data-tid="' + t.id + '">';
+      html += '<span class="tp-name">' + (t.name || 'Unnamed').replace(/</g, '&lt;') + '</span>';
+      html += '<span class="tp-role">' + roleLabel + '</span>';
+      html += '</button>';
+    });
+    list.innerHTML = html;
+    list.querySelectorAll('.tenant-picker-btn').forEach(function(btn) {
+      btn.onclick = function() {
+        var tid = this.getAttribute('data-tid');
+        showAuthErr('tenant-picker-err', '');
+        list.querySelectorAll('.tenant-picker-btn').forEach(function(b) { b.disabled = true; });
+        api.post('/api/auth/select-tenant', { email: email, tenantId: tid }).then(function(d) {
+          list.querySelectorAll('.tenant-picker-btn').forEach(function(b) { b.disabled = false; });
+          if (!d.ok) { showAuthErr('tenant-picker-err', (d.error && d.error.message) || 'Failed to select organization.'); return; }
+          accessToken = d.data.accessToken;
+          enterApp();
+        }).catch(function() {
+          list.querySelectorAll('.tenant-picker-btn').forEach(function(b) { b.disabled = false; });
+          showAuthErr('tenant-picker-err', 'Network error.');
+        });
+      };
+    });
+  }
+
   // ── Check magic link token in URL ──
   function checkUrlToken() {
     var params = new URLSearchParams(window.location.search);
@@ -276,9 +312,17 @@
     window.history.replaceState({}, '', window.location.pathname + window.location.hash);
     document.getElementById('landing-screen').style.display = 'none';
     api.post('/api/auth/verify-token', { token: token }).then(function(d) {
-      if (d.ok && d.data && d.data.accessToken) {
-        accessToken = d.data.accessToken;
-        enterApp();
+      if (d.ok && d.data) {
+        if (d.data.tenants && d.data.tenants.length > 1) {
+          document.getElementById('landing-screen').style.display = '';
+          openModal('tenant-picker');
+          showTenantPicker(d.data.tenants, d.data.email);
+          return;
+        }
+        if (d.data.accessToken) {
+          accessToken = d.data.accessToken;
+          enterApp();
+        }
       }
     });
     return true;
@@ -683,8 +727,8 @@
 
   function generateRoomCode() {
     var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-    var code = 'xr-';
-    for (var i = 0; i < 3; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+    var code = '';
+    for (var i = 0; i < 6; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
     return code;
   }
 

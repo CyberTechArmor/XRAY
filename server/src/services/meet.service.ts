@@ -181,7 +181,10 @@ export async function createRoom(options: {
   maxParticipants?: number;
 }): Promise<{ room: Record<string, unknown>; joinUrl: string }> {
   const config = await getMeetConfig();
-  const roomName = options.roomId || `xray-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  let fallbackCode = '';
+  for (let i = 0; i < 6; i++) fallbackCode += chars.charAt(Math.floor(Math.random() * chars.length));
+  const roomName = options.roomId || fallbackCode;
 
   const response = await meetApiFetch(config, '/api/rooms', {
     method: 'POST',

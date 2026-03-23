@@ -5,7 +5,7 @@ import cookieParser from 'cookie-parser';
 import path from 'path';
 import { config } from './config';
 import { errorHandler } from './middleware/error-handler';
-import { apiRateLimit, authRateLimit } from './middleware/rate-limit';
+// Rate limiting removed
 import { getPool } from './db/connection';
 
 // Route imports
@@ -67,12 +67,7 @@ app.use((req, _res, next) => {
   next();
 });
 
-// Rate limiting — auth has its own limit, skip apiRateLimit for auth routes
-app.use('/api/auth', authRateLimit);
-app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/auth')) return next();
-  return apiRateLimit(req, res, next);
-});
+// Rate limiting removed
 
 // Health check
 app.get('/api/health', (_req, res) => {

@@ -53,16 +53,6 @@ async function createMagicLink(
   const expiresAt = new Date(Date.now() + config.magicLink.expiryMinutes * 60_000);
 
   await withClient(async (client) => {
-    // Rate limit: check how many magic links sent to this email in the last hour
-    const rateCheck = await client.query(
-      `SELECT COUNT(*) FROM platform.magic_links
-       WHERE email = $1 AND created_at > now() - INTERVAL '1 hour'`,
-      [email]
-    );
-    if (parseInt(rateCheck.rows[0].count, 10) >= config.magicLink.rateLimitPerHour) {
-      throw new AppError(429, 'RATE_LIMITED', 'Too many requests. Please try again later.');
-    }
-
     await client.query(
       `INSERT INTO platform.magic_links (email, code, token_hash, purpose, tenant_id, metadata, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -250,6 +240,7 @@ export async function initiateSignup(input: {
 }): Promise<{ message: string }> {
   // Check if email already exists
   const existing = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       'SELECT id FROM platform.users WHERE email = $1',
       [input.email]
@@ -259,6 +250,20 @@ export async function initiateSignup(input: {
 
   if (existing) {
     throw new AppError(409, 'EMAIL_EXISTS', 'An account with this email already exists');
+  }
+
+  // Check if tenant name already exists (case-insensitive)
+  const existingTenant = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'SELECT id FROM platform.tenants WHERE LOWER(name) = LOWER($1)',
+      [input.tenantName]
+    );
+    return result.rows[0];
+  });
+
+  if (existingTenant) {
+    throw new AppError(409, 'TENANT_EXISTS', 'An organization with this name already exists. Please choose a different name.');
   }
 
   const { code, token } = await createMagicLink(input.email, 'signup', undefined, {
@@ -279,20 +284,23 @@ export async function initiateSignup(input: {
 }
 
 export async function initiateLogin(email: string): Promise<{ message: string }> {
-  // Check if user exists
-  const user = await withClient(async (client) => {
+  // Check if user exists — find ALL active accounts for this email
+  const users = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       'SELECT id, tenant_id, name FROM platform.users WHERE email = $1 AND status = $2',
       [email, 'active']
     );
-    return result.rows[0];
+    return result.rows;
   });
 
-  if (!user) {
+  if (users.length === 0) {
     // Don't reveal whether user exists — still return success
     return { message: 'If an account exists, a login link has been sent.' };
   }
 
+  // Use the first user's tenant_id for the magic link (tenant selection happens at completeLogin)
+  const user = users[0];
   const { code, token } = await createMagicLink(email, 'login', user.tenant_id);
 
   // Fire-and-forget: don't block the response on SMTP
@@ -415,6 +423,15 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
 
+    // Check tenant name uniqueness (case-insensitive)
+    const existingTenant = await client.query(
+      'SELECT id FROM platform.tenants WHERE LOWER(name) = LOWER($1)',
+      [metadata.tenantName]
+    );
+    if (existingTenant.rows.length > 0) {
+      throw new AppError(409, 'TENANT_EXISTS', 'An organization with this name already exists. Please choose a different name.');
+    }
+
     // Create tenant
     const tenantResult = await client.query(
       `INSERT INTO platform.tenants (name, slug)
@@ -497,13 +514,14 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
   });
 }
 
-export async function completeLogin(magicLink: MagicLink): Promise<TokenPair> {
+export async function completeLogin(magicLink: MagicLink, selectedTenantId?: string): Promise<TokenPair & { tenants?: { id: string; name: string; role: string }[] }> {
   return withTransaction(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const userResult = await client.query(
-      `SELECT u.*, r.slug as role_slug
+      `SELECT u.*, r.slug as role_slug, t.name as tenant_name
        FROM platform.users u
        JOIN platform.roles r ON r.id = u.role_id
+       JOIN platform.tenants t ON t.id = u.tenant_id
        WHERE u.email = $1 AND u.status = 'active'`,
       [magicLink.email]
     );
@@ -512,7 +530,48 @@ export async function completeLogin(magicLink: MagicLink): Promise<TokenPair> {
       throw new AppError(404, 'USER_NOT_FOUND', 'User not found or inactive');
     }
 
-    const user = userResult.rows[0];
+    // Filter out archived/suspended tenants for non-platform-admins
+    const activeUsers = userResult.rows.filter((u: any) => {
+      if (u.role_slug === 'platform_admin') return true;
+      return true; // We check tenant status below per-user
+    });
+
+    // If multiple tenants and no selection yet, return tenant list
+    if (activeUsers.length > 1 && !selectedTenantId) {
+      // Check which tenants are active
+      const tenantList: { id: string; name: string; role: string }[] = [];
+      for (const u of activeUsers) {
+        if (u.role_slug === 'platform_admin') {
+          tenantList.push({ id: u.tenant_id, name: u.tenant_name, role: u.role_slug });
+          continue;
+        }
+        const tResult = await client.query('SELECT status FROM platform.tenants WHERE id = $1', [u.tenant_id]);
+        if (tResult.rows.length > 0 && !['archived', 'suspended'].includes(tResult.rows[0].status)) {
+          tenantList.push({ id: u.tenant_id, name: u.tenant_name, role: u.role_slug });
+        }
+      }
+      if (tenantList.length > 1) {
+        return {
+          accessToken: '',
+          refreshToken: '',
+          sessionId: '',
+          tenants: tenantList,
+        };
+      }
+      // Only one active tenant — auto-select
+      if (tenantList.length === 1) {
+        selectedTenantId = tenantList[0].id;
+      }
+    }
+
+    // Pick the right user record
+    let user: any;
+    if (selectedTenantId) {
+      user = activeUsers.find((u: any) => u.tenant_id === selectedTenantId);
+      if (!user) throw new AppError(400, 'INVALID_TENANT', 'You do not have access to that organization');
+    } else {
+      user = activeUsers[0];
+    }
 
     // Check if tenant is archived/suspended (skip for platform admins)
     if (user.role_slug !== 'platform_admin') {
@@ -569,6 +628,86 @@ export async function completeLogin(magicLink: MagicLink): Promise<TokenPair> {
       action: 'user.login',
       resourceType: 'user',
       resourceId: user.id,
+    });
+
+    return {
+      accessToken,
+      refreshToken,
+      sessionId: sessionResult.rows[0].id,
+    };
+  });
+}
+
+export async function loginToTenant(email: string, tenantId: string): Promise<TokenPair> {
+  return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const userResult = await client.query(
+      `SELECT u.*, r.slug as role_slug
+       FROM platform.users u
+       JOIN platform.roles r ON r.id = u.role_id
+       WHERE u.email = $1 AND u.tenant_id = $2 AND u.status = 'active'`,
+      [email, tenantId]
+    );
+
+    if (userResult.rows.length === 0) {
+      throw new AppError(404, 'USER_NOT_FOUND', 'User not found in that organization');
+    }
+
+    const user = userResult.rows[0];
+
+    // Check if tenant is archived/suspended
+    if (user.role_slug !== 'platform_admin') {
+      const tenantResult = await client.query(
+        'SELECT status FROM platform.tenants WHERE id = $1',
+        [user.tenant_id]
+      );
+      if (tenantResult.rows.length > 0 && ['archived', 'suspended'].includes(tenantResult.rows[0].status)) {
+        throw new AppError(403, 'TENANT_INACTIVE', 'This organization is currently inactive. Please contact support.');
+      }
+    }
+
+    // Update last login
+    await client.query('UPDATE platform.users SET last_login_at = now() WHERE id = $1', [user.id]);
+
+    // Get permissions
+    const permResult = await client.query(
+      `SELECT p.key FROM platform.permissions p
+       JOIN platform.role_permissions rp ON rp.permission_id = p.id
+       WHERE rp.role_id = $1`,
+      [user.role_id]
+    );
+    const permissions = permResult.rows.map((r: { key: string }) => r.key);
+
+    const isPlatformAdmin = user.role_slug === 'platform_admin';
+
+    // Create session
+    const refreshToken = signRefreshToken();
+    const refreshTokenHash = hashRefreshToken(refreshToken);
+    const expiresAt = new Date(Date.now() + config.jwt.refreshTokenExpiry);
+
+    const sessionResult = await client.query(
+      `INSERT INTO platform.user_sessions (user_id, tenant_id, refresh_token_hash, expires_at)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [user.id, user.tenant_id, refreshTokenHash, expiresAt]
+    );
+
+    const accessToken = signAccessToken({
+      sub: user.id,
+      tid: user.tenant_id,
+      role: user.role_slug,
+      permissions,
+      is_owner: user.is_owner,
+      is_platform_admin: isPlatformAdmin,
+    });
+
+    auditService.log({
+      tenantId: user.tenant_id,
+      userId: user.id,
+      action: 'user.login',
+      resourceType: 'user',
+      resourceId: user.id,
+      metadata: { tenant_selected: true },
     });
 
     return {
