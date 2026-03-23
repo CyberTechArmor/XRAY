@@ -228,6 +228,15 @@
     html += '<p>This is directional \u2014 it tells you where to look, not exactly what you\u2019ll find. A $500 discovery session connects your actual data and confirms the numbers. If the confirmed value clears 5x the annual cost, we proceed and the $500 rolls into the build. If it doesn\u2019t, you keep the finding and that\u2019s all you\u2019ve spent.</p>';
     html += '</div>';
 
+    // CTA
+    html += '<div class="assess-cta">';
+    html += '<button class="btn-set assess-set-btn" onclick="openModal(\'signup\')">';
+    html += '<svg viewBox="0 0 36 36" fill="none"><g transform="translate(18,18)"><circle r="3" fill="#3ee8b5" class="icon-glow"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" class="icon-glow" opacity=".9"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" class="icon-glow" opacity=".9" transform="rotate(120)"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" class="icon-glow" opacity=".9" transform="rotate(240)"/></g></svg>';
+    html += 'Set it right';
+    html += '</button>';
+    html += '<p class="assess-cta-sub">Sign in to schedule your free consultation</p>';
+    html += '</div>';
+
     // Retake
     html += '<button class="assess-retake" onclick="retakeAssessment()">Retake assessment</button>';
 
