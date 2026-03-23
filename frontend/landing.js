@@ -28,40 +28,22 @@
 
   /* ── Business Health Assessment ── */
   var ASSESS_QUESTIONS = [
-    {id:'billing_process',pocket:'unbilled',section:'Getting paid for your work',question:'How do you make sure every completed job or visit gets invoiced?',options:[{label:'We have an automated system that flags unbilled work',score:0},{label:'Someone manually checks, but it\u2019s consistent',score:1},{label:'We try to stay on top of it, but things slip',score:2},{label:'Honestly, I\u2019m not confident everything gets billed',score:3}]},
-    {id:'billing_gap',pocket:'unbilled',section:'Getting paid for your work',question:'In the last month, have you discovered work that was completed but never invoiced?',options:[{label:'No, never happens',score:0},{label:'Once or twice, small amounts',score:1},{label:'A few times, some were significant',score:2},{label:'Yes, and I suspect there\u2019s more I haven\u2019t caught',score:3}]},
-    {id:'price_last_raised',pocket:'pricing',section:'Your pricing',question:'When did you last raise your prices or update your rate card?',options:[{label:'Within the last 6 months',score:0},{label:'About a year ago',score:1},{label:'18 months to 2 years ago',score:2},{label:'I can\u2019t remember \u2014 it\u2019s been a while',score:3}]},
-    {id:'cost_awareness',pocket:'pricing',section:'Your pricing',question:'Have your costs (labor, materials, insurance, software) gone up since you last set prices?',options:[{label:'No, costs have been stable',score:0},{label:'Slightly, maybe 3-5%',score:1},{label:'Noticeably \u2014 payroll and materials are both up',score:2},{label:'Significantly \u2014 I feel the squeeze every month',score:3}]},
-    {id:'margin_by_service',pocket:'pricing',section:'Your pricing',question:'Do you know which of your service lines is most profitable after labor costs?',options:[{label:'Yes, I track margin by service line regularly',score:0},{label:'I have a general sense but no exact numbers',score:1},{label:'I know revenue by service but not margin',score:2},{label:'Not really \u2014 I look at total revenue, not by service',score:3}]},
-    {id:'labor_assignment',pocket:'labor',section:'How your team spends their time',question:'Do your highest-paid or most experienced people consistently work on your highest-margin jobs?',options:[{label:'Yes, we\u2019re intentional about matching skill to value',score:0},{label:'Usually, but scheduling sometimes overrides it',score:1},{label:'It\u2019s pretty random \u2014 whoever\u2019s available gets the job',score:2},{label:'I\u2019ve never thought about it that way',score:3}]},
-    {id:'payroll_ratio',pocket:'labor',section:'How your team spends their time',question:'Do you know your total payroll as a percentage of revenue, and has it changed in the last year?',options:[{label:'Yes, I track it monthly and it\u2019s stable',score:0},{label:'I know the rough number but don\u2019t track the trend',score:1},{label:'I know total payroll but not the ratio',score:2},{label:'I\u2019d have to go look \u2014 I don\u2019t track this',score:3}]},
-    {id:'customer_profitability',pocket:'customers',section:'Which customers make you money',question:'Can you name your three most profitable customers? Not biggest \u2014 most profitable after the time and effort they require.',options:[{label:'Yes, I know exactly who they are and why',score:0},{label:'I could guess based on revenue, but I haven\u2019t done the math',score:1},{label:'I know who pays the most, but some high-revenue clients are a lot of work',score:2},{label:'I honestly don\u2019t know which customers are profitable vs. just busy',score:3}]},
-    {id:'customer_drain',pocket:'customers',section:'Which customers make you money',question:'Do you have any customers you suspect cost you more to serve than they\u2019re worth?',options:[{label:'No \u2014 we\u2019ve cleaned that up',score:0},{label:'Maybe one, but they\u2019re loyal so I keep them',score:1},{label:'A few come to mind \u2014 high maintenance, low margin',score:2},{label:'Yes, and I think about it often but haven\u2019t acted',score:3}]},
-    {id:'utilization',pocket:'slots',section:'Capacity and scheduling',question:'On a typical week, what percentage of your available appointment slots, truck rolls, or billable hours are actually filled?',options:[{label:'85%+ \u2014 we\u2019re nearly full most weeks',score:0},{label:'70-85% \u2014 some gaps but generally busy',score:1},{label:'55-70% \u2014 noticeable downtime',score:2},{label:'I don\u2019t track this, but we have idle time',score:3}]},
-    {id:'overtime_cause',pocket:'overtime',section:'Capacity and scheduling',question:'When you pay overtime, is it usually because of genuine demand or because jobs ran over or were scheduled poorly?',options:[{label:'Almost always real demand \u2014 we need the extra hours',score:0},{label:'Mostly demand, but some is avoidable',score:1},{label:'A mix \u2014 some weeks it\u2019s clearly a scheduling issue',score:2},{label:'A lot of it is preventable if we scheduled better',score:3}]},
-    {id:'memberships',pocket:'memberships',section:'Recurring revenue',question:'Do you offer maintenance plans, memberships, retainers, or service contracts?',options:[{label:'No, we don\u2019t offer recurring plans',score:-1},{label:'Yes, and we actively manage renewals \u2014 retention is above 80%',score:0},{label:'Yes, but I\u2019m not sure how many have lapsed',score:2},{label:'Yes, and I know a lot have expired without follow-up',score:3}]},
-    {id:'membership_followup',pocket:'memberships',section:'Recurring revenue',question:'When a membership or contract expires, what happens?',options:[{label:'We don\u2019t have memberships',score:-1},{label:'Automated renewal or immediate outreach',score:0},{label:'Someone is supposed to follow up, but it\u2019s inconsistent',score:2},{label:'Nothing \u2014 we don\u2019t have a system for that',score:3}]},
-    {id:'rework_rate',pocket:'rework',section:'Callbacks and rework',question:'What percentage of jobs require a callback, redo, or return visit to fix an issue?',options:[{label:'Under 2% \u2014 very rare',score:0},{label:'3-5% \u2014 it happens but we manage it',score:1},{label:'5-10% \u2014 more than I\u2019d like',score:2},{label:'I don\u2019t track this, but callbacks happen regularly',score:3}]},
-    {id:'rework_cost',pocket:'rework',section:'Callbacks and rework',question:'When a callback or rework happens, do you know what it costs you in labor?',options:[{label:'Yes, we track rework as a separate cost category',score:0},{label:'I have a rough idea',score:1},{label:'It just gets absorbed into normal payroll \u2014 I can\u2019t see it',score:2},{label:'No idea \u2014 it\u2019s invisible in our numbers',score:3}]},
-    {id:'marketing_attribution',pocket:'marketing',section:'Marketing and lead tracking',question:'When a new customer calls or books, do you know which marketing channel brought them in?',options:[{label:'Yes \u2014 we track source on every lead',score:0},{label:'Sometimes \u2014 we ask \u201chow did you hear about us\u201d but don\u2019t always record it',score:1},{label:'Rarely \u2014 we run ads and get calls but can\u2019t connect the two',score:2},{label:'Never \u2014 I have no idea what\u2019s working',score:3}]},
-    {id:'marketing_spend',pocket:'marketing',section:'Marketing and lead tracking',question:'How much do you spend on marketing monthly, and can you tie that spending to specific revenue?',options:[{label:'I know ROI by channel and cut what doesn\u2019t work',score:0},{label:'I know total spend but can only attribute some of it',score:1},{label:'I spend $3K-10K/month and hope it\u2019s working',score:2},{label:'I spend money on marketing because I feel like I should, but I can\u2019t prove it works',score:3}]},
-    {id:'payment_terms',pocket:'latepay',section:'Getting paid on time',question:'What are your payment terms, and how long does it actually take customers to pay?',options:[{label:'Net 30, and most pay within 30 days',score:0},{label:'Net 30, but average is closer to 40-45 days',score:1},{label:'Net 30, but many pay at 50-60+ days',score:2},{label:'I don\u2019t really enforce terms \u2014 people pay when they pay',score:3}]},
-    {id:'collections_process',pocket:'latepay',section:'Getting paid on time',question:'What happens when an invoice goes past due?',options:[{label:'Automated reminders at 30/60/90 days, then escalation',score:0},{label:'Someone sends a follow-up email or call, eventually',score:1},{label:'It depends on who notices \u2014 no consistent process',score:2},{label:'Honestly, some invoices just go cold and we write them off',score:3}]},
-    {id:'revenue',pocket:'meta',section:'About your business',question:'What\u2019s your approximate annual revenue?',options:[{label:'Under $1.5 million',score:1},{label:'$1.5 \u2013 $2.5 million',score:2},{label:'$2.5 \u2013 $4 million',score:3},{label:'$4 \u2013 $6 million',score:4}]},
-    {id:'systems',pocket:'meta',section:'About your business',question:'How many software systems do you use to run your business (accounting, scheduling, CRM, payroll, EHR, etc.)?',options:[{label:'1-2 \u2014 we keep it simple',score:1},{label:'3-4 \u2014 a few core tools',score:2},{label:'5-6 \u2014 it\u2019s a lot to manage',score:3},{label:'7+ \u2014 data is everywhere',score:4}]}
+    {id:'revenue',pocket:'meta',question:'What\u2019s your approximate annual revenue?',options:[{label:'Under $1.5 million',score:0,mult:0.5},{label:'$1.5 \u2013 $2.5 million',score:0,mult:0.7},{label:'$2.5 \u2013 $4 million',score:0,mult:1.0},{label:'$4 \u2013 $6 million',score:0,mult:1.5}]},
+    {id:'billing',pocket:'unbilled',question:'How confident are you that every completed job gets invoiced?',options:[{label:'Very \u2014 we catch almost everything',score:1},{label:'Mostly \u2014 but things slip occasionally',score:1.5},{label:'Not very \u2014 I\u2019ve found missed invoices more than once',score:2.5},{label:'I honestly don\u2019t know what we\u2019re missing',score:3}]},
+    {id:'pricing',pocket:'pricing',question:'Have you raised prices since your costs went up?',options:[{label:'Yes \u2014 we adjust regularly and margins are healthy',score:1},{label:'We raised prices, but I\u2019m not sure it covered the increase',score:1.5},{label:'Costs are up but our prices haven\u2019t changed',score:2.5},{label:'I don\u2019t know my margins by service line',score:3}]},
+    {id:'visibility',pocket:'labor',question:'Could you tell me right now which customers and service lines are profitable \u2014 not biggest, but most profitable?',options:[{label:'Yes \u2014 I have a good handle on profitability',score:1},{label:'I have a general sense but no hard numbers',score:1.5},{label:'I know revenue, but not profit after labor',score:2.5},{label:'No \u2014 I look at total revenue and hope it works out',score:3}]},
+    {id:'capacity',pocket:'slots',question:'How much of your available capacity \u2014 appointment slots, billable hours, truck rolls \u2014 is actually filled in a typical week?',options:[{label:'85%+ \u2014 we\u2019re nearly full most weeks',score:1},{label:'70\u201385% \u2014 busy but with gaps',score:1.5},{label:'Under 70% \u2014 noticeable downtime',score:2.5},{label:'I don\u2019t track this',score:3}]},
+    {id:'recurring',pocket:'memberships',question:'Do you have maintenance plans, memberships, or retainers \u2014 and do you know how many have lapsed?',options:[{label:'We don\u2019t offer recurring plans',score:-1},{label:'Yes, and we stay on top of renewals \u2014 retention is strong',score:1},{label:'Yes, but I\u2019m not sure how many have quietly expired',score:2.5},{label:'Yes, and I know a lot have lapsed without follow-up',score:3}]},
+    {id:'marketing',pocket:'marketing',question:'When a new customer contacts you, do you know which marketing brought them in?',options:[{label:'Yes \u2014 we track source on most leads',score:1},{label:'Sometimes \u2014 we ask but don\u2019t always record it',score:1.5},{label:'Rarely \u2014 we spend money on ads and hope they work',score:2.5},{label:'Never \u2014 I can\u2019t tie any marketing to revenue',score:3}]}
   ];
 
   var POCKET_CONFIG = {
-    unbilled:{name:'Unbilled work',description:'Work completed but never invoiced',baseRange:[50000,150000],recoveryRate:[.4,.7]},
-    pricing:{name:'Pricing erosion',description:'Prices haven\u2019t kept up with costs',baseRange:[50000,100000],recoveryRate:[.5,.8]},
-    labor:{name:'Labor misallocation',description:'Best people on lowest-value work',baseRange:[40000,100000],recoveryRate:[.2,.4]},
-    customers:{name:'Unprofitable customers',description:'Busy clients that don\u2019t make you money',baseRange:[40000,80000],recoveryRate:[.15,.35]},
-    slots:{name:'Empty slots and idle hours',description:'Unfilled capacity nobody tracks',baseRange:[40000,80000],recoveryRate:[.25,.5]},
-    memberships:{name:'Expired memberships',description:'Recurring revenue that quietly lapsed',baseRange:[30000,60000],recoveryRate:[.5,.7]},
-    rework:{name:'Callbacks and rework',description:'Return visits you\u2019re eating the cost of',baseRange:[20000,50000],recoveryRate:[.3,.5]},
-    marketing:{name:'Untracked marketing',description:'Ad spend you can\u2019t tie to revenue',baseRange:[20000,50000],recoveryRate:[.4,.6]},
-    overtime:{name:'Scheduling overtime',description:'Overtime from bad scheduling, not demand',baseRange:[20000,40000],recoveryRate:[.5,.7]},
-    latepay:{name:'Late-paying customers',description:'Cash stuck in receivables costing you money',baseRange:[15000,40000],recoveryRate:[.3,.5]}
+    unbilled:{name:'Unbilled work',description:'Completed work that never became an invoice',baseRange:[50000,150000],recoveryRate:[.4,.7],rank:1},
+    pricing:{name:'Pricing erosion',description:'Margins compressing because prices haven\u2019t kept up with costs',baseRange:[50000,100000],recoveryRate:[.5,.8],rank:2},
+    labor:{name:'Profitability blind spots',description:'No visibility into which customers, jobs, or services actually make money',baseRange:[40000,100000],recoveryRate:[.2,.4],rank:3},
+    slots:{name:'Unfilled capacity',description:'Gaps in scheduling that aren\u2019t being tracked or filled',baseRange:[40000,80000],recoveryRate:[.25,.5],rank:4},
+    memberships:{name:'Lapsed recurring revenue',description:'Memberships or contracts that expired without follow-up',baseRange:[30000,60000],recoveryRate:[.5,.7],rank:5},
+    marketing:{name:'Untracked marketing spend',description:'Money going to ads and channels with no way to measure what\u2019s working',baseRange:[20000,50000],recoveryRate:[.4,.6],rank:6}
   };
 
   var assessState = { currentQ: 0, answers: {}, started: false };
@@ -109,10 +91,13 @@
     var num = assessState.currentQ + 1;
     var pct = Math.round((num / total) * 100);
 
-    document.getElementById('assess-q-label').textContent = 'Question ' + num + ' of ' + total;
+    document.getElementById('assess-q-label').textContent = num + ' of ' + total;
     document.getElementById('assess-q-pct').textContent = pct + '%';
     document.getElementById('assess-progress-fill').style.width = pct + '%';
-    document.getElementById('assess-section-label').textContent = q.section;
+    var sectionEl = document.getElementById('assess-section-label');
+    if (sectionEl) sectionEl.textContent = q.section || '';
+    if (sectionEl && !q.section) sectionEl.style.display = 'none';
+    else if (sectionEl) sectionEl.style.display = '';
     document.getElementById('assess-question').textContent = q.question;
 
     var optHtml = '';
@@ -132,42 +117,30 @@
     container.style.display = '';
 
     var answers = assessState.answers;
+    // Revenue multiplier from the mult property on the revenue question options
     var revMultiplier = 1;
-    var revAnswer = answers['revenue'];
-    if (revAnswer === 0) revMultiplier = 0.5;
-    else if (revAnswer === 1) revMultiplier = 0.7;
-    else if (revAnswer === 2) revMultiplier = 1;
-    else if (revAnswer === 3) revMultiplier = 1.5;
+    var revIdx = answers['revenue'];
+    if (revIdx !== undefined) revMultiplier = ASSESS_QUESTIONS[0].options[revIdx].mult || 1;
 
-    // Calculate pocket scores
-    var pocketScores = {}, pocketMaxScores = {};
-    ASSESS_QUESTIONS.forEach(function(q) {
-      if (q.pocket === 'meta') return;
-      if (!pocketScores[q.pocket]) { pocketScores[q.pocket] = 0; pocketMaxScores[q.pocket] = 0; }
-      var ansIdx = answers[q.id];
-      if (ansIdx !== undefined) {
-        var s = q.options[ansIdx].score;
-        if (s >= 0) { pocketScores[q.pocket] += s; pocketMaxScores[q.pocket] += 3; }
-      }
-    });
-
-    var pocketResults = Object.keys(pocketScores).map(function(key) {
-      var score = pocketScores[key];
-      var maxScore = pocketMaxScores[key] || 1;
-      var severity = 0.5 + (score / maxScore) * 0.5;
+    // Calculate per-pocket results
+    var pocketResults = Object.keys(POCKET_CONFIG).map(function(key) {
       var cfg = POCKET_CONFIG[key];
-      var scaledBase = [cfg.baseRange[0] * revMultiplier, cfg.baseRange[1] * revMultiplier];
-      var pocketLow = scaledBase[0] * severity;
-      var pocketHigh = scaledBase[1] * severity;
-      var recoverableLow = pocketLow * cfg.recoveryRate[0];
-      var recoverableHigh = pocketHigh * cfg.recoveryRate[1];
+      var q = ASSESS_QUESTIONS.filter(function(qq) { return qq.pocket === key; })[0];
+      var aIdx = q ? answers[q.id] : undefined;
+      var score = aIdx !== undefined ? q.options[aIdx].score : 1;
+      if (score < 0) return null; // Skip excluded pockets (e.g. no memberships)
+      var severity = 0.5 + (Math.min(score, 3) / 3) * 0.5;
+      var pocketLow = cfg.baseRange[0] * revMultiplier * severity;
+      var pocketHigh = cfg.baseRange[1] * revMultiplier * severity;
+      var recoverableLow = Math.round(pocketLow * cfg.recoveryRate[0]);
+      var recoverableHigh = Math.round(pocketHigh * cfg.recoveryRate[1]);
       return {
         key: key, name: cfg.name, description: cfg.description, severity: severity,
-        score: score, maxScore: maxScore,
+        rank: cfg.rank || 99,
         pocketLow: Math.round(pocketLow), pocketHigh: Math.round(pocketHigh),
-        recoverableLow: Math.round(recoverableLow), recoverableHigh: Math.round(recoverableHigh)
+        recoverableLow: recoverableLow, recoverableHigh: recoverableHigh
       };
-    }).sort(function(a, b) { return b.severity - a.severity; });
+    }).filter(function(p) { return p !== null; }).sort(function(a, b) { return b.severity - a.severity || a.rank - b.rank; });
 
     var totalRecoverableLow = 0, totalRecoverableHigh = 0;
     pocketResults.forEach(function(p) { totalRecoverableLow += p.recoverableLow; totalRecoverableHigh += p.recoverableHigh; });
@@ -196,9 +169,9 @@
     var html = '';
     // Header
     html += '<div class="assess-results-header">';
-    html += '<div class="assess-results-label">Assessment complete</div>';
-    html += '<h2 class="assess-results-title">Your Business Health Results</h2>';
-    html += '<p class="assess-results-sub">Based on your answers, here\u2019s where recoverable value is likely hiding in your business, and how much of it you could realistically get back.</p>';
+    html += '<div class="assess-results-label">Your results</div>';
+    html += '<h2 class="assess-results-title">Here\u2019s what your business might be leaving on the table</h2>';
+    html += '<p class="assess-results-sub">Estimated recoverable value based on your answers \u2014 what you could realistically get back, not the theoretical maximum.</p>';
     html += '</div>';
 
     // Summary cards
@@ -211,40 +184,39 @@
     // Threshold
     html += '<div class="assess-threshold ' + (clears5x ? 'pass' : 'fail') + '">';
     if (clears5x) {
-      html += 'At the likely estimate of ' + fmt(totalRecoverableMid) + ', the recoverable value in your business is ' + roiMid + 'x the annual cost of working together. The 5x threshold is met \u2014 there\u2019s enough here to justify a deeper look.';
+      html += 'The likely recoverable value of ' + fmt(totalRecoverableMid) + ' is ' + roiMid + 'x what an engagement costs annually. There\u2019s enough here to justify a deeper look at your data.';
     } else {
-      html += 'At the likely estimate of ' + fmt(totalRecoverableMid) + ', the recoverable value is ' + roiMid + 'x the annual cost. A discovery session would confirm whether the real numbers push past 5x \u2014 they often do once we connect the actual data.';
+      html += 'The likely recoverable value of ' + fmt(totalRecoverableMid) + ' is ' + roiMid + 'x the annual cost. A discovery session would confirm whether the real numbers are higher once we connect your data.';
     }
     html += '</div>';
 
-    // Top pockets
+    // Top pockets (flagged)
     if (topPockets.length > 0) {
       html += '<div class="assess-pocket-section">';
       html += '<h3 class="assess-pocket-heading">Where to look first</h3>';
-      html += '<p class="assess-pocket-desc">Pockets with moderate or high likelihood based on your answers</p>';
+      html += '<p class="assess-pocket-desc">Highest-likelihood areas based on your answers</p>';
       html += '<div class="assess-pocket-list">';
       topPockets.forEach(function(p) {
         var sc = sevClass(p.severity), st = sevText(p.severity);
         html += '<div class="assess-pocket-card">';
         html += '<div class="assess-pocket-top"><div><div class="assess-pocket-name">' + escHtml(p.name) + '</div><div class="assess-pocket-subdesc">' + escHtml(p.description) + '</div></div>';
         html += '<span class="assess-sev ' + sc + '">' + st + '</span></div>';
-        html += '<div class="assess-pocket-nums"><div><span class="apn-label">Estimated pocket: </span><span class="apn-value">' + fmt(p.pocketLow) + ' \u2013 ' + fmt(p.pocketHigh) + '</span></div>';
-        html += '<div><span class="apn-label">Realistic recovery: </span><span class="apn-value">' + fmt(p.recoverableLow) + ' \u2013 ' + fmt(p.recoverableHigh) + '</span></div></div>';
+        html += '<div class="assess-pocket-nums"><div><span class="apn-label">Realistic recovery: </span><span class="apn-value">' + fmt(p.recoverableLow) + ' \u2013 ' + fmt(p.recoverableHigh) + '</span></div></div>';
         html += '</div>';
       });
       html += '</div></div>';
     }
 
-    // Low priority
+    // Healthier pockets
     if (lowPockets.length > 0) {
       html += '<div class="assess-pocket-section">';
       html += '<h3 class="assess-pocket-heading">Looks healthier</h3>';
-      html += '<p class="assess-pocket-desc">These areas look healthier based on your answers, but a discovery session may uncover more</p>';
+      html += '<p class="assess-pocket-desc">Still worth validating \u2014 even well-run businesses have some leakage in these areas</p>';
       html += '<div class="assess-pocket-list">';
       lowPockets.forEach(function(p) {
         var sc = sevClass(p.severity), st = sevText(p.severity);
         html += '<div class="assess-low-row"><div><span class="assess-low-name">' + escHtml(p.name) + '</span>';
-        html += '<span class="assess-low-range">' + (p.recoverableLow > 0 ? fmt(p.recoverableLow) + ' \u2013 ' + fmt(p.recoverableHigh) : 'Minimal') + '</span></div>';
+        html += '<span class="assess-low-range">' + fmt(p.recoverableLow) + ' \u2013 ' + fmt(p.recoverableHigh) + '</span></div>';
         html += '<span class="assess-sev ' + sc + '">' + st + '</span></div>';
       });
       html += '</div></div>';
@@ -253,7 +225,16 @@
     // Next steps
     html += '<div class="assess-next">';
     html += '<h3>What happens next</h3>';
-    html += '<p>This assessment is directional \u2014 it tells you where to look, not exactly what you\u2019ll find. A $500 discovery session connects your actual data and confirms the numbers. If the confirmed value clears 5x the annual cost, we proceed and the $500 rolls into the build. If it doesn\u2019t, you keep the finding and the $500 is all you\u2019ve spent.</p>';
+    html += '<p>This is directional \u2014 it tells you where to look, not exactly what you\u2019ll find. A $500 discovery session connects your actual data and confirms the numbers. If the confirmed value clears 5x the annual cost, we proceed and the $500 rolls into the build. If it doesn\u2019t, you keep the finding and that\u2019s all you\u2019ve spent.</p>';
+    html += '</div>';
+
+    // CTA
+    html += '<div class="assess-cta">';
+    html += '<button class="btn-set assess-set-btn" onclick="openModal(\'signup\')">';
+    html += '<svg viewBox="0 0 36 36" fill="none"><g transform="translate(18,18)"><circle r="3" fill="#3ee8b5" class="icon-glow"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" class="icon-glow" opacity=".9"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" class="icon-glow" opacity=".9" transform="rotate(120)"/><path d="M-2.6,-4.5L-6.2,-10.7A12.4,12.4,0,0,1,6.2,-10.7L2.6,-4.5A5.2,5.2,0,0,0,-2.6,-4.5Z" fill="#3ee8b5" class="icon-glow" opacity=".9" transform="rotate(240)"/></g></svg>';
+    html += 'Set it right';
+    html += '</button>';
+    html += '<p class="assess-cta-sub">Sign in to schedule your free consultation</p>';
     html += '</div>';
 
     // Retake

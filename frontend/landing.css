@@ -108,7 +108,10 @@
 .assess-next{border-top:1px solid var(--bdr);padding-top:24px;margin-top:16px}
 .assess-next h3{font-size:16px;font-weight:500;color:var(--t1);margin:0 0 4px}
 .assess-next p{font-size:14px;color:var(--t2);line-height:1.7;margin:0}
-.assess-retake{display:block;margin:24px auto 0;font-family:var(--font);font-size:13px;color:var(--t3);background:none;border:none;cursor:pointer;text-decoration:underline;padding:0}
+.assess-cta{text-align:center;margin-top:32px;padding-top:24px;border-top:1px solid var(--bdr)}
+.assess-set-btn{font-size:16px;padding:14px 32px}
+.assess-cta-sub{font-size:14px;color:var(--t3);margin:10px 0 0;font-weight:400}
+.assess-retake{display:block;margin:20px auto 0;font-family:var(--font);font-size:13px;color:var(--t3);background:none;border:none;cursor:pointer;text-decoration:underline;padding:0}
 .assess-retake:hover{color:var(--t2)}
 
 /* Assessment mobile */

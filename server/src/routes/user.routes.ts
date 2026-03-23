@@ -3,8 +3,51 @@ import { authenticateJWT } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
 import { validateBody, validateQuery, userUpdateSchema, paginationSchema } from '../lib/validation';
 import * as userService from '../services/user.service';
+import * as authService from '../services/auth.service';
 
 const router = Router();
+
+// GET /me/tenants - list all tenants this user's email belongs to (for tenant switching)
+router.get('/me/tenants', authenticateJWT, async (req, res, next) => {
+  try {
+    const tenants = await userService.getUserTenants(req.user!.sub);
+    res.json({
+      ok: true,
+      data: tenants,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /me/switch-tenant - switch to a different tenant
+router.post('/me/switch-tenant', authenticateJWT, async (req, res, next) => {
+  try {
+    const { tenantId } = req.body;
+    if (!tenantId) {
+      return res.status(400).json({ ok: false, error: { code: 'MISSING_FIELD', message: 'tenantId is required' } });
+    }
+    // Get user email from current profile
+    const profile = await userService.getProfile(req.user!.sub);
+    const tokens = await authService.loginToTenant(profile.email, tenantId);
+    // Set refresh cookie
+    res.cookie('refresh_token', tokens.refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/api/auth',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+    res.json({
+      ok: true,
+      data: { accessToken: tokens.accessToken, sessionId: tokens.sessionId },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // GET /me - get current user profile (JWT, account.view)
 // Defined before /:id to avoid route conflict
