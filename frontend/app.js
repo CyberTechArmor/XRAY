@@ -345,6 +345,8 @@
       promptPasskeySetup();
       // Load tenant switcher for multi-tenant users
       loadTenantSwitcher();
+      // Start proactive token refresh to prevent silent logout
+      startTokenRefresh();
     });
   }
 
@@ -390,6 +392,7 @@
 
   // ── Logout ──
   function logout() {
+    stopTokenRefresh();
     if (accessToken) api.post('/api/auth/logout').catch(function() {});
     accessToken = null;
     currentUser = null;
@@ -402,6 +405,30 @@
   document.getElementById('header-logo').onclick = function() { if (accessToken) navigateTo('dashboard_list'); };
   window.logout = logout;
   window.getAccessToken = function() { return accessToken; };
+
+  // ── Proactive token refresh ──
+  // Access tokens expire in 15min. Refresh every 12min to avoid silent expiry.
+  var _refreshInterval = null;
+  function startTokenRefresh() {
+    stopTokenRefresh();
+    _refreshInterval = setInterval(function() {
+      if (!accessToken) return;
+      api.refresh().then(function(ok) {
+        if (!ok && accessToken) { logout(); }
+      });
+    }, 12 * 60 * 1000); // 12 minutes
+  }
+  function stopTokenRefresh() {
+    if (_refreshInterval) { clearInterval(_refreshInterval); _refreshInterval = null; }
+  }
+  // Refresh immediately when user returns to tab (may have been away > 15min)
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden && accessToken) {
+      api.refresh().then(function(ok) {
+        if (!ok && accessToken) { logout(); }
+      });
+    }
+  });
 
   // ── Tenant Switcher ──
   function loadTenantSwitcher() {

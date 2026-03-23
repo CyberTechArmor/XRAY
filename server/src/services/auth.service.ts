@@ -806,12 +806,12 @@ export async function refreshSession(refreshTokenHash: string): Promise<TokenPai
   });
 }
 
-export async function logout(sessionId: string): Promise<void> {
+export async function logout(userId: string): Promise<void> {
   await withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     await client.query(
-      'DELETE FROM platform.user_sessions WHERE id = $1',
-      [sessionId]
+      'DELETE FROM platform.user_sessions WHERE user_id = $1',
+      [userId]
     );
   });
 }
