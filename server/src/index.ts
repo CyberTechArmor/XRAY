@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -7,6 +8,7 @@ import { config } from './config';
 import { errorHandler } from './middleware/error-handler';
 // Rate limiting removed
 import { getPool } from './db/connection';
+import { initWebSocketServer } from './ws';
 
 // Route imports
 import authRoutes from './routes/auth.routes';
@@ -159,7 +161,9 @@ async function start() {
       console.error('Migration check/run failed:', migrationErr);
     }
 
-    app.listen(config.port, () => {
+    const server = http.createServer(app);
+    initWebSocketServer(server);
+    server.listen(config.port, () => {
       console.log(`XRay server running on port ${config.port}`);
       console.log(`Environment: ${config.nodeEnv}`);
     });

@@ -153,6 +153,19 @@ router.post('/support-call', authenticateJWT, async (req, res, next) => {
       }).catch(() => {});
     }
 
+    // Broadcast to platform admins via WebSocket
+    try {
+      const { broadcastToAdmins } = await import('../ws');
+      broadcastToAdmins('support-call:new', {
+        id: (supportCall as any).id,
+        room_code: roomCode,
+        join_url: roomResult.joinUrl,
+        caller_id: req.user!.sub,
+        tenant_id: req.user!.tid,
+        created_at: new Date().toISOString(),
+      });
+    } catch {}
+
     res.status(201).json({
       ok: true,
       data: { room: roomResult.room, joinUrl: roomResult.joinUrl, roomCode, supportCallId: (supportCall as any).id },
@@ -185,6 +198,16 @@ router.get('/support-calls', authenticateJWT, async (req, res, next) => {
 router.post('/support-calls/:id/answer', authenticateJWT, async (req, res, next) => {
   try {
     await meetService.answerSupportCall(req.params.id);
+
+    // Broadcast to all admins so other tabs dismiss the alert
+    try {
+      const { broadcastToAdmins } = await import('../ws');
+      broadcastToAdmins('support-call:answered', {
+        id: req.params.id,
+        answered_by: req.user!.sub,
+      });
+    } catch {}
+
     res.json({
       ok: true,
       data: { answered: true },
