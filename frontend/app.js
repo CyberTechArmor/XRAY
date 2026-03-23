@@ -343,6 +343,8 @@
       loadBundle();
       // Prompt for passkey setup on first login (no passkeys registered yet)
       promptPasskeySetup();
+      // Load tenant switcher for multi-tenant users
+      loadTenantSwitcher();
     });
   }
 
@@ -400,6 +402,62 @@
   document.getElementById('header-logo').onclick = function() { if (accessToken) navigateTo('dashboard_list'); };
   window.logout = logout;
   window.getAccessToken = function() { return accessToken; };
+
+  // ── Tenant Switcher ──
+  function loadTenantSwitcher() {
+    var switcher = document.getElementById('tenant-switcher');
+    if (!switcher) return;
+    api.get('/api/users/me/tenants').then(function(d) {
+      if (!d.ok || !d.data || d.data.length <= 1) {
+        switcher.style.display = 'none';
+        return;
+      }
+      var tenants = d.data;
+      var currentTid = currentUser.tenant_id;
+      var currentTenant = tenants.filter(function(t) { return t.id === currentTid; })[0];
+      if (!currentTenant) { switcher.style.display = 'none'; return; }
+
+      switcher.style.display = '';
+      document.getElementById('tenant-switcher-name').textContent = currentTenant.name;
+
+      var dropdown = document.getElementById('tenant-switcher-dropdown');
+      var html = '';
+      tenants.forEach(function(t) {
+        var isCurrent = t.id === currentTid;
+        var roleLabel = t.role === 'owner' ? 'Owner' : t.role === 'admin' ? 'Admin' : t.role === 'platform_admin' ? 'Platform Admin' : 'Member';
+        html += '<button class="ts-option' + (isCurrent ? ' current' : '') + '" data-tid="' + t.id + '">';
+        html += '<span class="ts-opt-name">' + (t.name || '').replace(/</g, '&lt;') + '</span>';
+        html += '<span class="ts-opt-role">' + roleLabel + (isCurrent ? ' (current)' : '') + '</span>';
+        html += '</button>';
+      });
+      dropdown.innerHTML = html;
+
+      document.getElementById('tenant-switcher-btn').onclick = function(e) {
+        e.stopPropagation();
+        var open = dropdown.style.display !== 'none';
+        dropdown.style.display = open ? 'none' : '';
+      };
+
+      dropdown.querySelectorAll('.ts-option').forEach(function(btn) {
+        btn.onclick = function() {
+          var tid = this.getAttribute('data-tid');
+          if (tid === currentTid) { dropdown.style.display = 'none'; return; }
+          dropdown.style.display = 'none';
+          toast('Switching organization...', 'info');
+          api.post('/api/users/me/switch-tenant', { tenantId: tid }).then(function(d) {
+            if (!d.ok) { toast((d.error && d.error.message) || 'Failed to switch', 'error'); return; }
+            accessToken = d.data.accessToken;
+            currentView = null;
+            document.getElementById('view-container').innerHTML = '';
+            enterApp();
+          }).catch(function() { toast('Network error', 'error'); });
+        };
+      });
+
+      // Close dropdown when clicking elsewhere
+      document.addEventListener('click', function() { dropdown.style.display = 'none'; });
+    }).catch(function() { switcher.style.display = 'none'; });
+  }
 
   // ── Build sidebar ──
   function buildSidebar() {

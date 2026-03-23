@@ -7,6 +7,34 @@ async function bypassRLS(client: PoolClient) {
   await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
 }
 
+export async function getUserTenants(userId: string) {
+  return withClient(async (client) => {
+    await bypassRLS(client);
+    // Get current user's email
+    const userResult = await client.query('SELECT email FROM platform.users WHERE id = $1', [userId]);
+    if (userResult.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
+    const email = userResult.rows[0].email;
+
+    // Find all active tenants this email belongs to
+    const result = await client.query(
+      `SELECT u.id as user_id, u.tenant_id, u.is_owner, t.name as tenant_name, r.slug as role_slug
+       FROM platform.users u
+       JOIN platform.tenants t ON t.id = u.tenant_id
+       JOIN platform.roles r ON r.id = u.role_id
+       WHERE u.email = $1 AND u.status = 'active' AND t.status NOT IN ('archived', 'suspended')
+       ORDER BY t.name`,
+      [email]
+    );
+    return result.rows.map((r: any) => ({
+      id: r.tenant_id,
+      name: r.tenant_name,
+      role: r.role_slug,
+      is_owner: r.is_owner,
+      is_current: r.tenant_id === undefined, // will be set client-side
+    }));
+  });
+}
+
 export async function getProfile(userId: string) {
   return withClient(async (client) => {
     await bypassRLS(client);
