@@ -47,6 +47,17 @@ export function log(entry: AuditLogEntry): void {
   }).catch((err) => {
     console.error('Failed to write audit log:', err);
   });
+
+  // Dispatch outbound webhooks for this event (fire-and-forget)
+  if (entry.tenantId && entry.action) {
+    import('./webhook.service').then(wh => {
+      wh.dispatchEvent(entry.tenantId, entry.action, {
+        resourceType: entry.resourceType,
+        resourceId: entry.resourceId,
+        ...(entry.metadata || {}),
+      });
+    }).catch(() => {});
+  }
 }
 
 /**

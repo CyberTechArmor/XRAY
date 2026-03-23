@@ -34,8 +34,11 @@
   }
 
   // ── API helper ──
+  var _refreshPromise = null; // mutex: only one refresh at a time
+  var _lastRefreshTime = 0;   // debounce: skip refresh if one just completed
   var api = {
     _fetch: function(method, url, body) {
+      var tokenAtCall = accessToken; // capture token at call time
       var opts = {
         method: method,
         headers: { 'Content-Type': 'application/json' },
@@ -44,9 +47,21 @@
       if (accessToken) opts.headers['Authorization'] = 'Bearer ' + accessToken;
       if (body) opts.body = JSON.stringify(body);
       return fetch(url, opts).then(function(r) {
-        if (r.status === 401 && accessToken) {
+        if (r.status === 401 && tokenAtCall) {
+          // If token already changed (another concurrent call refreshed), just retry
+          if (accessToken && accessToken !== tokenAtCall) {
+            opts.headers['Authorization'] = 'Bearer ' + accessToken;
+            return fetch(url, opts).then(function(r2) { return r2.json().catch(function() { return { ok: false }; }); });
+          }
           return api.refresh().then(function(ok) {
-            if (!ok) { logout(); return { ok: false, error: { message: 'Session expired' } }; }
+            if (!ok) {
+              // Don't logout if token was updated by another path while we waited
+              if (accessToken && accessToken !== tokenAtCall) {
+                opts.headers['Authorization'] = 'Bearer ' + accessToken;
+                return fetch(url, opts).then(function(r2) { return r2.json().catch(function() { return { ok: false }; }); });
+              }
+              logout(); return { ok: false, error: { message: 'Session expired' } };
+            }
             opts.headers['Authorization'] = 'Bearer ' + accessToken;
             return fetch(url, opts).then(function(r2) { return r2.json().catch(function() { return { ok: false }; }); });
           });
@@ -60,16 +75,25 @@
     put: function(url, body) { return api._fetch('PUT', url, body); },
     delete: function(url, body) { return api._fetch('DELETE', url, body); },
     refresh: function() {
-      return fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
+      // Mutex: if a refresh is already in flight, return the same promise
+      if (_refreshPromise) return _refreshPromise;
+      // Debounce: if a refresh just completed < 5s ago, skip (token is fresh)
+      if (Date.now() - _lastRefreshTime < 5000 && accessToken) {
+        return Promise.resolve(true);
+      }
+      _refreshPromise = fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
         .then(function(r) { return r.json(); })
         .then(function(d) {
+          _refreshPromise = null;
           if (d.ok && d.data && d.data.accessToken) {
             accessToken = d.data.accessToken;
+            _lastRefreshTime = Date.now();
             return true;
           }
           return false;
         })
-        .catch(function() { return false; });
+        .catch(function() { _refreshPromise = null; return false; });
+      return _refreshPromise;
     }
   };
 
@@ -409,23 +433,36 @@
   // ── Proactive token refresh ──
   // Access tokens expire in 15min. Refresh every 12min to avoid silent expiry.
   var _refreshInterval = null;
+  var _refreshFailures = 0;
   function startTokenRefresh() {
     stopTokenRefresh();
+    _refreshFailures = 0;
     _refreshInterval = setInterval(function() {
       if (!accessToken) return;
       api.refresh().then(function(ok) {
-        if (!ok && accessToken) { logout(); }
+        if (ok) { _refreshFailures = 0; return; }
+        _refreshFailures++;
+        // Only logout after 3 consecutive failures (avoids transient errors)
+        if (_refreshFailures >= 3 && accessToken) { logout(); }
       });
     }, 12 * 60 * 1000); // 12 minutes
   }
   function stopTokenRefresh() {
     if (_refreshInterval) { clearInterval(_refreshInterval); _refreshInterval = null; }
   }
-  // Refresh immediately when user returns to tab (may have been away > 15min)
+  // Refresh when user returns to tab (may have been away > 15min)
   document.addEventListener('visibilitychange', function() {
     if (!document.hidden && accessToken) {
       api.refresh().then(function(ok) {
-        if (!ok && accessToken) { logout(); }
+        if (ok) { _refreshFailures = 0; return; }
+        // Retry once after 2 seconds before giving up
+        setTimeout(function() {
+          if (!accessToken) return;
+          api.refresh().then(function(ok2) {
+            if (ok2) { _refreshFailures = 0; return; }
+            if (accessToken) logout();
+          });
+        }, 2000);
       });
     }
   });

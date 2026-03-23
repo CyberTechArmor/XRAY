@@ -219,6 +219,20 @@ router.patch('/dashboards/:id', async (req, res, next) => {
   }
 });
 
+// DELETE /dashboards/:id - delete dashboard (platform admin only)
+router.delete('/dashboards/:id', async (req, res, next) => {
+  try {
+    const result = await adminService.deleteDashboard(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /connections - list all connections
 router.get('/connections', async (req, res, next) => {
   try {
