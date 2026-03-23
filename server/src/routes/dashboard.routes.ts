@@ -136,8 +136,30 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       }
     }
 
-    const response = await fetch(fetchUrl, fetchOpts);
+    let response: Response;
+    try {
+      response = await fetch(fetchUrl, fetchOpts);
+    } catch (fetchErr) {
+      // Network error / timeout — fall back to static content if available
+      if (dashboard.view_html) {
+        return res.json({
+          ok: true,
+          data: { html: dashboard.view_html, css: dashboard.view_css || '', js: dashboard.view_js || '' },
+          meta: { fallback: true },
+        });
+      }
+      return res.status(502).json({ ok: false, error: { code: 'UPSTREAM_ERROR', message: 'Connection unreachable' } });
+    }
+
     if (!response.ok) {
+      // Upstream returned an error — fall back to static content if available
+      if (dashboard.view_html) {
+        return res.json({
+          ok: true,
+          data: { html: dashboard.view_html, css: dashboard.view_css || '', js: dashboard.view_js || '' },
+          meta: { fallback: true },
+        });
+      }
       return res.status(502).json({ ok: false, error: { code: 'UPSTREAM_ERROR', message: `Connection returned ${response.status}` } });
     }
 
