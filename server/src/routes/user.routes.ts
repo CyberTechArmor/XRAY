@@ -163,6 +163,34 @@ router.delete('/me/sessions/:id', authenticateJWT, requirePermission('account.ed
   }
 });
 
+// GET /me/settings - get user preferences
+router.get('/me/settings', authenticateJWT, async (req, res, next) => {
+  try {
+    const result = await userService.getUserSettings(req.user!.sub);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /me/settings - update user preferences
+router.patch('/me/settings', authenticateJWT, async (req, res, next) => {
+  try {
+    const result = await userService.updateUserSettings(req.user!.sub, req.body);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET / - list users (JWT, users.view)
 router.get('/', authenticateJWT, requirePermission('users.view'), async (req, res, next) => {
   try {

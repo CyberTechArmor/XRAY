@@ -456,6 +456,36 @@
 
       // Close dropdown when clicking elsewhere
       document.addEventListener('click', function() { dropdown.style.display = 'none'; });
+
+      // Mobile tenant switcher
+      var mobSwitcher = document.getElementById('mob-tenant-switcher');
+      if (mobSwitcher) {
+        mobSwitcher.style.display = '';
+        document.getElementById('mob-tenant-switcher-name').textContent = currentTenant.name;
+        var mobDropdown = document.getElementById('mob-tenant-switcher-dropdown');
+        mobDropdown.innerHTML = html;
+        document.getElementById('mob-tenant-switcher-btn').onclick = function(e) {
+          e.stopPropagation();
+          var open = mobDropdown.style.display !== 'none';
+          mobDropdown.style.display = open ? 'none' : '';
+        };
+        mobDropdown.querySelectorAll('.ts-option').forEach(function(btn) {
+          btn.onclick = function() {
+            var tid = this.getAttribute('data-tid');
+            if (tid === currentTid) { mobDropdown.style.display = 'none'; return; }
+            mobDropdown.style.display = 'none';
+            if (window._closeMobileMenu) window._closeMobileMenu();
+            toast('Switching organization...', 'info');
+            api.post('/api/users/me/switch-tenant', { tenantId: tid }).then(function(d) {
+              if (!d.ok) { toast((d.error && d.error.message) || 'Failed to switch', 'error'); return; }
+              accessToken = d.data.accessToken;
+              currentView = null;
+              document.getElementById('view-container').innerHTML = '';
+              enterApp();
+            }).catch(function() { toast('Network error', 'error'); });
+          };
+        });
+      }
     }).catch(function() { switcher.style.display = 'none'; });
   }
 
