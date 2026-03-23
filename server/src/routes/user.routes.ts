@@ -221,4 +221,22 @@ router.patch('/:id', authenticateJWT, requirePermission('users.manage'), async (
   }
 });
 
+// DELETE /:id - delete user (JWT, users.manage)
+router.delete('/:id', authenticateJWT, requirePermission('users.manage'), async (req, res, next) => {
+  try {
+    // Prevent self-deletion
+    if (req.params.id === req.user!.sub) {
+      return res.status(400).json({ ok: false, error: { code: 'SELF_DELETE', message: 'Cannot delete your own account' } });
+    }
+    await userService.deleteUser(req.user!.tid, req.params.id);
+    res.json({
+      ok: true,
+      data: { message: 'User deleted' },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

@@ -307,3 +307,25 @@ export async function updateUserSettings(userId: string, settings: Record<string
     return result.rows[0].preferences;
   });
 }
+
+export async function deleteUser(tenantId: string, userId: string): Promise<void> {
+  return withClient(async (client) => {
+    await bypassRLS(client);
+    // Check user exists and belongs to tenant
+    const userCheck = await client.query(
+      'SELECT id, is_owner FROM platform.users WHERE id = $1 AND tenant_id = $2',
+      [userId, tenantId]
+    );
+    if (userCheck.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
+    if (userCheck.rows[0].is_owner) throw new AppError(400, 'CANNOT_DELETE_OWNER', 'Cannot delete the tenant owner');
+
+    // Remove from inbox thread participants
+    await client.query('DELETE FROM platform.inbox_thread_participants WHERE user_id = $1', [userId]);
+    // Remove sessions
+    await client.query('DELETE FROM platform.user_sessions WHERE user_id = $1', [userId]);
+    // Remove passkeys
+    await client.query('DELETE FROM platform.passkeys WHERE user_id = $1', [userId]);
+    // Delete user
+    await client.query('DELETE FROM platform.users WHERE id = $1 AND tenant_id = $2', [userId, tenantId]);
+  });
+}
