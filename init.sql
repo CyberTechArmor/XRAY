@@ -310,15 +310,14 @@ CREATE TABLE platform.api_keys (
 
 CREATE INDEX idx_api_keys_hash ON platform.api_keys(key_hash) WHERE is_active;
 
--- Webhooks (inbound endpoints per connection)
+-- Webhooks (outbound — XRay sends events to user-specified URLs)
 CREATE TABLE platform.webhooks (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    connection_id   UUID NOT NULL REFERENCES platform.connections(id) ON DELETE CASCADE,
     tenant_id       UUID NOT NULL REFERENCES platform.tenants(id),
     name            TEXT NOT NULL,
-    url_token       TEXT UNIQUE NOT NULL,
+    target_url      TEXT NOT NULL,
     secret          TEXT,
-    events          TEXT[] NOT NULL DEFAULT '{data.push}',
+    events          TEXT[] NOT NULL DEFAULT '{account.created}',
     is_active       BOOLEAN NOT NULL DEFAULT true,
     last_triggered_at TIMESTAMPTZ,
     failure_count   INTEGER NOT NULL DEFAULT 0,
@@ -327,8 +326,7 @@ CREATE TABLE platform.webhooks (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_webhooks_url_token ON platform.webhooks(url_token) WHERE is_active;
-CREATE INDEX idx_webhooks_connection ON platform.webhooks(connection_id);
+CREATE INDEX idx_webhooks_tenant ON platform.webhooks(tenant_id) WHERE is_active;
 
 -- File Uploads
 CREATE TABLE platform.file_uploads (

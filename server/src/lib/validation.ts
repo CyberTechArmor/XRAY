@@ -180,13 +180,14 @@ export const apiKeyCreateSchema = z.object({
 });
 
 export const webhookCreateSchema = z.object({
-  connectionId: uuidSchema,
   name: nameSchema,
-  events: z.array(z.string().min(1)).optional().default(['data.push']),
+  url: z.string().url().max(2000),
+  events: z.array(z.string().min(1)).optional().default(['account.created']),
 });
 
 export const webhookUpdateSchema = z.object({
   name: nameSchema.optional(),
+  url: z.string().url().max(2000).optional(),
   events: z.array(z.string().min(1)).optional(),
   isActive: z.boolean().optional(),
 });
