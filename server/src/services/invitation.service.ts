@@ -67,6 +67,7 @@ export async function createInvitation(
       await sendTemplateEmail('invitation', input.email, {
         inviter_name: inviterResult.rows[0]?.name || 'A team member',
         tenant_name: tenantResult.rows[0]?.name || 'your team',
+        link: `${config.webauthn.origin}/invite/${invitation.id}`,
         invite_url: `${config.webauthn.origin}/invite/${invitation.id}`,
         platform_name: 'XRay BI',
       });

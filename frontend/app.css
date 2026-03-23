@@ -31,6 +31,12 @@ input, select, textarea { font-family: var(--font); }
 .btn.danger:hover { background: rgba(239,68,68,.1); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 
+/* ── Styled file upload inputs ── */
+input[type="file"],input[type='file']{font-size:13px;color:var(--t2);padding:8px;background:var(--bg4);border:1px dashed var(--bdr2);border-radius:8px;cursor:pointer;transition:all .2s;width:100%}
+input[type="file"]:hover,input[type='file']:hover{border-color:var(--acc);background:var(--acc-dim)}
+input[type="file"]::file-selector-button,input[type='file']::file-selector-button{display:inline-flex;align-items:center;gap:4px;padding:6px 14px;font-size:13px;font-weight:500;border-radius:6px;border:1px solid var(--bdr);background:var(--bg3);color:var(--t1);cursor:pointer;font-family:var(--font);margin-right:10px;transition:all .15s}
+input[type="file"]::file-selector-button:hover,input[type='file']::file-selector-button:hover{background:var(--bg4);border-color:var(--acc)}
+
 /* ── Cards ── */
 .card { background: var(--bg2); border: 1px solid var(--bdr); border-radius: 12px; padding: 20px; }
 .card-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
@@ -99,6 +105,13 @@ input, select, textarea { font-family: var(--font); }
 .ts-option.current{color:var(--acc)}
 .ts-opt-name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ts-opt-role{font-size:11px;color:var(--t3);white-space:nowrap;flex-shrink:0}
+/* ── Mobile tenant switcher ── */
+.mob-tenant-switcher{padding:8px 16px;border-bottom:1px solid var(--bdr)}
+.mob-tenant-switcher-btn{display:flex;align-items:center;gap:6px;width:100%;background:var(--bg3);border:1px solid var(--bdr2);border-radius:8px;padding:8px 12px;font-size:13px;color:var(--t2);cursor:pointer;font-family:var(--font)}
+.mob-tenant-switcher-btn:hover{background:var(--bg4);color:var(--t1)}
+.mob-tenant-switcher-btn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;text-align:left}
+.mob-tenant-switcher-dropdown{margin-top:6px;background:var(--bg2);border:1px solid var(--bdr2);border-radius:10px;padding:4px}
+.mob-tenant-switcher-dropdown .ts-option{width:100%}
 /* ── MEET header button ── */
 @keyframes meet-glow {
   0%, 100% { box-shadow: 0 0 6px rgba(62,232,181,0.3), 0 0 12px rgba(62,232,181,0.1); }
