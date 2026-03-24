@@ -126,6 +126,34 @@ ENCRYPTION_KEY=$(openssl rand -hex 32)
 DB_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
 STRIPE_WEBHOOK_SECRET=""
 
+# Generate VAPID keys for Web Push notifications (MEET call alerts on mobile)
+if command -v node &>/dev/null; then
+  VAPID_KEYS=$(node -e "
+    try {
+      const wp = require('$SCRIPT_DIR/server/node_modules/web-push');
+      const keys = wp.generateVAPIDKeys();
+      console.log(keys.publicKey + ' ' + keys.privateKey);
+    } catch(e) {
+      // Fallback: generate P-256 ECDSA key pair with openssl
+      const { execSync } = require('child_process');
+      const key = execSync('openssl ecparam -genkey -name prime256v1 -noout 2>/dev/null | openssl ec 2>/dev/null').toString();
+      console.log('');
+    }
+  " 2>/dev/null || echo "")
+else
+  VAPID_KEYS=""
+fi
+
+if [ -n "$VAPID_KEYS" ] && [ "$(echo "$VAPID_KEYS" | wc -w)" -eq 2 ]; then
+  VAPID_PUBLIC_KEY=$(echo "$VAPID_KEYS" | awk '{print $1}')
+  VAPID_PRIVATE_KEY=$(echo "$VAPID_KEYS" | awk '{print $2}')
+  ok "VAPID keys generated (Web Push notifications enabled)"
+else
+  VAPID_PUBLIC_KEY=""
+  VAPID_PRIVATE_KEY=""
+  warn "VAPID keys not generated — set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in .env later for push notifications"
+fi
+
 ok "JWT secret generated (64 chars)"
 ok "Encryption key generated (256-bit hex)"
 ok "Database password generated (32 chars)"
@@ -161,6 +189,11 @@ ORIGIN=https://${DOMAIN}
 
 # ─── Stripe (configure later in admin UI) ───
 STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+
+# ─── Web Push (VAPID) — for MEET call mobile notifications ───
+VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}
+VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}
+VAPID_SUBJECT=mailto:${ADMIN_EMAIL}
 
 # ─── SMTP (configure later in admin UI or set here) ───
 SMTP_HOST=

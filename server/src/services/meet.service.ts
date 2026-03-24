@@ -276,7 +276,7 @@ export async function getPendingSupportCalls(): Promise<any[]> {
     if (!tableCheck.rows[0].tbl) return [];
     // Get configurable ring duration
     const config = await getSupportCallConfig();
-    const ringDuration = config.ring_duration || 120;
+    const ringDuration = config.ring_duration || 60;
     // Expire calls older than ring duration
     await client.query(
       `UPDATE platform.support_calls SET status = 'expired', expired_at = now()
@@ -349,7 +349,7 @@ export async function getSupportCallConfig(): Promise<SupportCallConfig> {
     }
     return {
       enabled: settings.support_enabled !== 'false', // default true
-      ring_duration: parseInt(settings.support_ring_duration || '120', 10),
+      ring_duration: parseInt(settings.support_ring_duration || '60', 10),
       active_hours_enabled: settings.support_active_hours_enabled === 'true',
       active_hours_start: settings.support_active_hours_start || '00:00',
       active_hours_end: settings.support_active_hours_end || '23:59',

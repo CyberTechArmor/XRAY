@@ -1356,7 +1356,7 @@
 
   // ── Platform admin: WebSocket for support calls ──
   var knownSupportCalls = {};
-  var supportCallConfig = { ring_duration: 120, sound_enabled: true, vibration_enabled: true };
+  var supportCallConfig = { ring_duration: 60, sound_enabled: true, vibration_enabled: true };
   var _ws = null;
   var _wsReconnectTimer = null;
   var _wsReconnectDelay = 1000;
@@ -1596,7 +1596,7 @@
     alert.querySelector('.sca-join').onclick = function() { stopRinging(); joinSupportCall(call); alert.remove(); };
     alert.querySelector('.sca-dismiss').onclick = function() { stopRinging(); alert.remove(); };
     // Auto-dismiss after configurable ring duration
-    var ringMs = (supportCallConfig.ring_duration || 120) * 1000;
+    var ringMs = (supportCallConfig.ring_duration || 60) * 1000;
     setTimeout(function() { if (document.getElementById('sca-' + call.id)) { stopRinging(); alert.remove(); } }, ringMs);
     // Start persistent ringing (sound + vibration)
     startRinging();
