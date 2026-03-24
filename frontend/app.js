@@ -782,6 +782,11 @@
     var sidebar = document.getElementById('sidebar');
     if (sidebar) { sidebar.style.display = ''; if (sidebar.dataset.dashCollapsed) { sidebar.classList.remove('collapsed'); delete sidebar.dataset.dashCollapsed; } }
 
+    // Clear inbox badge immediately when navigating to inbox
+    if (viewName === 'inbox') {
+      updateInboxBadge(0);
+    }
+
     var items = document.querySelectorAll('#sidebar .nav-item');
     items.forEach(function(el) {
       el.classList.toggle('active', el.getAttribute('data-view') === viewName);
@@ -996,6 +1001,7 @@
       meetState.roomCode = generateRoomCode();
       meetState.selectedMembers = [];
       meetState.inviteEmails = [];
+      _meetMemberLimit = 10;
       var codeEl = document.getElementById('meet-room-code');
       if (codeEl) codeEl.textContent = meetState.roomCode;
       renderMemberList();
@@ -1004,6 +1010,8 @@
       if (allBtn) allBtn.classList.remove('active');
     }
   }
+
+  var _meetMemberLimit = 10;
 
   function renderMemberList(filter) {
     var list = document.getElementById('meet-member-list');
@@ -1019,7 +1027,8 @@
       list.innerHTML = '<div style="padding:12px;font-size:13px;color:var(--t3);text-align:center">No members found</div>';
       return;
     }
-    filtered.forEach(function(m) {
+    var showing = filtered.slice(0, _meetMemberLimit);
+    showing.forEach(function(m) {
       var item = document.createElement('div');
       item.className = 'meet-member-item';
       if (meetState.selectedMembers.indexOf(m.id) >= 0) item.classList.add('selected');
@@ -1034,6 +1043,17 @@
       };
       list.appendChild(item);
     });
+    // Load more button
+    if (filtered.length > _meetMemberLimit) {
+      var loadMore = document.createElement('div');
+      loadMore.style.cssText = 'padding:8px;text-align:center;font-size:12px;color:var(--acc);cursor:pointer';
+      loadMore.textContent = 'Load more (' + (filtered.length - _meetMemberLimit) + ' remaining)';
+      loadMore.onclick = function() {
+        _meetMemberLimit += 10;
+        renderMemberList(filter);
+      };
+      list.appendChild(loadMore);
+    }
   }
 
   function escapeHtml(s) {
