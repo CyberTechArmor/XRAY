@@ -49,12 +49,14 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
       VAPID_PUB=$(echo "$VAPID_KEYS" | awk '{print $1}')
       VAPID_PRV=$(echo "$VAPID_KEYS" | awk '{print $2}')
       ADMIN_EMAIL_VAL=$(grep -oP '^ADMIN_EMAIL=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "admin@localhost")
+      read -rp "  Push notifications email (for VAPID/Web Push) [${ADMIN_EMAIL_VAL}]: " VAPID_EMAIL_VAL
+      VAPID_EMAIL_VAL="${VAPID_EMAIL_VAL:-$ADMIN_EMAIL_VAL}"
       cat >> "$SCRIPT_DIR/.env" <<VAPIDEOF
 
 # ─── Web Push (VAPID) — for MEET call mobile notifications ───
 VAPID_PUBLIC_KEY=${VAPID_PUB}
 VAPID_PRIVATE_KEY=${VAPID_PRV}
-VAPID_SUBJECT=mailto:${ADMIN_EMAIL_VAL}
+VAPID_SUBJECT=mailto:${VAPID_EMAIL_VAL}
 VAPIDEOF
       ok "VAPID keys added to .env (push notifications enabled)"
     else
