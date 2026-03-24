@@ -28,6 +28,18 @@ router.get('/:id', authenticateJWT, requirePermission('dashboards.view'), async 
   try {
     const result = await dashboardService.getDashboard(req.params.id, req.user!.tid);
 
+    // Non-admin/owner users must have explicit dashboard_access
+    if (!req.user!.is_platform_admin && !req.user!.is_owner && !req.user!.permissions?.includes('dashboards.manage')) {
+      const hasAccess = await dashboardService.checkUserAccess(req.params.id, req.user!.sub);
+      if (!hasAccess) {
+        return res.status(403).json({
+          ok: false,
+          error: { code: 'FORBIDDEN', message: 'You do not have access to this dashboard' },
+          meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+        });
+      }
+    }
+
     // Audit log: dashboard opened
     try {
       const auditService = await import('../services/audit.service');

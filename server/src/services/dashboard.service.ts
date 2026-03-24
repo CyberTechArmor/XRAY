@@ -243,6 +243,20 @@ export async function revokeAccess(
   });
 }
 
+export async function checkUserAccess(
+  dashboardId: string,
+  userId: string
+): Promise<boolean> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT 1 FROM platform.dashboard_access WHERE dashboard_id = $1 AND user_id = $2`,
+      [dashboardId, userId]
+    );
+    return result.rows.length > 0;
+  });
+}
+
 export async function getAccessList(
   dashboardId: string
 ): Promise<Array<{ user_id: string; email: string; name: string; granted_at: string }>> {
