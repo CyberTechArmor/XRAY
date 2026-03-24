@@ -31,42 +31,6 @@ else
   warn "Not a git repo — using local files"
 fi
 
-# ── Step 1b: Ensure VAPID keys exist in .env ──
-if [ -f "$SCRIPT_DIR/.env" ]; then
-  if ! grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
-    echo "  [1b] Generating VAPID keys for push notifications..."
-    generate_vapid_keys() {
-      local privkey pubkey
-      privkey=$(openssl ecparam -genkey -name prime256v1 -noout 2>/dev/null | openssl ec 2>/dev/null)
-      if [ -z "$privkey" ]; then return 1; fi
-      local prv_b64 pub_b64
-      prv_b64=$(echo "$privkey" | openssl ec -outform DER 2>/dev/null | tail -c +8 | head -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
-      pub_b64=$(echo "$privkey" | openssl ec -pubout -outform DER 2>/dev/null | tail -c 65 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
-      if [ -n "$prv_b64" ] && [ -n "$pub_b64" ]; then
-        echo "$pub_b64 $prv_b64"
-      fi
-    }
-    VAPID_KEYS=$(generate_vapid_keys 2>/dev/null || echo "")
-    if [ -n "$VAPID_KEYS" ] && [ "$(echo "$VAPID_KEYS" | wc -w)" -eq 2 ]; then
-      VAPID_PUB=$(echo "$VAPID_KEYS" | awk '{print $1}')
-      VAPID_PRV=$(echo "$VAPID_KEYS" | awk '{print $2}')
-      ADMIN_EMAIL_VAL=$(grep -oP '^ADMIN_EMAIL=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "admin@localhost")
-      cat >> "$SCRIPT_DIR/.env" <<VAPIDEOF
-
-# ─── Web Push (VAPID) — for MEET call mobile notifications ───
-VAPID_PUBLIC_KEY=${VAPID_PUB}
-VAPID_PRIVATE_KEY=${VAPID_PRV}
-VAPID_SUBJECT=mailto:${ADMIN_EMAIL_VAL}
-VAPIDEOF
-      ok "VAPID keys added to .env (push notifications enabled)"
-    else
-      warn "Could not generate VAPID keys — push notifications will be disabled"
-    fi
-  else
-    ok "VAPID keys already configured"
-  fi
-fi
-
 # ── Step 2: Deploy frontend files ──
 echo "  [2/6] Deploying frontend..."
 WEBROOT="/var/www/xray"
@@ -120,6 +84,42 @@ if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
   docker compose up -d 2>/dev/null && ok "Backend restarted" || warn "Docker restart failed"
 else
   warn "No docker-compose.yml found — skipping backend rebuild"
+fi
+
+# ── Step 4b: Ensure VAPID keys exist in .env ──
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  if ! grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
+    echo "  [4b] Generating VAPID keys for push notifications..."
+    SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
+    if [ -n "$SERVER_CONTAINER" ]; then
+      VAPID_JSON=$(docker exec "$SERVER_CONTAINER" npx web-push generate-vapid-keys --json 2>/dev/null || echo "")
+      if [ -n "$VAPID_JSON" ]; then
+        VAPID_PUB=$(echo "$VAPID_JSON" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4)
+        VAPID_PRV=$(echo "$VAPID_JSON" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4)
+        if [ -n "$VAPID_PUB" ] && [ -n "$VAPID_PRV" ]; then
+          ADMIN_EMAIL_VAL=$(grep -oP '^ADMIN_EMAIL=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "admin@localhost")
+          cat >> "$SCRIPT_DIR/.env" <<VAPIDEOF
+
+# ─── Web Push (VAPID) — for MEET call mobile notifications ───
+VAPID_PUBLIC_KEY=${VAPID_PUB}
+VAPID_PRIVATE_KEY=${VAPID_PRV}
+VAPID_SUBJECT=mailto:${ADMIN_EMAIL_VAL}
+VAPIDEOF
+          ok "VAPID keys added to .env (push notifications enabled)"
+          # Restart server to pick up new env vars
+          docker compose restart server >/dev/null 2>&1 && ok "Server restarted with VAPID keys" || true
+        else
+          warn "Could not parse VAPID keys — push notifications will be disabled"
+        fi
+      else
+        warn "Could not generate VAPID keys — push notifications will be disabled"
+      fi
+    else
+      warn "Server container not running — skipping VAPID key generation"
+    fi
+  else
+    ok "VAPID keys already configured"
+  fi
 fi
 
 # ── Step 5: Run database migrations ──
