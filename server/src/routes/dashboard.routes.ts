@@ -41,6 +41,15 @@ router.get('/:id', authenticateJWT, requirePermission('dashboards.view'), async 
       });
     } catch (_) {}
 
+    // Dispatch dashboard.opened webhook directly (audit dispatch is fire-and-forget, may not complete)
+    import('../services/webhook.service').then(wh => {
+      return wh.dispatchEvent(req.user!.tid, 'dashboard.opened', {
+        dashboardId: req.params.id,
+        dashboardName: result.name || '',
+        userId: req.user!.sub,
+      });
+    }).catch(() => {});
+
     res.json({
       ok: true,
       data: result,

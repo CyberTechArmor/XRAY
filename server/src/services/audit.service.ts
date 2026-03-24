@@ -51,12 +51,14 @@ export function log(entry: AuditLogEntry): void {
   // Dispatch outbound webhooks for this event (fire-and-forget)
   if (entry.tenantId && entry.action) {
     import('./webhook.service').then(wh => {
-      wh.dispatchEvent(entry.tenantId, entry.action, {
+      return wh.dispatchEvent(entry.tenantId, entry.action, {
         resourceType: entry.resourceType,
         resourceId: entry.resourceId,
         ...(entry.metadata || {}),
       });
-    }).catch(() => {});
+    }).catch((err) => {
+      console.error('Webhook dispatch from audit failed:', err instanceof Error ? err.message : err);
+    });
   }
 }
 
