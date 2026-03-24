@@ -372,6 +372,8 @@
       loadTenantSwitcher();
       // Start proactive token refresh to prevent silent logout
       startTokenRefresh();
+      // Start WebSocket for real-time updates (all users)
+      if (!currentUser.is_platform_admin) connectWebSocket();
     });
   }
 
@@ -1368,6 +1370,7 @@
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var wsUrl = proto + '//' + location.host + '/ws?token=' + encodeURIComponent(accessToken);
     try { _ws = new WebSocket(wsUrl); } catch(e) { scheduleWsReconnect(); return; }
+    window.__xrayWs = _ws;
 
     _ws.onopen = function() {
       _wsReconnectDelay = 1000;
@@ -1415,12 +1418,18 @@
           }
           // If inbox view is currently open, refresh it
           if (window.__xrayRefreshInboxView) window.__xrayRefreshInboxView();
+        } else if (msg.type === 'dashboard:access-granted' || msg.type === 'dashboard:access-revoked') {
+          // Dashboard visibility changed - notify handler if registered
+          if (window.__xrayDashWsHandler) {
+            window.__xrayDashWsHandler(evt);
+          }
         }
       } catch(e) {}
     };
 
     _ws.onclose = function(evt) {
       _ws = null;
+      window.__xrayWs = null;
       if (!_wsIntentionalClose) scheduleWsReconnect();
     };
 
