@@ -319,6 +319,19 @@ export async function getTenantMembers(tenantId: string): Promise<any[]> {
   });
 }
 
+// ── Get platform admin user IDs (for resolving 'support' recipient) ──
+export async function getPlatformAdminIds(): Promise<string[]> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT u.id FROM platform.users u
+       JOIN platform.roles r ON r.id = u.role_id
+       WHERE r.slug = 'platform_admin' AND u.status = 'active'`
+    );
+    return result.rows.map((r: any) => r.id);
+  });
+}
+
 // ── Get thread participant user IDs ──
 export async function getThreadParticipants(threadId: string): Promise<string[]> {
   return withClient(async (client) => {

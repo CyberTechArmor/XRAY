@@ -6,9 +6,15 @@ import { validateBody } from '../lib/validation';
 
 const router = Router();
 
+// recipientIds accepts UUIDs or the special 'support' token (resolves to platform admin IDs)
+const recipientIdSchema = z.string().refine(
+  (val) => val === 'support' || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val),
+  { message: 'Must be a valid UUID or "support"' }
+);
+
 const sendSchema = z.object({
   threadId: z.string().uuid().optional(),
-  recipientIds: z.array(z.string().uuid()).optional(),
+  recipientIds: z.array(recipientIdSchema).optional(),
   subject: z.string().min(1).max(200).optional(),
   body: z.string().min(1).max(10000),
   tag: z.string().max(50).optional(),
@@ -103,6 +109,15 @@ router.get('/:threadId', authenticateJWT, async (req, res, next) => {
 router.post('/', authenticateJWT, async (req, res, next) => {
   try {
     const data = validateBody(sendSchema, req.body);
+
+    // Resolve 'support' token to actual platform admin user IDs
+    if (data.recipientIds && data.recipientIds.includes('support')) {
+      const adminIds = await inboxService.getPlatformAdminIds();
+      data.recipientIds = data.recipientIds
+        .filter((id: string) => id !== 'support')
+        .concat(adminIds);
+    }
+
     const result = await inboxService.sendMessage(
       req.user!.sub, req.user!.tid, req.user!.is_platform_admin, data
     );
