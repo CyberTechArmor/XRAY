@@ -27,6 +27,17 @@ router.get('/:token', async (req, res, next) => {
 
     const data = await dashboardService.renderPublicDashboard(token);
 
+    // Dispatch dashboard.public_accessed webhook event (fire-and-forget)
+    dashboardService.getPublicDashboard(token).then(dash => {
+      import('../services/webhook.service').then(wh => {
+        wh.dispatchEvent(dash.tenant_id, 'dashboard.public_accessed', {
+          dashboardId: dash.id,
+          dashboardName: dash.name,
+          publicToken: token,
+        });
+      });
+    }).catch(() => {});
+
     // Store in cache
     shareCache.set(token, { data, ts: now });
 

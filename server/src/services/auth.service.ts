@@ -506,6 +506,17 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
       metadata: { is_platform_admin: isPlatformAdmin },
     });
 
+    // Dispatch account.created webhook event
+    import('./webhook.service').then(wh => {
+      wh.dispatchEvent(tenant.id, 'account.created', {
+        userId: user.id,
+        email: magicLink.email,
+        name: metadata.name,
+        tenantId: tenant.id,
+        tenantName: metadata.tenantName,
+      });
+    }).catch(() => {});
+
     return {
       accessToken,
       refreshToken,

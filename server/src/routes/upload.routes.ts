@@ -77,7 +77,7 @@ router.post('/', authenticateJWT, upload.array('files', 10), async (req, res, ne
     const contextType = contextTypeSchema.parse(req.body.contextType);
     const contextId = req.body.contextId || undefined;
 
-    const records = [];
+    const records: any[] = [];
     for (const file of files) {
       const record = await uploadService.createFileRecord({
         tenantId: req.user!.tid,
@@ -91,6 +91,16 @@ router.post('/', authenticateJWT, upload.array('files', 10), async (req, res, ne
       });
       records.push(record);
     }
+
+    // Dispatch file.uploaded webhook event
+    import('../services/webhook.service').then(wh => {
+      wh.dispatchEvent(req.user!.tid, 'file.uploaded', {
+        files: records.map((r: any) => ({ id: r.id, name: r.original_name, mimeType: r.mime_type, size: r.size_bytes })),
+        userId: req.user!.sub,
+        contextType,
+        contextId,
+      });
+    }).catch(() => {});
 
     res.status(201).json({
       ok: true,

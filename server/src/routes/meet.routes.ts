@@ -39,6 +39,17 @@ router.post('/rooms', authenticateJWT, async (req, res, next) => {
   try {
     const data = validateBody(createRoomSchema, req.body);
     const result = await meetService.createRoom(data);
+
+    // Dispatch meet.started webhook event
+    import('../services/webhook.service').then(wh => {
+      wh.dispatchEvent(req.user!.tid, 'meet.started', {
+        room: result.room,
+        joinUrl: result.joinUrl,
+        userId: req.user!.sub,
+        tenantId: req.user!.tid,
+      });
+    }).catch(() => {});
+
     res.status(201).json({
       ok: true,
       data: result,

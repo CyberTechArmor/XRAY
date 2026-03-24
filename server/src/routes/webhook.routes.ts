@@ -126,24 +126,20 @@ router.post('/:id/regenerate-secret', authenticateJWT, requirePermission('connec
   }
 });
 
-// POST /:id/test - send a test event to the webhook
+// POST /:id/test - send a test event directly to the webhook (bypasses event filter)
 router.post('/:id/test', authenticateJWT, requirePermission('connections.view'), async (req, res, next) => {
   try {
-    const webhook = await webhookService.getWebhook(req.params.id, req.user!.tid);
-    if (!webhook) {
-      return res.status(404).json({
+    const result = await webhookService.testWebhook(req.params.id, req.user!.tid);
+    if (!result.success) {
+      return res.status(result.error === 'Webhook not found or inactive' ? 404 : 502).json({
         ok: false,
-        error: { code: 'NOT_FOUND', message: 'Webhook not found' },
+        error: { code: result.error === 'Webhook not found or inactive' ? 'NOT_FOUND' : 'DELIVERY_FAILED', message: result.error || 'Test failed' },
         meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
       });
     }
-    await webhookService.dispatchEvent(req.user!.tid, 'webhook.test', {
-      message: 'This is a test event from XRay',
-      webhook_name: webhook.name,
-    });
     res.json({
       ok: true,
-      data: { message: 'Test event dispatched' },
+      data: { message: 'Test event delivered successfully' },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {
