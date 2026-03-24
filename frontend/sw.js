@@ -1,4 +1,4 @@
-var CACHE_NAME = 'xray-v2';
+var CACHE_NAME = 'xray-v3';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -85,25 +85,59 @@ self.addEventListener('push', function(e) {
     try { data = e.data.json(); } catch (err) { data = { title: 'XRay', body: e.data.text() }; }
   }
   var title = data.title || 'XRay BI';
+  var isMeetCall = data.data && data.data.type === 'meet-call';
+
   var options = {
     body: data.body || '',
     icon: '/icon-192.png',
     badge: '/icon-192.png',
     tag: data.tag || 'xray-notification',
-    data: data
+    data: data.data || data,
+    renotify: true
   };
+
+  // MEET call: persistent notification with actions, vibration, require interaction
+  if (isMeetCall) {
+    options.requireInteraction = true;
+    options.actions = [
+      { action: 'join', title: 'Join Call' },
+      { action: 'dismiss', title: 'Dismiss' }
+    ];
+    // Vibration pattern: urgent ringing (long repeating pattern)
+    if (data.vibrate) {
+      options.vibrate = data.vibrate;
+    } else {
+      options.vibrate = [200, 100, 200, 100, 400, 200, 200, 100, 200, 100, 400];
+    }
+    // Silent: false to allow system sound
+    options.silent = false;
+  }
+
   e.waitUntil(self.registration.showNotification(title, options));
 });
 
 // Notification click
 self.addEventListener('notificationclick', function(e) {
   e.notification.close();
-  var tag = e.notification.tag;
+  var data = e.notification.data || {};
+  var tag = e.notification.tag || '';
+  var action = e.action; // 'join' or 'dismiss' for action buttons
   var urlToOpen = '/';
 
-  // Handle meet call notifications
-  if (tag === 'meet-call' && e.notification.data && e.notification.data.url) {
-    urlToOpen = e.notification.data.url;
+  // Handle MEET call notifications
+  var isMeetCall = tag.indexOf('meet-call') === 0 || (data.type === 'meet-call');
+
+  if (isMeetCall) {
+    if (action === 'dismiss') {
+      // Just close the notification
+      return;
+    }
+    // 'join' action or direct click - open the app
+    if (data.joinUrl) {
+      urlToOpen = data.joinUrl;
+    } else if (data.url) {
+      urlToOpen = data.url;
+    }
   }
 
   e.waitUntil(
@@ -112,13 +146,22 @@ self.addEventListener('notificationclick', function(e) {
       for (var i = 0; i < clients.length; i++) {
         var client = clients[i];
         if (client.url.indexOf(self.location.origin) !== -1 && 'focus' in client) {
-          if (urlToOpen !== '/') {
-            client.navigate(urlToOpen);
+          // Send message to the client to trigger the join action
+          if (isMeetCall && action !== 'dismiss') {
+            client.postMessage({
+              type: 'meet-call-join',
+              callId: data.callId,
+              roomCode: data.roomCode,
+              joinUrl: data.joinUrl
+            });
           }
           return client.focus();
         }
       }
       // Open new window
+      if (isMeetCall && data.joinUrl) {
+        return self.clients.openWindow(data.joinUrl);
+      }
       return self.clients.openWindow(urlToOpen);
     })
   );

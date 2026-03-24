@@ -373,7 +373,7 @@
       // Start proactive token refresh to prevent silent logout
       startTokenRefresh();
       // Start WebSocket for real-time updates (all users)
-      if (!currentUser.is_platform_admin) connectWebSocket();
+      if (!currentUser.is_platform_admin) { connectWebSocket(); subscribeToPush(); }
     });
   }
 
@@ -1363,6 +1363,50 @@
   var _wsMaxDelay = 30000;
   var _wsIntentionalClose = false;
 
+  // ── Push notification subscription ──
+  function subscribeToPush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    api.get('/api/meet/push/vapid-key').then(function(r) {
+      if (!r.ok || !r.data || !r.data.vapidPublicKey) return;
+      var vapidKey = r.data.vapidPublicKey;
+      navigator.serviceWorker.ready.then(function(reg) {
+        reg.pushManager.getSubscription().then(function(sub) {
+          if (sub) {
+            // Already subscribed, ensure server knows
+            api.post('/api/meet/push/subscribe', sub.toJSON()).catch(function() {});
+            return;
+          }
+          // Convert VAPID key to Uint8Array
+          var padding = '='.repeat((4 - vapidKey.length % 4) % 4);
+          var base64 = (vapidKey + padding).replace(/-/g, '+').replace(/_/g, '/');
+          var raw = atob(base64);
+          var arr = new Uint8Array(raw.length);
+          for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+          reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: arr
+          }).then(function(newSub) {
+            api.post('/api/meet/push/subscribe', newSub.toJSON()).catch(function() {});
+          }).catch(function() {});
+        });
+      });
+    }).catch(function() {});
+  }
+
+  // Handle messages from Service Worker (e.g. join call from push notification)
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', function(evt) {
+      if (evt.data && evt.data.type === 'meet-call-join') {
+        if (evt.data.roomCode && meetState && meetState.configured) {
+          closeMeetPanel();
+          launchMeetCall(evt.data.roomCode);
+        } else if (evt.data.joinUrl) {
+          window.open(evt.data.joinUrl, '_blank');
+        }
+      }
+    });
+  }
+
   function startSupportCallWebSocket() {
     // Load support config
     api.get('/api/meet/support-config').then(function(r) {
@@ -1377,6 +1421,8 @@
         showSupportCallAlert(call);
       });
     }).catch(function() {});
+    // Subscribe to push notifications for background alerts
+    subscribeToPush();
     // Request notification permission
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
@@ -1480,6 +1526,63 @@
     if (_ws) { _ws.close(); _ws = null; }
     _wsIntentionalClose = false;
   }
+  // Sound presets for MEET call alerts
+  var RING_SOUNDS = {
+    classic: function(ctx, t) {
+      function beep(f, s, d) { var o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.value=f;o.type='sine';g.gain.setValueAtTime(0.15,t+s);g.gain.exponentialRampToValueAtTime(0.001,t+s+d);o.start(t+s);o.stop(t+s+d); }
+      beep(880,0,0.2); beep(1100,0.25,0.2); beep(880,0.5,0.2);
+    },
+    urgent: function(ctx, t) {
+      function beep(f, s, d) { var o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.value=f;o.type='square';g.gain.setValueAtTime(0.1,t+s);g.gain.exponentialRampToValueAtTime(0.001,t+s+d);o.start(t+s);o.stop(t+s+d); }
+      beep(1200,0,0.15); beep(900,0.2,0.15); beep(1200,0.4,0.15); beep(900,0.6,0.15);
+    },
+    gentle: function(ctx, t) {
+      function beep(f, s, d) { var o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.value=f;o.type='sine';g.gain.setValueAtTime(0.08,t+s);g.gain.exponentialRampToValueAtTime(0.001,t+s+d);o.start(t+s);o.stop(t+s+d); }
+      beep(523,0,0.4); beep(659,0.5,0.4); beep(784,1.0,0.5);
+    },
+    chime: function(ctx, t) {
+      function beep(f, s, d) { var o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.value=f;o.type='triangle';g.gain.setValueAtTime(0.12,t+s);g.gain.exponentialRampToValueAtTime(0.001,t+s+d);o.start(t+s);o.stop(t+s+d); }
+      beep(1047,0,0.3); beep(1319,0.15,0.3); beep(1568,0.3,0.4);
+    }
+  };
+
+  var _ringInterval = null;
+  var _ringCtx = null;
+  var _vibrationInterval = null;
+
+  function stopRinging() {
+    if (_ringInterval) { clearInterval(_ringInterval); _ringInterval = null; }
+    if (_ringCtx) { try { _ringCtx.close(); } catch(e) {} _ringCtx = null; }
+    if (_vibrationInterval) { clearInterval(_vibrationInterval); _vibrationInterval = null; }
+    if (navigator.vibrate) try { navigator.vibrate(0); } catch(e) {}
+  }
+
+  function startRinging() {
+    stopRinging();
+    var soundName = supportCallConfig.sound || 'classic';
+    var soundFn = RING_SOUNDS[soundName] || RING_SOUNDS.classic;
+    // Play sound if enabled
+    if (supportCallConfig.sound_enabled !== false) {
+      try {
+        _ringCtx = new (window.AudioContext || window.webkitAudioContext)();
+        soundFn(_ringCtx, _ringCtx.currentTime);
+        // Repeat every 3 seconds
+        _ringInterval = setInterval(function() {
+          if (_ringCtx) {
+            try { soundFn(_ringCtx, _ringCtx.currentTime); } catch(e) { stopRinging(); }
+          }
+        }, 3000);
+      } catch(e) {}
+    }
+    // Vibrate if enabled - repeat pattern
+    if (supportCallConfig.vibration_enabled !== false && navigator.vibrate) {
+      try { navigator.vibrate([200, 100, 200, 100, 400]); } catch(e) {}
+      _vibrationInterval = setInterval(function() {
+        if (navigator.vibrate) try { navigator.vibrate([200, 100, 200, 100, 400]); } catch(e) {}
+      }, 3000);
+    }
+  }
+
   function showSupportCallAlert(call) {
     var existing = document.getElementById('sca-' + call.id);
     if (existing) existing.remove();
@@ -1490,34 +1593,17 @@
       '<div class="sca-info"><strong>' + escapeHtml(call.caller_name || call.caller_email || 'User') + '</strong> from <strong>' + escapeHtml(call.tenant_name || 'Unknown') + '</strong></div>' +
       '<div class="sca-actions"><button class="sca-join">Join Call</button><button class="sca-dismiss">Dismiss</button></div>';
     document.body.appendChild(alert);
-    alert.querySelector('.sca-join').onclick = function() { joinSupportCall(call); alert.remove(); };
-    alert.querySelector('.sca-dismiss').onclick = function() { alert.remove(); };
+    alert.querySelector('.sca-join').onclick = function() { stopRinging(); joinSupportCall(call); alert.remove(); };
+    alert.querySelector('.sca-dismiss').onclick = function() { stopRinging(); alert.remove(); };
     // Auto-dismiss after configurable ring duration
     var ringMs = (supportCallConfig.ring_duration || 120) * 1000;
-    setTimeout(function() { if (document.getElementById('sca-' + call.id)) alert.remove(); }, ringMs);
-    // Play alert sound if enabled
-    if (supportCallConfig.sound_enabled !== false) {
-      try {
-        var ctx = new (window.AudioContext || window.webkitAudioContext)();
-        function beep(freq, start, dur) {
-          var osc = ctx.createOscillator(); var gain = ctx.createGain();
-          osc.connect(gain); gain.connect(ctx.destination);
-          osc.frequency.value = freq; osc.type = 'sine';
-          gain.gain.setValueAtTime(0.15, ctx.currentTime + start);
-          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
-          osc.start(ctx.currentTime + start); osc.stop(ctx.currentTime + start + dur);
-        }
-        beep(880, 0, 0.2); beep(1100, 0.25, 0.2); beep(880, 0.5, 0.2);
-      } catch(e) {}
-    }
-    // Vibrate if enabled and available
-    if (supportCallConfig.vibration_enabled !== false && navigator.vibrate) {
-      try { navigator.vibrate([200, 100, 200, 100, 400]); } catch(e) {}
-    }
+    setTimeout(function() { if (document.getElementById('sca-' + call.id)) { stopRinging(); alert.remove(); } }, ringMs);
+    // Start persistent ringing (sound + vibration)
+    startRinging();
   }
   function joinSupportCall(call) {
-    // Stop vibration on answer
-    if (navigator.vibrate) try { navigator.vibrate(0); } catch(e) {}
+    // Stop all ringing
+    stopRinging();
     api.post('/api/meet/support-calls/' + call.id + '/answer', {}).catch(function() {});
     if (!meetState.configured) {
       window.open(call.join_url, '_blank');

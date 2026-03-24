@@ -49,4 +49,9 @@ export const config = {
     maxAttempts: 3,
     rateLimitPerHour: 600,
   },
+  vapid: {
+    publicKey: getEnv('VAPID_PUBLIC_KEY'),
+    privateKey: getEnv('VAPID_PRIVATE_KEY'),
+    subject: getEnv('VAPID_SUBJECT', 'mailto:admin@xray.fractionate.ai'),
+  },
 };

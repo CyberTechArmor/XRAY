@@ -331,6 +331,7 @@ export interface SupportCallConfig {
   active_hours_end: string; // HH:MM
   sound_enabled: boolean;
   vibration_enabled: boolean;
+  sound: string; // ring sound preset: classic, urgent, gentle, chime
 }
 
 export async function getSupportCallConfig(): Promise<SupportCallConfig> {
@@ -339,7 +340,7 @@ export async function getSupportCallConfig(): Promise<SupportCallConfig> {
       `SELECT key, value FROM platform.platform_settings WHERE key IN (
         'support_enabled', 'support_ring_duration',
         'support_active_hours_enabled', 'support_active_hours_start', 'support_active_hours_end',
-        'support_sound_enabled', 'support_vibration_enabled'
+        'support_sound_enabled', 'support_vibration_enabled', 'support_sound'
       )`
     );
     const settings: Record<string, string> = {};
@@ -354,6 +355,7 @@ export async function getSupportCallConfig(): Promise<SupportCallConfig> {
       active_hours_end: settings.support_active_hours_end || '23:59',
       sound_enabled: settings.support_sound_enabled !== 'false', // default true
       vibration_enabled: settings.support_vibration_enabled !== 'false', // default true
+      sound: settings.support_sound || 'classic',
     };
   });
 }

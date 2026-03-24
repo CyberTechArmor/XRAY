@@ -169,7 +169,7 @@ router.post('/support-call', authenticateJWT, async (req, res, next) => {
       const { broadcastToAdmins } = await import('../ws');
       const callerInfo = await meetService.getUserInfo(req.user!.sub);
       const tenantName = await meetService.getTenantName(req.user!.tid);
-      broadcastToAdmins('support-call:new', {
+      const callData = {
         id: (supportCall as any).id,
         room_code: roomCode,
         join_url: roomResult.joinUrl,
@@ -179,7 +179,26 @@ router.post('/support-call', authenticateJWT, async (req, res, next) => {
         tenant_id: req.user!.tid,
         tenant_name: tenantName || 'Unknown',
         created_at: new Date().toISOString(),
-      });
+      };
+      broadcastToAdmins('support-call:new', callData);
+
+      // Also send web push to platform admins for background/mobile alerts
+      try {
+        const { sendPushToAdmins } = await import('../services/push.service');
+        await sendPushToAdmins({
+          title: 'Incoming Support Call',
+          body: (callerInfo?.name || callerInfo?.email || 'A user') + ' from ' + (tenantName || 'Unknown') + ' needs support',
+          tag: 'meet-call-' + (supportCall as any).id,
+          data: {
+            type: 'meet-call',
+            callId: (supportCall as any).id,
+            roomCode,
+            joinUrl: roomResult.joinUrl,
+          },
+          vibrate: [200, 100, 200, 100, 400, 200, 200, 100, 200, 100, 400],
+          requireInteraction: true,
+        });
+      } catch {}
     } catch {}
 
     res.status(201).json({
@@ -243,6 +262,45 @@ router.get('/members', authenticateJWT, async (req, res, next) => {
       data: members,
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Push subscriptions ──────────────────────────────────────────────────────
+
+// GET /push/vapid-key - get VAPID public key for push subscription
+router.get('/push/vapid-key', authenticateJWT, async (_req, res) => {
+  const { getVapidPublicKey } = await import('../services/push.service');
+  const key = getVapidPublicKey();
+  res.json({ ok: true, data: { vapidPublicKey: key } });
+});
+
+// POST /push/subscribe - save push subscription
+router.post('/push/subscribe', authenticateJWT, async (req, res, next) => {
+  try {
+    const { endpoint, keys } = req.body;
+    if (!endpoint || !keys || !keys.p256dh || !keys.auth) {
+      return res.status(400).json({ ok: false, error: { code: 'BAD_REQUEST', message: 'Invalid subscription' } });
+    }
+    const { saveSubscription } = await import('../services/push.service');
+    await saveSubscription(req.user!.sub, { endpoint, keys });
+    res.json({ ok: true, data: { message: 'Subscription saved' } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /push/unsubscribe - remove push subscription
+router.post('/push/unsubscribe', authenticateJWT, async (req, res, next) => {
+  try {
+    const { endpoint } = req.body;
+    if (!endpoint) {
+      return res.status(400).json({ ok: false, error: { code: 'BAD_REQUEST', message: 'Missing endpoint' } });
+    }
+    const { removeSubscription } = await import('../services/push.service');
+    await removeSubscription(req.user!.sub, endpoint);
+    res.json({ ok: true, data: { message: 'Subscription removed' } });
   } catch (err) {
     next(err);
   }
