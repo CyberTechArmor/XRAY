@@ -14,6 +14,10 @@ services:
       - WEBAUTHN_RP_ID=${RP_ID:-localhost}
       - WEBAUTHN_ORIGIN=${ORIGIN:-http://localhost:3000}
       - NODE_ENV=${NODE_ENV:-production}
+      # Web Push (VAPID) for MEET call mobile notifications
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-}
       # Fallback SMTP for first boot (before admin UI config)
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}
