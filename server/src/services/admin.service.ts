@@ -307,7 +307,7 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
 
 export async function deleteDashboard(dashboardId: string) {
   return withClient(async (client) => {
-    await bypassRLS(client);
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       'DELETE FROM platform.dashboards WHERE id = $1 RETURNING id, name, tenant_id',
       [dashboardId]
