@@ -80,7 +80,7 @@ fi
 echo "  [4/6] Rebuilding backend..."
 if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
   cd "$SCRIPT_DIR"
-  docker compose build --quiet 2>/dev/null && ok "Backend rebuilt" || warn "Docker build failed"
+  docker compose build --no-cache 2>&1 | tail -5 && ok "Backend rebuilt" || warn "Docker build failed"
   docker compose up -d 2>/dev/null && ok "Backend restarted" || warn "Docker restart failed"
 else
   warn "No docker-compose.yml found — skipping backend rebuild"

@@ -229,6 +229,14 @@ export async function getUserInfo(userId: string): Promise<{ name: string | null
   });
 }
 
+export async function getTenantName(tenantId: string): Promise<string | null> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query('SELECT name FROM platform.tenants WHERE id = $1', [tenantId]);
+    return result.rows.length > 0 ? result.rows[0].name : null;
+  });
+}
+
 export function getJoinUrl(serverUrl: string, roomName: string, participantName?: string): string {
   const params = new URLSearchParams({ room: roomName });
   if (participantName) params.set('name', participantName);

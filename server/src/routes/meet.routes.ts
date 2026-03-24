@@ -153,15 +153,20 @@ router.post('/support-call', authenticateJWT, async (req, res, next) => {
       }).catch(() => {});
     }
 
-    // Broadcast to platform admins via WebSocket
+    // Broadcast to platform admins via WebSocket (with caller info)
     try {
       const { broadcastToAdmins } = await import('../ws');
+      const callerInfo = await meetService.getUserInfo(req.user!.sub);
+      const tenantName = await meetService.getTenantName(req.user!.tid);
       broadcastToAdmins('support-call:new', {
         id: (supportCall as any).id,
         room_code: roomCode,
         join_url: roomResult.joinUrl,
         caller_id: req.user!.sub,
+        caller_name: callerInfo?.name || null,
+        caller_email: callerInfo?.email || req.user!.sub,
         tenant_id: req.user!.tid,
+        tenant_name: tenantName || 'Unknown',
         created_at: new Date().toISOString(),
       });
     } catch {}
