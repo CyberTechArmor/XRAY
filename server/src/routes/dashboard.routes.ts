@@ -220,11 +220,30 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
   }
 });
 
+// GET /:id/access - list users with access to dashboard (JWT, dashboards.manage)
+router.get('/:id/access', authenticateJWT, requirePermission('dashboards.manage'), async (req, res, next) => {
+  try {
+    const result = await dashboardService.getAccessList(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /:id/access - grant access to dashboard (JWT, dashboards.manage)
 router.post('/:id/access', authenticateJWT, requirePermission('dashboards.manage'), async (req, res, next) => {
   try {
     const data = validateBody(dashboardAccessSchema, req.body);
     await dashboardService.grantAccess(req.params.id, data.userId, req.user!.sub, req.user!.tid);
+    // Broadcast visibility change via WebSocket
+    try {
+      const { sendToUser } = await import('../ws');
+      sendToUser(data.userId, 'dashboard:access-granted', { dashboardId: req.params.id });
+    } catch {}
     res.status(201).json({
       ok: true,
       data: { message: 'Access granted' },
@@ -239,6 +258,11 @@ router.post('/:id/access', authenticateJWT, requirePermission('dashboards.manage
 router.delete('/:id/access/:uid', authenticateJWT, requirePermission('dashboards.manage'), async (req, res, next) => {
   try {
     await dashboardService.revokeAccess(req.params.id, req.params.uid);
+    // Broadcast visibility change via WebSocket
+    try {
+      const { sendToUser } = await import('../ws');
+      sendToUser(req.params.uid, 'dashboard:access-revoked', { dashboardId: req.params.id });
+    } catch {}
     res.json({
       ok: true,
       data: { message: 'Access revoked' },
