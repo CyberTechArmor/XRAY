@@ -126,31 +126,9 @@ ENCRYPTION_KEY=$(openssl rand -hex 32)
 DB_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
 STRIPE_WEBHOOK_SECRET=""
 
-# Generate VAPID keys for Web Push notifications (MEET call alerts on mobile)
-# Uses openssl to generate P-256 ECDSA keys (no node required on host)
-generate_vapid_keys() {
-  local privkey pubkey
-  privkey=$(openssl ecparam -genkey -name prime256v1 -noout 2>/dev/null | openssl ec 2>/dev/null)
-  if [ -z "$privkey" ]; then return 1; fi
-  # Extract raw private key (32 bytes) and public key (65 bytes) as url-safe base64
-  local prv_b64 pub_b64
-  prv_b64=$(echo "$privkey" | openssl ec -outform DER 2>/dev/null | tail -c +8 | head -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
-  pub_b64=$(echo "$privkey" | openssl ec -pubout -outform DER 2>/dev/null | tail -c 65 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
-  if [ -n "$prv_b64" ] && [ -n "$pub_b64" ]; then
-    echo "$pub_b64 $prv_b64"
-  fi
-}
-VAPID_KEYS=$(generate_vapid_keys 2>/dev/null || echo "")
-
-if [ -n "$VAPID_KEYS" ] && [ "$(echo "$VAPID_KEYS" | wc -w)" -eq 2 ]; then
-  VAPID_PUBLIC_KEY=$(echo "$VAPID_KEYS" | awk '{print $1}')
-  VAPID_PRIVATE_KEY=$(echo "$VAPID_KEYS" | awk '{print $2}')
-  ok "VAPID keys generated (Web Push notifications enabled)"
-else
-  VAPID_PUBLIC_KEY=""
-  VAPID_PRIVATE_KEY=""
-  warn "VAPID keys not generated — set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in .env later for push notifications"
-fi
+# VAPID keys will be generated after Docker launch (step 8b)
+VAPID_PUBLIC_KEY=""
+VAPID_PRIVATE_KEY=""
 
 ok "JWT secret generated (64 chars)"
 ok "Encryption key generated (256-bit hex)"
@@ -187,11 +165,6 @@ ORIGIN=https://${DOMAIN}
 
 # ─── Stripe (configure later in admin UI) ───
 STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
-
-# ─── Web Push (VAPID) — for MEET call mobile notifications ───
-VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}
-VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}
-VAPID_SUBJECT=mailto:${ADMIN_EMAIL}
 
 # ─── SMTP (configure later in admin UI or set here) ───
 SMTP_HOST=
@@ -363,6 +336,38 @@ info "Building Docker images..."
 docker compose up -d --build
 
 ok "Containers started"
+
+# ── Step 8b: Generate VAPID keys using server container ──
+info "Generating VAPID keys for push notifications..."
+# Wait briefly for server container to be ready
+sleep 2
+SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
+if [ -n "$SERVER_CONTAINER" ]; then
+  VAPID_JSON=$(docker exec "$SERVER_CONTAINER" npx web-push generate-vapid-keys --json 2>/dev/null || echo "")
+  if [ -n "$VAPID_JSON" ]; then
+    VAPID_PUBLIC_KEY=$(echo "$VAPID_JSON" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4)
+    VAPID_PRIVATE_KEY=$(echo "$VAPID_JSON" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4)
+    if [ -n "$VAPID_PUBLIC_KEY" ] && [ -n "$VAPID_PRIVATE_KEY" ]; then
+      # Append VAPID keys to .env
+      cat >> "$SCRIPT_DIR/.env" <<VAPIDEOF
+
+# ─── Web Push (VAPID) — for MEET call mobile notifications ───
+VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}
+VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}
+VAPID_SUBJECT=mailto:${ADMIN_EMAIL}
+VAPIDEOF
+      # Restart server to pick up new env vars
+      docker compose restart server >/dev/null 2>&1 || true
+      ok "VAPID keys generated and server restarted"
+    else
+      warn "Could not parse VAPID keys — configure manually in .env later"
+    fi
+  else
+    warn "Could not generate VAPID keys — configure manually in .env later"
+  fi
+else
+  warn "Server container not found — configure VAPID keys manually in .env later"
+fi
 
 # ── Step 9: Run database migrations ──────────────────────
 step 9 "Running database migrations"
