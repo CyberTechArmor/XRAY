@@ -106,6 +106,25 @@ router.post('/', authenticateJWT, async (req, res, next) => {
     const result = await inboxService.sendMessage(
       req.user!.sub, req.user!.tid, req.user!.is_platform_admin, data
     );
+
+    // Notify all thread participants via WebSocket (except sender)
+    try {
+      const { sendToUser } = await import('../ws');
+      const participants = await inboxService.getThreadParticipants(result.threadId);
+      for (const pid of participants) {
+        if (pid === req.user!.sub) continue; // don't notify sender
+        const unreadCount = await inboxService.getUnreadCount(pid);
+        sendToUser(pid, 'inbox:new-message', {
+          threadId: result.threadId,
+          messageId: result.messageId,
+          subject: data.subject || null,
+          senderName: req.user!.sub,
+          preview: data.body.substring(0, 120),
+          unreadCount,
+        });
+      }
+    } catch {}
+
     res.status(201).json({
       ok: true,
       data: result,

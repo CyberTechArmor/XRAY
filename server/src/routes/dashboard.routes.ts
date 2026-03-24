@@ -256,6 +256,17 @@ router.post('/:id/share', authenticateJWT, async (req, res, next) => {
     const result = await dashboardService.makePublic(req.params.id, tenantId);
     const shareDomain = (await getSetting('platform.share_domain')) || (await getSetting('platform.domain')) || config.webauthn.origin;
     const shareUrl = `${shareDomain.replace(/\/+$/, '')}/share/${result.public_token}`;
+
+    // Dispatch dashboard.published webhook event
+    import('../services/webhook.service').then(wh => {
+      wh.dispatchEvent(tenantId, 'dashboard.published', {
+        dashboardId: req.params.id,
+        publicToken: result.public_token,
+        shareUrl,
+        userId: req.user!.sub,
+      });
+    }).catch(() => {});
+
     res.json({
       ok: true,
       data: { public_token: result.public_token, share_url: shareUrl },

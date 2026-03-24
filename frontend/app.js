@@ -1393,6 +1393,28 @@
         } else if (msg.type === 'support-call:answered' && msg.data) {
           var el = document.getElementById('sca-' + msg.data.id);
           if (el) el.remove();
+        } else if (msg.type === 'inbox:new-message' && msg.data) {
+          // Update unread badge immediately
+          if (typeof msg.data.unreadCount === 'number') {
+            updateInboxBadge(msg.data.unreadCount);
+          } else {
+            fetchInboxUnread();
+          }
+          // Show toast notification
+          if (window.__xrayToast) {
+            window.__xrayToast('New message in inbox', 'info');
+          }
+          // Browser notification
+          if ('Notification' in window && Notification.permission === 'granted') {
+            var n = new Notification('XRay Inbox', {
+              body: msg.data.preview || 'You have a new message',
+              icon: '/icon-192.png',
+              tag: 'inbox-' + msg.data.threadId
+            });
+            n.onclick = function() { window.focus(); n.close(); };
+          }
+          // If inbox view is currently open, refresh it
+          if (window.__xrayRefreshInboxView) window.__xrayRefreshInboxView();
         }
       } catch(e) {}
     };

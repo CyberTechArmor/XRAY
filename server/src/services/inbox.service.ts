@@ -319,6 +319,18 @@ export async function getTenantMembers(tenantId: string): Promise<any[]> {
   });
 }
 
+// ── Get thread participant user IDs ──
+export async function getThreadParticipants(threadId: string): Promise<string[]> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT user_id FROM platform.inbox_thread_participants WHERE thread_id = $1`,
+      [threadId]
+    );
+    return result.rows.map((r: any) => r.user_id);
+  });
+}
+
 // ── Get unread count ──
 export async function getUnreadCount(userId: string): Promise<number> {
   return withClient(async (client) => {

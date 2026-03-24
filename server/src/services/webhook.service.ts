@@ -122,6 +122,42 @@ export async function regenerateSecret(id: string, tenantId: string): Promise<{ 
 }
 
 /**
+ * Send an HTTP POST to a single webhook and update its status.
+ */
+async function sendWebhook(wh: { id: string; target_url: string; secret: string | null }, event: string, payload: Record<string, unknown>): Promise<boolean> {
+  const body = JSON.stringify({ event, data: payload, timestamp: new Date().toISOString(), webhook_id: wh.id });
+  const signature = wh.secret
+    ? crypto.createHmac('sha256', wh.secret).update(body).digest('hex')
+    : '';
+
+  try {
+    const res = await fetch(wh.target_url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Webhook-Event': event,
+        'X-Webhook-Signature': signature,
+        'User-Agent': 'XRay-Webhook/1.0',
+      },
+      body,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.ok) {
+      await getPool().query(`UPDATE platform.webhooks SET last_triggered_at = now(), failure_count = 0 WHERE id = $1`, [wh.id]).catch(() => {});
+      return true;
+    } else {
+      console.error(`Webhook ${wh.id} delivery failed: ${res.status} ${res.statusText}`);
+      await getPool().query(`UPDATE platform.webhooks SET failure_count = failure_count + 1, updated_at = now() WHERE id = $1`, [wh.id]).catch(() => {});
+      return false;
+    }
+  } catch (err) {
+    console.error(`Webhook ${wh.id} delivery error:`, err instanceof Error ? err.message : err);
+    await getPool().query(`UPDATE platform.webhooks SET failure_count = failure_count + 1, updated_at = now() WHERE id = $1`, [wh.id]).catch(() => {});
+    return false;
+  }
+}
+
+/**
  * Dispatch an event to all matching active webhooks for a tenant.
  * Signs the payload with HMAC-SHA256 using the webhook secret.
  */
@@ -141,29 +177,30 @@ export async function dispatchEvent(tenantId: string, event: string, payload: Re
     return events.includes(event) || events.includes('*');
   });
 
-  for (const wh of matching) {
-    const body = JSON.stringify({ event, data: payload, timestamp: new Date().toISOString(), webhook_id: wh.id });
-    const signature = wh.secret
-      ? crypto.createHmac('sha256', wh.secret).update(body).digest('hex')
-      : '';
+  // Fire all webhooks concurrently (fire-and-forget from caller's perspective)
+  const promises = matching.map(wh => sendWebhook(wh, event, payload));
+  Promise.allSettled(promises).catch(() => {});
+}
 
-    fetch(wh.target_url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Webhook-Event': event,
-        'X-Webhook-Signature': signature,
-      },
-      body,
-      signal: AbortSignal.timeout(15_000),
-    }).then(async (res) => {
-      if (res.ok) {
-        getPool().query(`UPDATE platform.webhooks SET last_triggered_at = now(), failure_count = 0 WHERE id = $1`, [wh.id]).catch(() => {});
-      } else {
-        getPool().query(`UPDATE platform.webhooks SET failure_count = failure_count + 1, updated_at = now() WHERE id = $1`, [wh.id]).catch(() => {});
-      }
-    }).catch(() => {
-      getPool().query(`UPDATE platform.webhooks SET failure_count = failure_count + 1, updated_at = now() WHERE id = $1`, [wh.id]).catch(() => {});
-    });
-  }
+/**
+ * Send a test event directly to a specific webhook, bypassing event filter.
+ */
+export async function testWebhook(webhookId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+  const wh = await withClient(async (client) => {
+    await bypassRLS(client);
+    const result = await client.query(
+      `SELECT id, target_url, secret FROM platform.webhooks WHERE id = $1 AND tenant_id = $2 AND is_active = true`,
+      [webhookId, tenantId]
+    );
+    return result.rows[0] || null;
+  });
+
+  if (!wh) return { success: false, error: 'Webhook not found or inactive' };
+
+  const ok = await sendWebhook(wh, 'webhook.test', {
+    message: 'This is a test event from XRay',
+    webhook_id: webhookId,
+  });
+
+  return ok ? { success: true } : { success: false, error: 'Delivery failed — check target URL and server logs' };
 }
