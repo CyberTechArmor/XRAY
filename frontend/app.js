@@ -1366,31 +1366,45 @@
   // ── Push notification subscription ──
   function subscribeToPush() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
-    api.get('/api/meet/push/vapid-key').then(function(r) {
-      if (!r.ok || !r.data || !r.data.vapidPublicKey) return;
-      var vapidKey = r.data.vapidPublicKey;
-      navigator.serviceWorker.ready.then(function(reg) {
-        reg.pushManager.getSubscription().then(function(sub) {
-          if (sub) {
-            // Already subscribed, ensure server knows
-            api.post('/api/meet/push/subscribe', sub.toJSON()).catch(function() {});
-            return;
-          }
-          // Convert VAPID key to Uint8Array
-          var padding = '='.repeat((4 - vapidKey.length % 4) % 4);
-          var base64 = (vapidKey + padding).replace(/-/g, '+').replace(/_/g, '/');
-          var raw = atob(base64);
-          var arr = new Uint8Array(raw.length);
-          for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-          reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: arr
-          }).then(function(newSub) {
-            api.post('/api/meet/push/subscribe', newSub.toJSON()).catch(function() {});
-          }).catch(function() {});
+    // Must have notification permission for push to work
+    if (!('Notification' in window)) return;
+    var doSubscribe = function() {
+      if (Notification.permission !== 'granted') return;
+      api.get('/api/meet/push/vapid-key').then(function(r) {
+        if (!r.ok || !r.data || !r.data.vapidPublicKey) return;
+        var vapidKey = r.data.vapidPublicKey;
+        navigator.serviceWorker.ready.then(function(reg) {
+          reg.pushManager.getSubscription().then(function(sub) {
+            if (sub) {
+              // Already subscribed, ensure server knows
+              api.post('/api/meet/push/subscribe', sub.toJSON()).catch(function() {});
+              return;
+            }
+            // Convert VAPID key to Uint8Array
+            var padding = '='.repeat((4 - vapidKey.length % 4) % 4);
+            var base64 = (vapidKey + padding).replace(/-/g, '+').replace(/_/g, '/');
+            var raw = atob(base64);
+            var arr = new Uint8Array(raw.length);
+            for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+            reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: arr
+            }).then(function(newSub) {
+              api.post('/api/meet/push/subscribe', newSub.toJSON()).catch(function() {});
+            }).catch(function(err) {
+              console.warn('Push subscribe failed:', err);
+            });
+          });
         });
+      }).catch(function() {});
+    };
+    if (Notification.permission === 'granted') {
+      doSubscribe();
+    } else if (Notification.permission === 'default') {
+      Notification.requestPermission().then(function(perm) {
+        if (perm === 'granted') doSubscribe();
       });
-    }).catch(function() {});
+    }
   }
 
   // Handle messages from Service Worker (e.g. join call from push notification)
@@ -1423,10 +1437,6 @@
     }).catch(function() {});
     // Subscribe to push notifications for background alerts
     subscribeToPush();
-    // Request notification permission
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
     connectWebSocket();
   }
 
