@@ -127,22 +127,20 @@ DB_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
 STRIPE_WEBHOOK_SECRET=""
 
 # Generate VAPID keys for Web Push notifications (MEET call alerts on mobile)
-if command -v node &>/dev/null; then
-  VAPID_KEYS=$(node -e "
-    try {
-      const wp = require('$SCRIPT_DIR/server/node_modules/web-push');
-      const keys = wp.generateVAPIDKeys();
-      console.log(keys.publicKey + ' ' + keys.privateKey);
-    } catch(e) {
-      // Fallback: generate P-256 ECDSA key pair with openssl
-      const { execSync } = require('child_process');
-      const key = execSync('openssl ecparam -genkey -name prime256v1 -noout 2>/dev/null | openssl ec 2>/dev/null').toString();
-      console.log('');
-    }
-  " 2>/dev/null || echo "")
-else
-  VAPID_KEYS=""
-fi
+# Uses openssl to generate P-256 ECDSA keys (no node required on host)
+generate_vapid_keys() {
+  local privkey pubkey
+  privkey=$(openssl ecparam -genkey -name prime256v1 -noout 2>/dev/null | openssl ec 2>/dev/null)
+  if [ -z "$privkey" ]; then return 1; fi
+  # Extract raw private key (32 bytes) and public key (65 bytes) as url-safe base64
+  local prv_b64 pub_b64
+  prv_b64=$(echo "$privkey" | openssl ec -outform DER 2>/dev/null | tail -c +8 | head -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+  pub_b64=$(echo "$privkey" | openssl ec -pubout -outform DER 2>/dev/null | tail -c 65 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+  if [ -n "$prv_b64" ] && [ -n "$pub_b64" ]; then
+    echo "$pub_b64 $prv_b64"
+  fi
+}
+VAPID_KEYS=$(generate_vapid_keys 2>/dev/null || echo "")
 
 if [ -n "$VAPID_KEYS" ] && [ "$(echo "$VAPID_KEYS" | wc -w)" -eq 2 ]; then
   VAPID_PUBLIC_KEY=$(echo "$VAPID_KEYS" | awk '{print $1}')

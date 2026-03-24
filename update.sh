@@ -35,16 +35,18 @@ fi
 if [ -f "$SCRIPT_DIR/.env" ]; then
   if ! grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
     echo "  [1b] Generating VAPID keys for push notifications..."
-    VAPID_KEYS=""
-    if command -v node &>/dev/null; then
-      VAPID_KEYS=$(node -e "
-        try {
-          const wp = require('$SCRIPT_DIR/server/node_modules/web-push');
-          const keys = wp.generateVAPIDKeys();
-          console.log(keys.publicKey + ' ' + keys.privateKey);
-        } catch(e) { console.log(''); }
-      " 2>/dev/null || echo "")
-    fi
+    generate_vapid_keys() {
+      local privkey pubkey
+      privkey=$(openssl ecparam -genkey -name prime256v1 -noout 2>/dev/null | openssl ec 2>/dev/null)
+      if [ -z "$privkey" ]; then return 1; fi
+      local prv_b64 pub_b64
+      prv_b64=$(echo "$privkey" | openssl ec -outform DER 2>/dev/null | tail -c +8 | head -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+      pub_b64=$(echo "$privkey" | openssl ec -pubout -outform DER 2>/dev/null | tail -c 65 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+      if [ -n "$prv_b64" ] && [ -n "$pub_b64" ]; then
+        echo "$pub_b64 $prv_b64"
+      fi
+    }
+    VAPID_KEYS=$(generate_vapid_keys 2>/dev/null || echo "")
     if [ -n "$VAPID_KEYS" ] && [ "$(echo "$VAPID_KEYS" | wc -w)" -eq 2 ]; then
       VAPID_PUB=$(echo "$VAPID_KEYS" | awk '{print $1}')
       VAPID_PRV=$(echo "$VAPID_KEYS" | awk '{print $2}')
