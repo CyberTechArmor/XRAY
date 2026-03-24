@@ -110,16 +110,12 @@ while [ -z "$ADMIN_EMAIL" ]; do
   read -rp "  Admin email cannot be empty: " ADMIN_EMAIL
 done
 
-read -rp "  Push notifications email (for VAPID/Web Push) [${ADMIN_EMAIL}]: " VAPID_EMAIL
-VAPID_EMAIL="${VAPID_EMAIL:-$ADMIN_EMAIL}"
-
 DEFAULT_PORT=$(find_available_port 3000)
 read -rp "  Application port [${DEFAULT_PORT}]: " APP_PORT
 APP_PORT="${APP_PORT:-$DEFAULT_PORT}"
 
 ok "Domain: ${DOMAIN}"
 ok "Admin email: ${ADMIN_EMAIL}"
-ok "Push email: ${VAPID_EMAIL}"
 ok "App port: ${APP_PORT}"
 
 # ── Step 4: Secret Generation ──────────────────────────────
@@ -197,7 +193,7 @@ STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
 # ─── Web Push (VAPID) — for MEET call mobile notifications ───
 VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}
 VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}
-VAPID_SUBJECT=mailto:${VAPID_EMAIL}
+VAPID_SUBJECT=mailto:${ADMIN_EMAIL}
 
 # ─── SMTP (configure later in admin UI or set here) ───
 SMTP_HOST=
