@@ -173,7 +173,11 @@ export async function dispatchEvent(tenantId: string, event: string, payload: Re
   });
 
   const matching = webhooks.filter(w => {
-    const events: string[] = w.events || [];
+    // PostgreSQL TEXT[] may come back as a string "{a,b,c}" depending on driver config
+    let events: string[] = w.events || [];
+    if (typeof events === 'string') {
+      events = (events as string).replace(/^\{|\}$/g, '').split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
     return events.includes(event) || events.includes('*');
   });
 

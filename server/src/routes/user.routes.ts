@@ -206,6 +206,32 @@ router.get('/', authenticateJWT, requirePermission('users.view'), async (req, re
   }
 });
 
+// GET /:id/dashboard-access - list dashboards a user has access to (JWT, users.manage)
+router.get('/:id/dashboard-access', authenticateJWT, requirePermission('users.manage'), async (req, res, next) => {
+  try {
+    const { withClient } = await import('../db/connection');
+    const result = await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const r = await client.query(
+        `SELECT da.dashboard_id, d.name, d.status, da.created_at as granted_at
+         FROM platform.dashboard_access da
+         JOIN platform.dashboards d ON d.id = da.dashboard_id
+         WHERE da.user_id = $1
+         ORDER BY d.name`,
+        [req.params.id]
+      );
+      return r.rows;
+    });
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PATCH /:id - update user (JWT, users.manage)
 router.patch('/:id', authenticateJWT, requirePermission('users.manage'), async (req, res, next) => {
   try {
