@@ -542,6 +542,25 @@ export async function getViewCount(dashboardId: string): Promise<number> {
   });
 }
 
+export async function getViewHistory(
+  dashboardId: string,
+  limit: number = 50
+): Promise<Array<{ user_id: string; email: string; name: string; viewed_at: string }>> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT dv.user_id, u.email, u.name, dv.viewed_at
+       FROM platform.dashboard_views dv
+       JOIN platform.users u ON u.id = dv.user_id
+       WHERE dv.dashboard_id = $1
+       ORDER BY dv.viewed_at DESC
+       LIMIT $2`,
+      [dashboardId, limit]
+    );
+    return result.rows;
+  });
+}
+
 // ─── Comments ───────────────────────────────────────────────────────────────
 
 export async function listComments(

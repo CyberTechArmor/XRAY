@@ -363,6 +363,22 @@ router.get('/:id/share', authenticateJWT, async (req, res, next) => {
   }
 });
 
+// ─── View History ────────────────────────────────────────────────────────────
+
+// GET /:id/views - list view history for a dashboard (JWT, dashboards.manage)
+router.get('/:id/views', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
+  try {
+    const result = await dashboardService.getViewHistory(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── Comments ───────────────────────────────────────────────────────────────
 
 // GET /:id/comments - list comments with pagination
