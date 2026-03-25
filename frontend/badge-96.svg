@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
-  <g transform="translate(48,48)">
-    <circle r="7" fill="#fff"/>
-    <path d="M-6,-10.4L-14.4,-25A29,29,0,0,1,14.4,-25L6,-10.4A12,12,0,0,0,-6,-10.4Z" fill="#fff"/>
-    <path d="M-6,-10.4L-14.4,-25A29,29,0,0,1,14.4,-25L6,-10.4A12,12,0,0,0,-6,-10.4Z" fill="#fff" transform="rotate(120)"/>
-    <path d="M-6,-10.4L-14.4,-25A29,29,0,0,1,14.4,-25L6,-10.4A12,12,0,0,0,-6,-10.4Z" fill="#fff" transform="rotate(240)"/>
-  </g>
-</svg>
