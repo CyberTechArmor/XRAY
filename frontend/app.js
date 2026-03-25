@@ -1477,15 +1477,7 @@
           if (knownSupportCalls[call.id] || dismissedSupportCalls[call.id]) return;
           knownSupportCalls[call.id] = true;
           showSupportCallAlert(call);
-          // Browser notification
-          if ('Notification' in window && Notification.permission === 'granted') {
-            var n = new Notification('XRay Support Call', {
-              body: (call.caller_name || call.caller_email || call.caller_id || 'A user') + ' needs support',
-              icon: '/icon-192.png',
-              tag: 'meet-call-' + call.id
-            });
-            n.onclick = function() { window.focus(); joinSupportCall(call); n.close(); };
-          }
+          // System notification is handled by the service worker via push — no need to duplicate here
         } else if (msg.type === 'support-call:answered' && msg.data) {
           dismissSupportCall(msg.data.id);
           var el = document.getElementById('sca-' + msg.data.id);
@@ -1501,14 +1493,14 @@
           if (window.__xrayToast) {
             window.__xrayToast('New message in inbox', 'info');
           }
-          // Browser notification
+          // Browser notification for inbox (no server-side push for inbox yet)
           if ('Notification' in window && Notification.permission === 'granted') {
-            var n = new Notification('XRay Inbox', {
+            var inboxN = new Notification('XRay Inbox', {
               body: msg.data.preview || 'You have a new message',
               icon: '/icon-192.png',
               tag: 'inbox-' + msg.data.threadId
             });
-            n.onclick = function() { window.focus(); n.close(); };
+            inboxN.onclick = function() { window.focus(); inboxN.close(); };
           }
           // If inbox view is currently open, refresh it
           if (window.__xrayRefreshInboxView) window.__xrayRefreshInboxView();
