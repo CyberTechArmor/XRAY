@@ -178,6 +178,36 @@ export async function listAllFilesAdmin(
   });
 }
 
+// ── Share file to a tenant (creates a linked record pointing to same stored file) ──
+export async function shareFileToTenant(
+  fileId: string,
+  targetTenantId: string,
+  sharedBy: string
+): Promise<FileRecord> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const orig = await client.query(`SELECT * FROM platform.file_uploads WHERE id = $1`, [fileId]);
+    if (orig.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'File not found');
+    const f = orig.rows[0];
+    // Don't duplicate if already exists for this tenant with same stored_name
+    const existing = await client.query(
+      `SELECT id FROM platform.file_uploads WHERE tenant_id = $1 AND stored_name = $2`,
+      [targetTenantId, f.stored_name]
+    );
+    if (existing.rows.length > 0) {
+      return (await client.query(`SELECT * FROM platform.file_uploads WHERE id = $1`, [existing.rows[0].id])).rows[0];
+    }
+    const result = await client.query(
+      `INSERT INTO platform.file_uploads
+        (tenant_id, uploaded_by, original_name, stored_name, mime_type, size_bytes, context_type, context_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 'general', NULL)
+       RETURNING *`,
+      [targetTenantId, sharedBy, f.original_name, f.stored_name, f.mime_type, f.size_bytes]
+    );
+    return result.rows[0];
+  });
+}
+
 // ── Delete file record ──
 export async function deleteFileRecord(fileId: string): Promise<{ id: string }> {
   return withClient(async (client) => {

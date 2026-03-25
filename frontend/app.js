@@ -768,6 +768,8 @@
 
   function onBundleReady() {
     var hash = window.location.hash.replace('#', '').split('?')[0];
+    // Skip meet-join hashes — they're handled by checkMeetJoinHash(), not the view router
+    if (hash.indexOf('meet-join/') === 0) return;
     navigateTo(hash || 'dashboard_list');
   }
 
@@ -857,6 +859,7 @@
   window.onhashchange = function() {
     if (!accessToken) return;
     var hash = window.location.hash.replace('#', '').split('?')[0];
+    if (hash && hash.indexOf('meet-join/') === 0) return; // handled by checkMeetJoinHash
     if (hash && hash !== currentView) navigateTo(hash);
   };
 
