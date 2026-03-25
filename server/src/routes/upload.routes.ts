@@ -248,6 +248,27 @@ router.delete('/:id', authenticateJWT, async (req, res, next) => {
   }
 });
 
+// POST /:id/share - share file to a tenant (platform admin only)
+router.post('/:id/share', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      throw new AppError(403, 'FORBIDDEN', 'Platform admin access required');
+    }
+    const tenantId = req.body.tenantId;
+    if (!tenantId) {
+      throw new AppError(400, 'BAD_REQUEST', 'tenantId is required');
+    }
+    const shared = await uploadService.shareFileToTenant(req.params.id, tenantId, req.user!.sub);
+    res.status(201).json({
+      ok: true,
+      data: shared,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /context/:contextType/:contextId - list files for a context
 router.get('/context/:contextType/:contextId', authenticateJWT, async (req, res, next) => {
   try {
