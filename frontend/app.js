@@ -374,6 +374,8 @@
       startTokenRefresh();
       // Start WebSocket for real-time updates (all users)
       if (!currentUser.is_platform_admin) { connectWebSocket(); subscribeToPush(); }
+      // Check if we were opened from a push notification with a meet-join hash
+      checkMeetJoinHash();
     });
   }
 
@@ -1380,61 +1382,148 @@
   var _wsIntentionalClose = false;
 
   // ── Push notification subscription ──
-  function subscribeToPush() {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
-    // Must have notification permission for push to work
-    if (!('Notification' in window)) return;
-    var doSubscribe = function() {
-      if (Notification.permission !== 'granted') return;
-      api.get('/api/meet/push/vapid-key').then(function(r) {
-        if (!r.ok || !r.data || !r.data.vapidPublicKey) return;
-        var vapidKey = r.data.vapidPublicKey;
-        navigator.serviceWorker.ready.then(function(reg) {
-          reg.pushManager.getSubscription().then(function(sub) {
-            if (sub) {
-              // Already subscribed, ensure server knows
-              api.post('/api/meet/push/subscribe', sub.toJSON()).catch(function() {});
-              return;
-            }
-            // Convert VAPID key to Uint8Array
-            var padding = '='.repeat((4 - vapidKey.length % 4) % 4);
-            var base64 = (vapidKey + padding).replace(/-/g, '+').replace(/_/g, '/');
-            var raw = atob(base64);
-            var arr = new Uint8Array(raw.length);
-            for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-            reg.pushManager.subscribe({
-              userVisibleOnly: true,
-              applicationServerKey: arr
-            }).then(function(newSub) {
-              api.post('/api/meet/push/subscribe', newSub.toJSON()).catch(function() {});
-            }).catch(function(err) {
-              console.warn('Push subscribe failed:', err);
-            });
+  function pushSubscribeWithKey() {
+    // Actually subscribe to push after permission is granted
+    api.get('/api/meet/push/vapid-key').then(function(r) {
+      if (!r.ok || !r.data || !r.data.vapidPublicKey) return;
+      var vapidKey = r.data.vapidPublicKey;
+      navigator.serviceWorker.ready.then(function(reg) {
+        reg.pushManager.getSubscription().then(function(sub) {
+          if (sub) {
+            // Already subscribed, ensure server knows
+            api.post('/api/meet/push/subscribe', sub.toJSON()).catch(function() {});
+            return;
+          }
+          // Convert VAPID key to Uint8Array
+          var padding = '='.repeat((4 - vapidKey.length % 4) % 4);
+          var base64 = (vapidKey + padding).replace(/-/g, '+').replace(/_/g, '/');
+          var raw = atob(base64);
+          var arr = new Uint8Array(raw.length);
+          for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+          reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: arr
+          }).then(function(newSub) {
+            api.post('/api/meet/push/subscribe', newSub.toJSON()).catch(function() {});
+          }).catch(function(err) {
+            console.warn('Push subscribe failed:', err);
           });
         });
-      }).catch(function() {});
-    };
-    if (Notification.permission === 'granted') {
-      doSubscribe();
-    } else if (Notification.permission === 'default') {
-      Notification.requestPermission().then(function(perm) {
-        if (perm === 'granted') doSubscribe();
       });
+    }).catch(function() {});
+  }
+
+  function subscribeToPush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'granted') {
+      pushSubscribeWithKey();
+    } else if (Notification.permission === 'default') {
+      // On iOS (and best practice everywhere), permission must be requested
+      // from a user gesture. Show an in-app prompt banner instead of auto-requesting.
+      showPushPermissionBanner();
     }
+  }
+
+  function showPushPermissionBanner() {
+    // Don't show if already dismissed this session
+    try { if (sessionStorage.getItem('xray_push_dismissed')) return; } catch(e) {}
+    // Don't show if one is already visible
+    if (document.getElementById('push-perm-banner')) return;
+    var banner = document.createElement('div');
+    banner.id = 'push-perm-banner';
+    banner.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;background:#1a1d24;border:1px solid #3ee8b5;border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:12px;box-shadow:0 8px 32px rgba(0,0,0,.5);max-width:420px;width:calc(100% - 32px);';
+    banner.innerHTML =
+      '<div style="flex:1;"><div style="color:#fff;font-weight:500;font-size:14px;margin-bottom:4px;">Enable Notifications</div>' +
+      '<div style="color:#94a3b8;font-size:13px;">Get alerts for support calls and messages even when the app is closed.</div></div>' +
+      '<div style="display:flex;gap:8px;flex-shrink:0;">' +
+      '<button id="push-perm-allow" style="background:#3ee8b5;color:#08090c;border:none;border-radius:8px;padding:8px 16px;font-weight:600;font-size:13px;cursor:pointer;">Enable</button>' +
+      '<button id="push-perm-dismiss" style="background:transparent;color:#94a3b8;border:1px solid #333;border-radius:8px;padding:8px 12px;font-size:13px;cursor:pointer;">Later</button>' +
+      '</div>';
+    document.body.appendChild(banner);
+    document.getElementById('push-perm-allow').onclick = function() {
+      // This click IS a user gesture — safe for iOS permission request
+      Notification.requestPermission().then(function(perm) {
+        if (perm === 'granted') pushSubscribeWithKey();
+      });
+      banner.remove();
+    };
+    document.getElementById('push-perm-dismiss').onclick = function() {
+      try { sessionStorage.setItem('xray_push_dismissed', '1'); } catch(e) {}
+      banner.remove();
+    };
   }
 
   // Handle messages from Service Worker (e.g. join call from push notification)
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', function(evt) {
       if (evt.data && evt.data.type === 'meet-call-join') {
-        if (evt.data.roomCode && meetState && meetState.configured) {
+        var callId = evt.data.callId;
+        var roomCode = evt.data.roomCode;
+        var joinUrl = evt.data.joinUrl;
+        // Answer the support call via API
+        if (callId) {
+          api.post('/api/meet/support-calls/' + callId + '/answer', {}).catch(function() {});
+          dismissSupportCall(callId);
+          var el = document.getElementById('sca-' + callId);
+          if (el) { stopRinging(); el.remove(); }
+        }
+        // Join the meeting — wait for meetState to be configured if needed
+        if (roomCode && meetState && meetState.configured) {
           closeMeetPanel();
-          launchMeetCall(evt.data.roomCode);
-        } else if (evt.data.joinUrl) {
-          window.open(evt.data.joinUrl, '_blank');
+          launchMeetCall(roomCode);
+        } else if (roomCode && meetState && !meetState.configured) {
+          // meetState not ready yet — poll briefly for it to configure
+          var attempts = 0;
+          var waitForMeet = setInterval(function() {
+            attempts++;
+            if (meetState.configured) {
+              clearInterval(waitForMeet);
+              closeMeetPanel();
+              launchMeetCall(roomCode);
+            } else if (attempts > 20) {
+              clearInterval(waitForMeet);
+              // Fallback: open external meet URL
+              if (joinUrl) window.location.href = joinUrl;
+            }
+          }, 250);
+        } else if (joinUrl) {
+          window.location.href = joinUrl;
         }
       }
     });
+  }
+
+  // Handle hash-based meet join (from push notification opening the app)
+  function checkMeetJoinHash() {
+    var hash = window.location.hash;
+    if (hash.indexOf('#meet-join/') !== 0) return;
+    var rest = hash.substring('#meet-join/'.length);
+    var parts = rest.split('?');
+    var roomCode = parts[0];
+    var params = new URLSearchParams(parts[1] || '');
+    var callId = params.get('callId');
+    var joinUrl = params.get('joinUrl');
+    // Clear the hash so it doesn't re-trigger
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    if (!roomCode && !joinUrl) return;
+    // Answer the call
+    if (callId) {
+      api.post('/api/meet/support-calls/' + callId + '/answer', {}).catch(function() {});
+    }
+    // Wait for meet to be configured, then join
+    var attempts = 0;
+    var waitForMeet = setInterval(function() {
+      attempts++;
+      if (meetState && meetState.configured && roomCode) {
+        clearInterval(waitForMeet);
+        closeMeetPanel();
+        launchMeetCall(roomCode);
+      } else if (attempts > 40) {
+        clearInterval(waitForMeet);
+        if (joinUrl) window.location.href = decodeURIComponent(joinUrl);
+      }
+    }, 250);
   }
 
   function startSupportCallWebSocket() {
@@ -1477,15 +1566,7 @@
           if (knownSupportCalls[call.id] || dismissedSupportCalls[call.id]) return;
           knownSupportCalls[call.id] = true;
           showSupportCallAlert(call);
-          // Browser notification
-          if ('Notification' in window && Notification.permission === 'granted') {
-            var n = new Notification('XRay Support Call', {
-              body: (call.caller_name || call.caller_email || call.caller_id || 'A user') + ' needs support',
-              icon: '/icon-192.png',
-              tag: 'meet-call-' + call.id
-            });
-            n.onclick = function() { window.focus(); joinSupportCall(call); n.close(); };
-          }
+          // System notification is handled by the service worker via push — no need to duplicate here
         } else if (msg.type === 'support-call:answered' && msg.data) {
           dismissSupportCall(msg.data.id);
           var el = document.getElementById('sca-' + msg.data.id);
@@ -1501,14 +1582,14 @@
           if (window.__xrayToast) {
             window.__xrayToast('New message in inbox', 'info');
           }
-          // Browser notification
+          // Browser notification for inbox (no server-side push for inbox yet)
           if ('Notification' in window && Notification.permission === 'granted') {
-            var n = new Notification('XRay Inbox', {
+            var inboxN = new Notification('XRay Inbox', {
               body: msg.data.preview || 'You have a new message',
               icon: '/icon-192.png',
               tag: 'inbox-' + msg.data.threadId
             });
-            n.onclick = function() { window.focus(); n.close(); };
+            inboxN.onclick = function() { window.focus(); inboxN.close(); };
           }
           // If inbox view is currently open, refresh it
           if (window.__xrayRefreshInboxView) window.__xrayRefreshInboxView();
