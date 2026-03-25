@@ -376,6 +376,8 @@
       if (!currentUser.is_platform_admin) { connectWebSocket(); subscribeToPush(); }
       // Check if we were opened from a push notification with a meet-join hash
       checkMeetJoinHash();
+      // Also listen for hash changes (when SW navigates an existing client to a meet-join hash)
+      window.addEventListener('hashchange', function() { checkMeetJoinHash(); });
     });
   }
 
@@ -1507,9 +1509,12 @@
     // Clear the hash so it doesn't re-trigger
     history.replaceState(null, '', window.location.pathname + window.location.search);
     if (!roomCode && !joinUrl) return;
-    // Answer the call
+    // Answer the call and dismiss in-app alert
     if (callId) {
       api.post('/api/meet/support-calls/' + callId + '/answer', {}).catch(function() {});
+      dismissSupportCall(callId);
+      var el = document.getElementById('sca-' + callId);
+      if (el) { stopRinging(); el.remove(); }
     }
     // Wait for meet to be configured, then join
     var attempts = 0;

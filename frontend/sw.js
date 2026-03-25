@@ -1,4 +1,4 @@
-var CACHE_NAME = 'xray-v5';
+var CACHE_NAME = 'xray-v6';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -10,7 +10,7 @@ var SHELL_ASSETS = [
   '/manifest.json',
   '/icon-192.png',
   '/icon-512.png',
-  '/badge-96.svg'
+  '/badge-96.png'
 ];
 
 // Install: cache app shell
@@ -91,7 +91,7 @@ self.addEventListener('push', function(e) {
   var options = {
     body: data.body || '',
     icon: '/icon-192.png',
-    badge: '/badge-96.svg',
+    badge: '/badge-96.png',
     tag: data.tag || 'xray-notification',
     data: data.data || data,
     renotify: true
@@ -128,43 +128,45 @@ self.addEventListener('notificationclick', function(e) {
   var isMeetCall = tag.indexOf('meet-call') === 0 || (data.type === 'meet-call');
 
   if (isMeetCall && action === 'dismiss') {
-    // Just close the notification
     return;
+  }
+
+  // Build the app URL with meet-join hash for auto-joining
+  var appUrl = '/';
+  if (isMeetCall) {
+    appUrl = '/#meet-join/' + (data.roomCode || '') + '?callId=' + (data.callId || '');
+    if (data.joinUrl) {
+      appUrl += '&joinUrl=' + encodeURIComponent(data.joinUrl);
+    }
   }
 
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clients) {
       // Find an existing app window
-      var appClient = null;
       for (var i = 0; i < clients.length; i++) {
-        if (clients[i].url.indexOf(self.location.origin) !== -1 && 'focus' in clients[i]) {
-          appClient = clients[i];
-          break;
+        var client = clients[i];
+        if (client.url.indexOf(self.location.origin) !== -1) {
+          if (isMeetCall) {
+            // Use navigate() to change the hash — triggers hashchange in the app
+            // which auto-joins the call. This works even if the app was backgrounded.
+            if ('navigate' in client) {
+              return client.navigate(appUrl).then(function(c) {
+                if (c) return c.focus();
+              });
+            }
+            // Fallback: postMessage + focus
+            client.postMessage({
+              type: 'meet-call-join',
+              callId: data.callId,
+              roomCode: data.roomCode,
+              joinUrl: data.joinUrl
+            });
+          }
+          return client.focus();
         }
       }
-
-      if (isMeetCall) {
-        if (appClient) {
-          // App is open — send message and focus
-          appClient.postMessage({
-            type: 'meet-call-join',
-            callId: data.callId,
-            roomCode: data.roomCode,
-            joinUrl: data.joinUrl
-          });
-          return appClient.focus();
-        }
-        // App is NOT open — open the app with a hash route so it can auto-join on load
-        var appUrl = '/#meet-join/' + (data.roomCode || '') + '?callId=' + (data.callId || '');
-        if (data.joinUrl) {
-          appUrl += '&joinUrl=' + encodeURIComponent(data.joinUrl);
-        }
-        return self.clients.openWindow(appUrl);
-      }
-
-      // Non-meet notification
-      if (appClient) return appClient.focus();
-      return self.clients.openWindow('/');
+      // No existing client — open new window
+      return self.clients.openWindow(appUrl);
     })
   );
 });
