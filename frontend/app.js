@@ -1356,6 +1356,22 @@
 
   // ── Platform admin: WebSocket for support calls ──
   var knownSupportCalls = {};
+  var dismissedSupportCalls = (function() {
+    try { return JSON.parse(localStorage.getItem('xray_dismissed_calls') || '{}'); } catch(e) { return {}; }
+  })();
+  function persistDismissedCalls() {
+    // Clean entries older than 10 minutes to prevent unbounded growth
+    var now = Date.now(), cleaned = {};
+    Object.keys(dismissedSupportCalls).forEach(function(k) {
+      if (now - dismissedSupportCalls[k] < 600000) cleaned[k] = dismissedSupportCalls[k];
+    });
+    dismissedSupportCalls = cleaned;
+    try { localStorage.setItem('xray_dismissed_calls', JSON.stringify(dismissedSupportCalls)); } catch(e) {}
+  }
+  function dismissSupportCall(callId) {
+    dismissedSupportCalls[callId] = Date.now();
+    persistDismissedCalls();
+  }
   var supportCallConfig = { ring_duration: 60, sound_enabled: true, vibration_enabled: true };
   var _ws = null;
   var _wsReconnectTimer = null;
@@ -1431,6 +1447,7 @@
       if (!r.ok || !r.data) return;
       r.data.forEach(function(call) {
         if (knownSupportCalls[call.id]) return;
+        if (dismissedSupportCalls[call.id]) return; // already dismissed by this user
         knownSupportCalls[call.id] = true;
         showSupportCallAlert(call);
       });
@@ -1457,7 +1474,7 @@
         var msg = JSON.parse(evt.data);
         if (msg.type === 'support-call:new' && msg.data) {
           var call = msg.data;
-          if (knownSupportCalls[call.id]) return;
+          if (knownSupportCalls[call.id] || dismissedSupportCalls[call.id]) return;
           knownSupportCalls[call.id] = true;
           showSupportCallAlert(call);
           // Browser notification
@@ -1470,8 +1487,9 @@
             n.onclick = function() { window.focus(); joinSupportCall(call); n.close(); };
           }
         } else if (msg.type === 'support-call:answered' && msg.data) {
+          dismissSupportCall(msg.data.id);
           var el = document.getElementById('sca-' + msg.data.id);
-          if (el) el.remove();
+          if (el) { stopRinging(); el.remove(); }
         } else if (msg.type === 'inbox:new-message' && msg.data) {
           // Update unread badge immediately
           if (typeof msg.data.unreadCount === 'number') {
@@ -1604,10 +1622,10 @@
       '<div class="sca-actions"><button class="sca-join">Join Call</button><button class="sca-dismiss">Dismiss</button></div>';
     document.body.appendChild(alert);
     alert.querySelector('.sca-join').onclick = function() { stopRinging(); joinSupportCall(call); alert.remove(); };
-    alert.querySelector('.sca-dismiss').onclick = function() { stopRinging(); alert.remove(); };
+    alert.querySelector('.sca-dismiss').onclick = function() { stopRinging(); dismissSupportCall(call.id); alert.remove(); };
     // Auto-dismiss after configurable ring duration
     var ringMs = (supportCallConfig.ring_duration || 60) * 1000;
-    setTimeout(function() { if (document.getElementById('sca-' + call.id)) { stopRinging(); alert.remove(); } }, ringMs);
+    setTimeout(function() { if (document.getElementById('sca-' + call.id)) { stopRinging(); dismissSupportCall(call.id); alert.remove(); } }, ringMs);
     // Start persistent ringing (sound + vibration)
     startRinging();
   }
