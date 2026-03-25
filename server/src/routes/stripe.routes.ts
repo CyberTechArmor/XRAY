@@ -73,8 +73,10 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
     let dashSlots = 0;
     try {
       const result = await stripeService.getBillingStatus(req.user!.tid);
-      const VISION_PRODUCT = 'prod_UB9nZ8qktPbtyi';
-      const DASHBOARD_PRODUCT = 'prod_UB9fsE1JmQjRgw';
+      // Load product IDs from settings (fall back to hardcoded defaults)
+      const { getSetting } = await import('../services/settings.service');
+      const VISION_PRODUCT = await getSetting('stripe_vision_product') || 'prod_UB9nZ8qktPbtyi';
+      const DASHBOARD_PRODUCT = await getSetting('stripe_dashboard_product') || 'prod_UB9fsE1JmQjRgw';
       for (const s of result.subscriptions) {
         if (s.status === 'active' || s.status === 'trialing' || (s.cancelAtPeriodEnd && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > new Date())) {
           if (s.productId === VISION_PRODUCT) hasVision = true;
