@@ -374,6 +374,8 @@
       startTokenRefresh();
       // Start WebSocket for real-time updates (all users)
       if (!currentUser.is_platform_admin) { connectWebSocket(); subscribeToPush(); }
+      // Check if we were opened from a push notification with a meet-join hash
+      checkMeetJoinHash();
     });
   }
 
@@ -1456,14 +1458,72 @@
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', function(evt) {
       if (evt.data && evt.data.type === 'meet-call-join') {
-        if (evt.data.roomCode && meetState && meetState.configured) {
+        var callId = evt.data.callId;
+        var roomCode = evt.data.roomCode;
+        var joinUrl = evt.data.joinUrl;
+        // Answer the support call via API
+        if (callId) {
+          api.post('/api/meet/support-calls/' + callId + '/answer', {}).catch(function() {});
+          dismissSupportCall(callId);
+          var el = document.getElementById('sca-' + callId);
+          if (el) { stopRinging(); el.remove(); }
+        }
+        // Join the meeting — wait for meetState to be configured if needed
+        if (roomCode && meetState && meetState.configured) {
           closeMeetPanel();
-          launchMeetCall(evt.data.roomCode);
-        } else if (evt.data.joinUrl) {
-          window.open(evt.data.joinUrl, '_blank');
+          launchMeetCall(roomCode);
+        } else if (roomCode && meetState && !meetState.configured) {
+          // meetState not ready yet — poll briefly for it to configure
+          var attempts = 0;
+          var waitForMeet = setInterval(function() {
+            attempts++;
+            if (meetState.configured) {
+              clearInterval(waitForMeet);
+              closeMeetPanel();
+              launchMeetCall(roomCode);
+            } else if (attempts > 20) {
+              clearInterval(waitForMeet);
+              // Fallback: open external meet URL
+              if (joinUrl) window.location.href = joinUrl;
+            }
+          }, 250);
+        } else if (joinUrl) {
+          window.location.href = joinUrl;
         }
       }
     });
+  }
+
+  // Handle hash-based meet join (from push notification opening the app)
+  function checkMeetJoinHash() {
+    var hash = window.location.hash;
+    if (hash.indexOf('#meet-join/') !== 0) return;
+    var rest = hash.substring('#meet-join/'.length);
+    var parts = rest.split('?');
+    var roomCode = parts[0];
+    var params = new URLSearchParams(parts[1] || '');
+    var callId = params.get('callId');
+    var joinUrl = params.get('joinUrl');
+    // Clear the hash so it doesn't re-trigger
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    if (!roomCode && !joinUrl) return;
+    // Answer the call
+    if (callId) {
+      api.post('/api/meet/support-calls/' + callId + '/answer', {}).catch(function() {});
+    }
+    // Wait for meet to be configured, then join
+    var attempts = 0;
+    var waitForMeet = setInterval(function() {
+      attempts++;
+      if (meetState && meetState.configured && roomCode) {
+        clearInterval(waitForMeet);
+        closeMeetPanel();
+        launchMeetCall(roomCode);
+      } else if (attempts > 40) {
+        clearInterval(waitForMeet);
+        if (joinUrl) window.location.href = decodeURIComponent(joinUrl);
+      }
+    }, 250);
   }
 
   function startSupportCallWebSocket() {

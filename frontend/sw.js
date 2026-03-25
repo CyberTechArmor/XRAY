@@ -1,4 +1,4 @@
-var CACHE_NAME = 'xray-v4';
+var CACHE_NAME = 'xray-v5';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -9,7 +9,8 @@ var SHELL_ASSETS = [
   '/bundles/general.json',
   '/manifest.json',
   '/icon-192.png',
-  '/icon-512.png'
+  '/icon-512.png',
+  '/badge-96.svg'
 ];
 
 // Install: cache app shell
@@ -90,7 +91,7 @@ self.addEventListener('push', function(e) {
   var options = {
     body: data.body || '',
     icon: '/icon-192.png',
-    badge: '/icon-192.png',
+    badge: '/badge-96.svg',
     tag: data.tag || 'xray-notification',
     data: data.data || data,
     renotify: true
@@ -122,47 +123,48 @@ self.addEventListener('notificationclick', function(e) {
   var data = e.notification.data || {};
   var tag = e.notification.tag || '';
   var action = e.action; // 'join' or 'dismiss' for action buttons
-  var urlToOpen = '/';
 
   // Handle MEET call notifications
   var isMeetCall = tag.indexOf('meet-call') === 0 || (data.type === 'meet-call');
 
-  if (isMeetCall) {
-    if (action === 'dismiss') {
-      // Just close the notification
-      return;
-    }
-    // 'join' action or direct click - open the app
-    if (data.joinUrl) {
-      urlToOpen = data.joinUrl;
-    } else if (data.url) {
-      urlToOpen = data.url;
-    }
+  if (isMeetCall && action === 'dismiss') {
+    // Just close the notification
+    return;
   }
 
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clients) {
-      // Focus existing window if available
+      // Find an existing app window
+      var appClient = null;
       for (var i = 0; i < clients.length; i++) {
-        var client = clients[i];
-        if (client.url.indexOf(self.location.origin) !== -1 && 'focus' in client) {
-          // Send message to the client to trigger the join action
-          if (isMeetCall && action !== 'dismiss') {
-            client.postMessage({
-              type: 'meet-call-join',
-              callId: data.callId,
-              roomCode: data.roomCode,
-              joinUrl: data.joinUrl
-            });
-          }
-          return client.focus();
+        if (clients[i].url.indexOf(self.location.origin) !== -1 && 'focus' in clients[i]) {
+          appClient = clients[i];
+          break;
         }
       }
-      // Open new window
-      if (isMeetCall && data.joinUrl) {
-        return self.clients.openWindow(data.joinUrl);
+
+      if (isMeetCall) {
+        if (appClient) {
+          // App is open — send message and focus
+          appClient.postMessage({
+            type: 'meet-call-join',
+            callId: data.callId,
+            roomCode: data.roomCode,
+            joinUrl: data.joinUrl
+          });
+          return appClient.focus();
+        }
+        // App is NOT open — open the app with a hash route so it can auto-join on load
+        var appUrl = '/#meet-join/' + (data.roomCode || '') + '?callId=' + (data.callId || '');
+        if (data.joinUrl) {
+          appUrl += '&joinUrl=' + encodeURIComponent(data.joinUrl);
+        }
+        return self.clients.openWindow(appUrl);
       }
-      return self.clients.openWindow(urlToOpen);
+
+      // Non-meet notification
+      if (appClient) return appClient.focus();
+      return self.clients.openWindow('/');
     })
   );
 });
