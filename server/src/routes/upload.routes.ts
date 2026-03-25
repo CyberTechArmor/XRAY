@@ -43,12 +43,31 @@ const contextTypeSchema = z.enum(['connection', 'inbox', 'invoice', 'general']);
 
 const router = Router();
 
-// GET / - list all files for tenant
+// GET / - list files (platform admin: all tenants with optional filter; others: own tenant)
 router.get('/', authenticateJWT, async (req, res, next) => {
   try {
     const contextType = req.query.contextType as string | undefined;
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
     const offset = parseInt(req.query.offset as string) || 0;
+
+    if (req.user!.is_platform_admin) {
+      // Platform admin: list across all tenants with optional tenant filter
+      const tenantId = req.query.tenantId as string | undefined;
+      const result = await uploadService.listAllFilesAdmin({ contextType, tenantId, limit, offset });
+      res.json({
+        ok: true,
+        data: result.rows,
+        meta: {
+          total: result.total,
+          limit,
+          offset,
+          request_id: req.headers['x-request-id'] || '',
+          timestamp: new Date().toISOString(),
+        },
+      });
+      return;
+    }
+
     const result = await uploadService.listAllFiles(req.user!.tid, { contextType, limit, offset });
     res.json({
       ok: true,
@@ -77,10 +96,13 @@ router.post('/', authenticateJWT, upload.array('files', 10), async (req, res, ne
     const contextType = contextTypeSchema.parse(req.body.contextType);
     const contextId = req.body.contextId || undefined;
 
+    // Platform admin can upload to a specific tenant
+    const targetTenant = (req.user!.is_platform_admin && req.body.tenantId) ? req.body.tenantId : req.user!.tid;
+
     const records: any[] = [];
     for (const file of files) {
       const record = await uploadService.createFileRecord({
-        tenantId: req.user!.tid,
+        tenantId: targetTenant,
         uploadedBy: req.user!.sub,
         originalName: file.originalname,
         storedName: file.filename,

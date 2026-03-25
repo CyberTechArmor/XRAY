@@ -141,6 +141,43 @@ export async function listAllFiles(
   });
 }
 
+// ── List all files across all tenants (platform admin) ──
+export async function listAllFilesAdmin(
+  opts: { contextType?: string; tenantId?: string; limit?: number; offset?: number }
+): Promise<{ rows: any[]; total: number }> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (opts.contextType) {
+      conditions.push('fu.context_type = $' + (params.length + 1));
+      params.push(opts.contextType);
+    }
+    if (opts.tenantId) {
+      conditions.push('fu.tenant_id = $' + (params.length + 1));
+      params.push(opts.tenantId);
+    }
+    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    const countResult = await client.query(
+      `SELECT count(*)::int AS total FROM platform.file_uploads fu ${where}`,
+      params
+    );
+    const limit = opts.limit || 50;
+    const offset = opts.offset || 0;
+    const result = await client.query(
+      `SELECT fu.*, u.email AS uploader_email, u.name AS uploader_name, t.name AS tenant_name
+       FROM platform.file_uploads fu
+       LEFT JOIN platform.users u ON u.id = fu.uploaded_by
+       LEFT JOIN platform.tenants t ON t.id = fu.tenant_id
+       ${where}
+       ORDER BY fu.created_at DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
+    );
+    return { rows: result.rows, total: countResult.rows[0].total };
+  });
+}
+
 // ── Delete file record ──
 export async function deleteFileRecord(fileId: string): Promise<{ id: string }> {
   return withClient(async (client) => {
