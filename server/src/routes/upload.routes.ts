@@ -230,7 +230,28 @@ router.delete('/:id', authenticateJWT, async (req, res, next) => {
 router.get('/context/:contextType/:contextId', authenticateJWT, async (req, res, next) => {
   try {
     const contextType = contextTypeSchema.parse(req.params.contextType);
-    // Filter by tenant so users only see their own files
+
+    // For inbox files: verify user is a thread participant (cross-tenant threads are normal)
+    // Platform admins can also see all inbox thread files
+    if (contextType === 'inbox') {
+      if (!req.user!.is_platform_admin) {
+        const { getThreadParticipants } = await import('../services/inbox.service');
+        const participants = await getThreadParticipants(req.params.contextId);
+        if (!participants.includes(req.user!.sub)) {
+          throw new AppError(403, 'FORBIDDEN', 'Not a participant of this thread');
+        }
+      }
+      // Don't filter by tenant — inbox threads are cross-tenant
+      const files = await uploadService.listFilesByContext(contextType, req.params.contextId);
+      res.json({
+        ok: true,
+        data: files,
+        meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+      });
+      return;
+    }
+
+    // For non-inbox contexts: filter by tenant so users only see their own files
     const files = await uploadService.listFilesByContext(contextType, req.params.contextId, req.user!.tid);
     res.json({
       ok: true,
