@@ -53,9 +53,11 @@ export async function handleWebhook(
 export async function handleCheckoutCompleted(
   session: Stripe.Checkout.Session
 ): Promise<void> {
-  const tenantId = session.metadata?.tenant_id;
+  // Pricing Table checkout passes tenant_id via client_reference_id
+  // Custom checkout passes it via metadata.tenant_id
+  const tenantId = session.client_reference_id || session.metadata?.tenant_id;
   if (!tenantId) {
-    console.error('Checkout session missing tenant_id metadata');
+    console.error('Checkout session missing tenant_id (no client_reference_id or metadata.tenant_id)');
     return;
   }
 
