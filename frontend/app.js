@@ -958,6 +958,13 @@
       if (currentUser && currentUser.is_platform_admin) {
         startSupportCallWebSocket();
       }
+      // Restore active call after page refresh (within 8 hours)
+      try {
+        var saved = JSON.parse(sessionStorage.getItem('xray_meet_active') || 'null');
+        if (saved && saved.roomCode && (Date.now() - saved.ts) < 8 * 60 * 60 * 1000) {
+          launchMeetCall(saved.roomCode);
+        }
+      } catch(e) {}
     }).catch(function() {});
   }
 
@@ -1247,6 +1254,8 @@
   function launchMeetCall(room) {
     meetState.inCall = true;
     meetState.roomCode = room;
+    // Persist active call so it survives page refresh
+    try { sessionStorage.setItem('xray_meet_active', JSON.stringify({ roomCode: room, ts: Date.now() })); } catch(e) {}
     var params = new URLSearchParams({ room: room });
     if (currentUser && currentUser.name) params.set('name', currentUser.name);
     params.set('autojoin', 'true');
@@ -1350,6 +1359,7 @@
   function endMeetCall() {
     meetState.inCall = false;
     meetState.roomCode = '';
+    try { sessionStorage.removeItem('xray_meet_active'); } catch(e) {}
     var viewport = document.getElementById('meet-viewport');
     var iframeWrap = document.getElementById('meet-viewport-iframe');
     if (iframeWrap) iframeWrap.innerHTML = '';
