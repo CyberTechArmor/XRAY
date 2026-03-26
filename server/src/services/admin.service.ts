@@ -625,7 +625,7 @@ export async function getAllSettings() {
 }
 
 export async function updateSettings(updates: Record<string, string | null>) {
-  return withClient(async (client) => {
+  const result = await withClient(async (client) => {
     for (const [key, value] of Object.entries(updates)) {
       const existing = await client.query(
         'SELECT is_secret FROM platform.platform_settings WHERE key = $1', [key]
@@ -642,8 +642,9 @@ export async function updateSettings(updates: Record<string, string | null>) {
     auditService.log({ tenantId: '00000000-0000-0000-0000-000000000000', action: 'settings.update', resourceType: 'settings', metadata: { keys: Object.keys(updates) } });
     return { updated: Object.keys(updates).length };
   });
-  // Invalidate settings cache so getSmtpConfig etc. pick up new values immediately
+  // Invalidate settings cache so getSetting() picks up new values immediately
   await refreshSettingsCache();
+  return result;
 }
 
 // ─── Email Templates ─────────────────────────────────────
