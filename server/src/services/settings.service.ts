@@ -122,10 +122,12 @@ export async function getSmtpConfig(): Promise<SmtpConfig> {
 export interface StripeConfig {
   publishableKey: string;
   pricingTableId: string;
+  portalUrl: string;
 }
 
 export async function getStripeConfig(): Promise<StripeConfig> {
   const publishableKey = (await getSetting('stripe_publishable_key')) || '';
   const pricingTableId = (await getSetting('stripe_pricing_table_id')) || '';
-  return { publishableKey, pricingTableId };
+  const portalUrl = (await getSetting('stripe_portal_url')) || '';
+  return { publishableKey, pricingTableId, portalUrl };
 }
