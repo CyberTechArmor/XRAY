@@ -260,23 +260,17 @@ router.post('/admin/gate-products', authenticateJWT, async (req, res, next) => {
 
     // Broadcast billing change to ALL connected tenant users
     try {
-      const { broadcastToAll } = await import('../ws');
-      broadcastToAll('billing:updated', { gateChanged: true });
-    } catch {
-      // broadcastToAll might not exist — broadcast per tenant instead
-      try {
-        const { withClient } = await import('../db/connection');
-        const { broadcastToTenant } = await import('../ws');
-        const tenants = await withClient(async (client) => {
-          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-          const r = await client.query('SELECT id FROM platform.tenants');
-          return r.rows.map((row: any) => row.id);
-        });
-        for (const tid of tenants) {
-          broadcastToTenant(tid, 'billing:updated', { gateChanged: true });
-        }
-      } catch { /* ignore */ }
-    }
+      const { withClient } = await import('../db/connection');
+      const { broadcastToTenant } = await import('../ws');
+      const tenants = await withClient(async (client) => {
+        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        const r = await client.query('SELECT id FROM platform.tenants');
+        return r.rows.map((row: any) => row.id);
+      });
+      for (const tid of tenants) {
+        broadcastToTenant(tid, 'billing:updated', { gateChanged: true });
+      }
+    } catch { /* ignore */ }
 
     res.json({ ok: true, data: { saved: gateProductIds.length } });
   } catch (err) {
