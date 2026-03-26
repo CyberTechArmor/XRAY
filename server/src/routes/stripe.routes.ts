@@ -192,6 +192,65 @@ router.post('/checkout', authenticateJWT, requirePermission('billing.manage'), a
   }
 });
 
+// GET /admin/billing - list all tenant billing statuses (platform admin only)
+router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Platform admin only' } });
+    }
+    const { withClient } = await import('../db/connection');
+    const result = await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      return client.query(
+        `SELECT t.id AS tenant_id, t.name AS tenant_name, t.stripe_customer_id,
+                bs.plan_tier, bs.payment_status, bs.stripe_subscription_id,
+                bs.dashboard_limit, bs.current_period_end, bs.updated_at AS billing_updated,
+                o.email AS owner_email
+         FROM platform.tenants t
+         LEFT JOIN platform.billing_state bs ON bs.tenant_id = t.id
+         LEFT JOIN platform.users o ON o.id = t.owner_user_id
+         ORDER BY t.created_at DESC`
+      );
+    });
+    res.json({
+      ok: true,
+      data: result.rows,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/link-customer - manually link a Stripe customer to a tenant (platform admin only)
+router.post('/admin/link-customer', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Platform admin only' } });
+    }
+    const { tenantId, stripeCustomerId } = req.body;
+    if (!tenantId || !stripeCustomerId) {
+      return res.status(400).json({ ok: false, error: { code: 'MISSING_FIELDS', message: 'tenantId and stripeCustomerId required' } });
+    }
+    const { withClient } = await import('../db/connection');
+    await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      await client.query('UPDATE platform.tenants SET stripe_customer_id = $1, updated_at = now() WHERE id = $2', [stripeCustomerId, tenantId]);
+      await client.query(
+        `INSERT INTO platform.billing_state (tenant_id, payment_status, plan_tier, updated_at)
+         VALUES ($1, 'active', 'starter', now())
+         ON CONFLICT (tenant_id) DO UPDATE SET payment_status = 'active',
+           plan_tier = CASE WHEN platform.billing_state.plan_tier = 'free' THEN 'starter' ELSE platform.billing_state.plan_tier END,
+           updated_at = now()`,
+        [tenantId]
+      );
+    });
+    res.json({ ok: true, data: { linked: true } });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /config - get Stripe config (JWT, billing.view)
 router.get('/config', authenticateJWT, requirePermission('billing.view'), async (req, res, next) => {
   try {

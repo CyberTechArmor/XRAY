@@ -62,7 +62,9 @@ export async function handleCheckoutCompleted(
   // Custom checkout passes it via metadata.tenant_id
   const tenantId = session.client_reference_id || session.metadata?.tenant_id;
   if (!tenantId) {
-    console.error('Checkout session missing tenant_id (no client_reference_id or metadata.tenant_id)');
+    // Try to find tenant by customer email
+    const customerEmail = session.customer_email || session.customer_details?.email;
+    console.error('Checkout session missing tenant_id. customer_email=' + customerEmail + ' session_id=' + session.id);
     return;
   }
 
@@ -79,12 +81,14 @@ export async function handleCheckoutCompleted(
       );
     }
 
-    // Create or update billing state
+    // Create or update billing state — set plan to 'starter' (active subscription)
     await client.query(
-      `INSERT INTO platform.billing_state (tenant_id, stripe_subscription_id, payment_status, updated_at)
-       VALUES ($1, $2, 'active', now())
+      `INSERT INTO platform.billing_state (tenant_id, stripe_subscription_id, plan_tier, payment_status, updated_at)
+       VALUES ($1, $2, 'starter', 'active', now())
        ON CONFLICT (tenant_id) DO UPDATE
-       SET stripe_subscription_id = $2, payment_status = 'active', updated_at = now()`,
+       SET stripe_subscription_id = COALESCE($2, platform.billing_state.stripe_subscription_id),
+           plan_tier = CASE WHEN platform.billing_state.plan_tier = 'free' THEN 'starter' ELSE platform.billing_state.plan_tier END,
+           payment_status = 'active', updated_at = now()`,
       [tenantId, subscriptionId || null]
     );
 
@@ -92,7 +96,7 @@ export async function handleCheckoutCompleted(
       tenantId,
       action: 'billing.checkout_completed',
       resourceType: 'billing',
-      metadata: { session_id: session.id, customer_id: customerId },
+      metadata: { session_id: session.id, customer_id: customerId, subscription_id: subscriptionId },
     });
   });
 }
