@@ -98,8 +98,9 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
           if (hasVision) break;
         }
       }
-      // Fall back to billing_state limits if no Stripe subscriptions matched
-      if (!hasVision && result.plan !== 'free') { hasVision = true; }
+      // If gate products are configured, ONLY grant access via matched subscriptions
+      // (billing_state.plan_tier fallback is only for when no gate products are set up)
+      if (!hasVision && gateProducts.length === 0 && result.plan !== 'free') { hasVision = true; }
     } catch {
       // Stripe not configured — fall back to billing_state table directly
       const { withClient } = await import('../db/connection');
@@ -205,19 +206,43 @@ router.post('/checkout', authenticateJWT, requirePermission('billing.manage'), a
   }
 });
 
-// GET /admin/billing - list all tenant billing statuses (platform admin only)
+// GET /admin/billing - list all tenant billing statuses with Stripe details (platform admin only)
 router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
   try {
     if (!req.user!.is_platform_admin) {
       return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Platform admin only' } });
     }
+    const { getSetting } = await import('../services/settings.service');
     const { withClient } = await import('../db/connection');
+
+    // Load gate products config
+    const gateProductsRaw = await getSetting('stripe_gate_products');
+    let gateProducts: Array<{ productId: string; mode: string }> = [];
+    if (gateProductsRaw) {
+      try { gateProducts = JSON.parse(gateProductsRaw); } catch { /* */ }
+    }
+    const gateProductIds = new Set(gateProducts.map(p => p.productId));
+
+    // Load billing override settings
+    const overrideResult = await withClient(async (client) => {
+      const r = await client.query(
+        `SELECT key, value FROM platform.platform_settings WHERE key LIKE 'billing.override.%' AND value = 'true'`
+      );
+      const overrides: Record<string, boolean> = {};
+      r.rows.forEach((row: any) => {
+        const tid = row.key.replace('billing.override.', '');
+        overrides[tid] = true;
+      });
+      return overrides;
+    });
+
     const result = await withClient(async (client) => {
       await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
       return client.query(
         `SELECT t.id AS tenant_id, t.name AS tenant_name, t.stripe_customer_id,
                 bs.plan_tier, bs.payment_status, bs.stripe_subscription_id,
                 bs.dashboard_limit, bs.current_period_end, bs.updated_at AS billing_updated,
+                bs.created_at AS billing_created,
                 o.email AS owner_email
          FROM platform.tenants t
          LEFT JOIN platform.billing_state bs ON bs.tenant_id = t.id
@@ -225,9 +250,37 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
          ORDER BY t.created_at DESC`
       );
     });
+
+    // Enrich each tenant with live Stripe subscription data
+    const enriched = [];
+    for (const row of result.rows) {
+      const tenant: any = { ...row, stripeSubscriptions: [], hasGateAccess: false, billingOverride: !!overrideResult[row.tenant_id] };
+      if (tenant.billingOverride) {
+        tenant.hasGateAccess = true;
+      }
+      if (row.stripe_customer_id) {
+        try {
+          const status = await stripeService.getBillingStatus(row.tenant_id);
+          tenant.stripeSubscriptions = status.subscriptions.map((s: any) => ({
+            ...s,
+            isGateProduct: gateProductIds.has(s.productId),
+          }));
+          // Check if any active gate product subscription
+          const now = new Date();
+          for (const s of tenant.stripeSubscriptions) {
+            if (!s.isGateProduct) continue;
+            const isActive = s.status === 'active' || s.status === 'trialing' ||
+              (s.cancelAtPeriodEnd && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > now);
+            if (isActive) { tenant.hasGateAccess = true; break; }
+          }
+        } catch { /* Stripe API error — skip enrichment */ }
+      }
+      enriched.push(tenant);
+    }
+
     res.json({
       ok: true,
-      data: result.rows,
+      data: enriched,
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {
