@@ -252,17 +252,19 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
 
     // Enrich each tenant with live Stripe subscription data
     const enriched = [];
-    let stripe: any = null;
-    try { stripe = await (await import('../services/stripe.service')).default; } catch {}
-    // Get a Stripe client directly for batch queries
     let stripeClient: any = null;
+    let stripeInitError: string | null = null;
     try {
       const secretKey = await getSetting('stripe_secret_key') || process.env.STRIPE_SECRET_KEY;
       if (secretKey) {
         const Stripe = (await import('stripe')).default;
         stripeClient = new Stripe(secretKey, { apiVersion: '2024-06-20' as any });
+      } else {
+        stripeInitError = 'No Stripe secret key found in settings or environment';
       }
-    } catch {}
+    } catch (e: any) {
+      stripeInitError = 'Failed to init Stripe client: ' + e.message;
+    }
 
     for (const row of result.rows) {
       const tenant: any = { ...row, stripeSubscriptions: [], hasGateAccess: false, billingOverride: !!overrideResult[row.tenant_id] };
@@ -311,7 +313,12 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
     res.json({
       ok: true,
       data: enriched,
-      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+      meta: {
+        request_id: req.headers['x-request-id'] || '',
+        timestamp: new Date().toISOString(),
+        stripeConnected: !!stripeClient,
+        stripeInitError: stripeInitError || undefined,
+      },
     });
   } catch (err) {
     next(err);
