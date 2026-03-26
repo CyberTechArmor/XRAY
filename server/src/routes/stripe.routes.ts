@@ -273,21 +273,36 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
       }
       if (row.stripe_customer_id && stripeClient) {
         try {
+          // Don't use expand (Stripe has a 4-level depth limit)
+          // Fetch subscriptions without product expansion
           const subs = await stripeClient.subscriptions.list({
             customer: row.stripe_customer_id,
             status: 'all',
             limit: 20,
-            expand: ['data.items.data.price.product'],
           });
+          // Collect unique product IDs to fetch names in bulk
+          const productIds = new Set<string>();
+          for (const sub of subs.data) {
+            const item = sub.items?.data?.[0];
+            const prodId = typeof item?.price?.product === 'string' ? item.price.product : item?.price?.product?.id;
+            if (prodId) productIds.add(prodId);
+          }
+          // Fetch product names
+          const productNames: Record<string, string> = {};
+          for (const pid of productIds) {
+            try {
+              const prod = await stripeClient.products.retrieve(pid);
+              productNames[pid] = prod.name || pid;
+            } catch { productNames[pid] = pid; }
+          }
+
           tenant.stripeSubscriptions = subs.data.map((sub: any) => {
             const item = sub.items?.data?.[0];
-            const product = item?.price?.product;
-            const productObj = typeof product === 'object' && product !== null ? product : null;
-            const productId = productObj?.id || (typeof product === 'string' ? product : '');
+            const productId = typeof item?.price?.product === 'string' ? item.price.product : (item?.price?.product?.id || '');
             return {
               id: sub.id,
               productId,
-              productName: productObj?.name || 'Subscription',
+              productName: productNames[productId] || 'Subscription',
               status: sub.status,
               quantity: item?.quantity || 1,
               currentPeriodEnd: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
@@ -374,8 +389,26 @@ router.get('/admin/debug/:customerId', authenticateJWT, async (req, res, next) =
       customer: customerId,
       status: 'all',
       limit: 20,
-      expand: ['data.items.data.price.product'],
     });
+
+    // Fetch product names
+    const subDetails = [];
+    for (const s of subs.data) {
+      const item = s.items?.data?.[0];
+      const productId = typeof item?.price?.product === 'string' ? item.price.product : '';
+      let productName = productId;
+      if (productId) {
+        try { const p = await stripe.products.retrieve(productId); productName = p.name || productId; } catch {}
+      }
+      subDetails.push({
+        id: s.id,
+        status: s.status,
+        productId,
+        productName,
+        priceId: item?.price?.id,
+        currentPeriodEnd: s.current_period_end ? new Date(s.current_period_end * 1000).toISOString() : null,
+      });
+    }
 
     res.json({
       ok: true,
@@ -383,19 +416,7 @@ router.get('/admin/debug/:customerId', authenticateJWT, async (req, res, next) =
         keyPrefix: secretKey.substring(0, 10) + '...',
         customer: { id: customer.id, email: customer.email, name: customer.name, deleted: customer.deleted },
         subscriptionCount: subs.data.length,
-        subscriptions: subs.data.map((s: any) => {
-          const item = s.items?.data?.[0];
-          const product = item?.price?.product;
-          const productObj = typeof product === 'object' ? product : null;
-          return {
-            id: s.id,
-            status: s.status,
-            productId: productObj?.id || product,
-            productName: productObj?.name || 'unknown',
-            priceId: item?.price?.id,
-            currentPeriodEnd: s.current_period_end ? new Date(s.current_period_end * 1000).toISOString() : null,
-          };
-        }),
+        subscriptions: subDetails,
       },
     });
   } catch (err: any) {

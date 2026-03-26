@@ -362,22 +362,32 @@ export async function getBillingStatus(tenantId: string): Promise<{
     try {
       const stripe = await getStripeClient();
 
-      // Fetch active subscriptions
+      // Fetch active subscriptions (no expand to avoid depth limit)
       const subs = await stripe.subscriptions.list({
         customer: tenant.stripe_customer_id,
         status: 'all',
         limit: 20,
-        expand: ['data.items.data.price.product'],
       });
+
+      // Fetch product names
+      const prodIds = new Set<string>();
+      for (const sub of subs.data) {
+        const item = sub.items.data[0];
+        const pid = typeof item?.price?.product === 'string' ? item.price.product : '';
+        if (pid) prodIds.add(pid);
+      }
+      const prodNames: Record<string, string> = {};
+      for (const pid of prodIds) {
+        try { const p = await stripe.products.retrieve(pid); prodNames[pid] = p.name || pid; } catch { prodNames[pid] = pid; }
+      }
 
       base.subscriptions = subs.data.map((sub) => {
         const item = sub.items.data[0];
-        const product = item?.price?.product;
-        const productObj = typeof product === 'object' && product !== null ? product as Stripe.Product : null;
+        const productId = typeof item?.price?.product === 'string' ? item.price.product : '';
         return {
           id: sub.id,
-          productId: productObj?.id || (typeof product === 'string' ? product : ''),
-          productName: productObj?.name || 'Subscription',
+          productId,
+          productName: prodNames[productId] || 'Subscription',
           status: sub.status,
           quantity: item?.quantity || 1,
           currentPeriodEnd: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
