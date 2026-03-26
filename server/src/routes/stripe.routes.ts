@@ -242,8 +242,7 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
         `SELECT t.id AS tenant_id, t.name AS tenant_name, t.stripe_customer_id,
                 bs.plan_tier, bs.payment_status, bs.stripe_subscription_id,
                 bs.dashboard_limit, bs.current_period_end, bs.updated_at AS billing_updated,
-                bs.created_at AS billing_created,
-                o.email AS owner_email
+                o.email AS owner_email, t.created_at AS tenant_created
          FROM platform.tenants t
          LEFT JOIN platform.billing_state bs ON bs.tenant_id = t.id
          LEFT JOIN platform.users o ON o.id = t.owner_user_id
