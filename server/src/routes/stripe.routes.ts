@@ -252,18 +252,47 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
 
     // Enrich each tenant with live Stripe subscription data
     const enriched = [];
+    let stripe: any = null;
+    try { stripe = await (await import('../services/stripe.service')).default; } catch {}
+    // Get a Stripe client directly for batch queries
+    let stripeClient: any = null;
+    try {
+      const secretKey = await getSetting('stripe_secret_key') || process.env.STRIPE_SECRET_KEY;
+      if (secretKey) {
+        const Stripe = (await import('stripe')).default;
+        stripeClient = new Stripe(secretKey, { apiVersion: '2024-06-20' as any });
+      }
+    } catch {}
+
     for (const row of result.rows) {
       const tenant: any = { ...row, stripeSubscriptions: [], hasGateAccess: false, billingOverride: !!overrideResult[row.tenant_id] };
       if (tenant.billingOverride) {
         tenant.hasGateAccess = true;
       }
-      if (row.stripe_customer_id) {
+      if (row.stripe_customer_id && stripeClient) {
         try {
-          const status = await stripeService.getBillingStatus(row.tenant_id);
-          tenant.stripeSubscriptions = status.subscriptions.map((s: any) => ({
-            ...s,
-            isGateProduct: gateProductIds.has(s.productId),
-          }));
+          const subs = await stripeClient.subscriptions.list({
+            customer: row.stripe_customer_id,
+            status: 'all',
+            limit: 20,
+            expand: ['data.items.data.price.product'],
+          });
+          tenant.stripeSubscriptions = subs.data.map((sub: any) => {
+            const item = sub.items?.data?.[0];
+            const product = item?.price?.product;
+            const productObj = typeof product === 'object' && product !== null ? product : null;
+            const productId = productObj?.id || (typeof product === 'string' ? product : '');
+            return {
+              id: sub.id,
+              productId,
+              productName: productObj?.name || 'Subscription',
+              status: sub.status,
+              quantity: item?.quantity || 1,
+              currentPeriodEnd: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
+              cancelAtPeriodEnd: sub.cancel_at_period_end,
+              isGateProduct: gateProductIds.has(productId),
+            };
+          });
           // Check if any active gate product subscription
           const now = new Date();
           for (const s of tenant.stripeSubscriptions) {
@@ -272,7 +301,9 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
               (s.cancelAtPeriodEnd && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > now);
             if (isActive) { tenant.hasGateAccess = true; break; }
           }
-        } catch { /* Stripe API error — skip enrichment */ }
+        } catch (err: any) {
+          tenant.stripeError = err.message || 'Stripe API error';
+        }
       }
       enriched.push(tenant);
     }

@@ -1616,6 +1616,17 @@
           if (window.__xrayDashWsHandler) {
             window.__xrayDashWsHandler(evt);
           }
+        } else if (msg.type === 'billing:updated' && msg.data) {
+          // Billing gate changed — reload dashboard view to update access
+          if (msg.data.hasVision) {
+            if (window.__xrayToast) window.__xrayToast('Subscription activated! Dashboard access granted.', 'success');
+          } else {
+            if (window.__xrayToast) window.__xrayToast('Subscription ended. Dashboard access has been revoked.', 'error');
+          }
+          // Refresh dashboard list view if it's currently showing
+          if (window.__xrayRefreshDashboardList) window.__xrayRefreshDashboardList();
+          // Trigger a re-check of billing status for any active dashboard view
+          if (window.__xrayBillingChanged) window.__xrayBillingChanged(msg.data);
         }
       } catch(e) {}
     };
