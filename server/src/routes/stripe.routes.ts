@@ -347,6 +347,55 @@ router.post('/admin/link-customer', authenticateJWT, async (req, res, next) => {
   }
 });
 
+// GET /admin/debug/:customerId - debug Stripe customer subscriptions (platform admin only)
+router.get('/admin/debug/:customerId', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN' } });
+    }
+    const { getSetting } = await import('../services/settings.service');
+    const secretKey = await getSetting('stripe_secret_key') || process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      return res.json({ ok: false, error: { message: 'No Stripe secret key configured', settingFound: false, envFound: !!process.env.STRIPE_SECRET_KEY } });
+    }
+    const Stripe = (await import('stripe')).default;
+    const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' as any });
+    const customerId = req.params.customerId;
+
+    const customer = await stripe.customers.retrieve(customerId) as any;
+    const subs = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'all',
+      limit: 20,
+      expand: ['data.items.data.price.product'],
+    });
+
+    res.json({
+      ok: true,
+      data: {
+        keyPrefix: secretKey.substring(0, 10) + '...',
+        customer: { id: customer.id, email: customer.email, name: customer.name, deleted: customer.deleted },
+        subscriptionCount: subs.data.length,
+        subscriptions: subs.data.map((s: any) => {
+          const item = s.items?.data?.[0];
+          const product = item?.price?.product;
+          const productObj = typeof product === 'object' ? product : null;
+          return {
+            id: s.id,
+            status: s.status,
+            productId: productObj?.id || product,
+            productName: productObj?.name || 'unknown',
+            priceId: item?.price?.id,
+            currentPeriodEnd: s.current_period_end ? new Date(s.current_period_end * 1000).toISOString() : null,
+          };
+        }),
+      },
+    });
+  } catch (err: any) {
+    res.json({ ok: false, error: { message: err.message, type: err.type, statusCode: err.statusCode } });
+  }
+});
+
 // GET /config - get Stripe config (JWT, billing.view)
 router.get('/config', authenticateJWT, requirePermission('billing.view'), async (req, res, next) => {
   try {
