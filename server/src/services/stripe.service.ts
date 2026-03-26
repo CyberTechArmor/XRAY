@@ -98,6 +98,12 @@ export async function handleCheckoutCompleted(
       resourceType: 'billing',
       metadata: { session_id: session.id, customer_id: customerId, subscription_id: subscriptionId },
     });
+
+    // Notify tenant users via WebSocket that billing changed (gate lifted)
+    try {
+      const { broadcastToTenant } = await import('../ws');
+      broadcastToTenant(tenantId, 'billing:updated', { hasVision: true, status: 'active' });
+    } catch {}
   });
 }
 
@@ -243,6 +249,12 @@ export async function handleSubscriptionDeleted(
       resourceType: 'billing',
       metadata: { subscription_id: subscription.id },
     });
+
+    // Notify tenant users via WebSocket that billing changed (gate goes up)
+    try {
+      const { broadcastToTenant } = await import('../ws');
+      broadcastToTenant(tenantId, 'billing:updated', { hasVision: false, status: 'cancelled' });
+    } catch {}
   });
 }
 
