@@ -1618,12 +1618,14 @@
           }
         } else if (msg.type === 'billing:updated' && msg.data) {
           // Billing gate changed — reload dashboard view to update access
-          if (msg.data.hasVision) {
+          if (msg.data.gateChanged) {
+            // Admin changed gate products — re-check billing silently
+          } else if (msg.data.hasVision) {
             if (window.__xrayToast) window.__xrayToast('Subscription activated! Dashboard access granted.', 'success');
-          } else {
+          } else if (msg.data.hasVision === false) {
             if (window.__xrayToast) window.__xrayToast('Subscription ended. Dashboard access has been revoked.', 'error');
           }
-          // Refresh dashboard list view if it's currently showing
+          // Refresh dashboard list view to re-check billing from server
           if (window.__xrayRefreshDashboardList) window.__xrayRefreshDashboardList();
           // Trigger a re-check of billing status for any active dashboard view
           if (window.__xrayBillingChanged) window.__xrayBillingChanged(msg.data);

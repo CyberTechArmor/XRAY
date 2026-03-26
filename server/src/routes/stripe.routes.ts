@@ -74,6 +74,8 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
       const result = await stripeService.getBillingStatus(req.user!.tid);
       // Load dynamic product list from settings (simple array of product IDs)
       const gateProductsRaw = await getSetting('stripe_gate_products');
+      // gateConfigured = true if the setting EXISTS (even as "[]") — means admin set up the gate
+      const gateConfigured = gateProductsRaw !== null;
       let gateProductIds: string[] = [];
       if (gateProductsRaw) {
         try { gateProductIds = JSON.parse(gateProductsRaw); } catch { /* ignore bad JSON */ }
@@ -91,22 +93,15 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
           }
         }
       }
-      // If gate products are configured, ONLY grant access via matched subscriptions
-      // (billing_state.plan_tier fallback is only for when no gate products are set up)
-      if (!hasVision && gateProductIds.length === 0 && result.plan !== 'free') { hasVision = true; }
+      // Only fall back to plan_tier if gate system was NEVER configured
+      if (!hasVision && !gateConfigured && result.plan !== 'free') { hasVision = true; }
     } catch {
-      // Stripe not configured or API error — fall back to billing_state table
-      // BUT: if gate products are configured, still enforce them (no free pass)
+      // Stripe not configured or API error
+      // If gate products setting exists, enforce it (no free pass)
       const gateProductsRaw2 = await getSetting('stripe_gate_products');
-      let hasGateProducts = false;
-      if (gateProductsRaw2) {
-        try {
-          const arr = JSON.parse(gateProductsRaw2);
-          hasGateProducts = Array.isArray(arr) && arr.length > 0;
-        } catch { /* */ }
-      }
-      if (!hasGateProducts) {
-        // No gate products configured — use plan_tier as fallback
+      const gateConfigured2 = gateProductsRaw2 !== null;
+      if (!gateConfigured2) {
+        // Gate never configured — use plan_tier as fallback
         const { withClient } = await import('../db/connection');
         const bs = await withClient(async (client) => {
           await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
@@ -117,7 +112,7 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
           hasVision = true;
         }
       }
-      // If gate products ARE configured, hasVision stays false (no Stripe data to check)
+      // If gate IS configured, hasVision stays false
     }
     res.json({ ok: true, data: { hasVision } });
   } catch (err) {
@@ -248,6 +243,42 @@ router.get('/admin/products', authenticateJWT, async (req, res, next) => {
       data: result,
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/gate-products - save gate products and broadcast to all tenants
+router.post('/admin/gate-products', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Platform admin only' } });
+    }
+    const { updateSettings } = await import('../services/settings.service');
+    const gateProductIds: string[] = req.body.productIds || [];
+    await updateSettings({ stripe_gate_products: JSON.stringify(gateProductIds) }, req.user!.sub);
+
+    // Broadcast billing change to ALL connected tenant users
+    try {
+      const { broadcastToAll } = await import('../ws');
+      broadcastToAll('billing:updated', { gateChanged: true });
+    } catch {
+      // broadcastToAll might not exist — broadcast per tenant instead
+      try {
+        const { withClient } = await import('../db/connection');
+        const { broadcastToTenant } = await import('../ws');
+        const tenants = await withClient(async (client) => {
+          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+          const r = await client.query('SELECT id FROM platform.tenants');
+          return r.rows.map((row: any) => row.id);
+        });
+        for (const tid of tenants) {
+          broadcastToTenant(tid, 'billing:updated', { gateChanged: true });
+        }
+      } catch { /* ignore */ }
+    }
+
+    res.json({ ok: true, data: { saved: gateProductIds.length } });
   } catch (err) {
     next(err);
   }
