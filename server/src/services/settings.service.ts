@@ -73,8 +73,8 @@ export async function updateSettings(
       );
 
       // Auto-detect secret keys by name pattern, or use existing DB flag
-      const SECRET_KEY_PATTERNS = ['_secret', '_key', 'password', 'token'];
-      const isSecretByName = SECRET_KEY_PATTERNS.some((p) => key.toLowerCase().includes(p));
+      const SECRET_KEYS = ['stripe_secret_key', 'stripe_webhook_secret', 'smtp_pass', 'smtp_password'];
+      const isSecretByName = SECRET_KEYS.includes(key) || key.endsWith('_password') || key.endsWith('_secret');
       const isSecret = existing.rows.length > 0 ? existing.rows[0].is_secret : isSecretByName;
       const storedValue = value !== null && isSecret ? encrypt(value) : value;
 
