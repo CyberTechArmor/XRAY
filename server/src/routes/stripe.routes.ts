@@ -72,35 +72,28 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
     let hasVision = false;
     try {
       const result = await stripeService.getBillingStatus(req.user!.tid);
-      // Load dynamic product list from settings
+      // Load dynamic product list from settings (simple array of product IDs)
       const gateProductsRaw = await getSetting('stripe_gate_products');
-      let gateProducts: Array<{ productId: string; mode: string }> = [];
+      let gateProductIds: string[] = [];
       if (gateProductsRaw) {
-        try { gateProducts = JSON.parse(gateProductsRaw); } catch { /* ignore bad JSON */ }
+        try { gateProductIds = JSON.parse(gateProductsRaw); } catch { /* ignore bad JSON */ }
       }
-      if (gateProducts.length > 0) {
+      if (gateProductIds.length > 0) {
+        const gateSet = new Set(gateProductIds);
         const now = new Date();
         for (const s of result.subscriptions) {
           const isActive = s.status === 'active' || s.status === 'trialing' ||
             (s.cancelAtPeriodEnd && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > now);
           if (!isActive) continue;
-          const matched = gateProducts.find(p => p.productId === s.productId);
-          if (!matched) continue;
-          if (matched.mode === 'both') {
+          if (gateSet.has(s.productId)) {
             hasVision = true;
-          } else if (matched.mode === 'past_only') {
-            // Legacy: only if subscription was created before current period end
-            if (s.currentPeriodEnd && new Date(s.currentPeriodEnd) > now) hasVision = true;
-          } else if (matched.mode === 'future_only') {
-            // Only new subscriptions (created within current billing cycle)
-            hasVision = true;
+            break;
           }
-          if (hasVision) break;
         }
       }
       // If gate products are configured, ONLY grant access via matched subscriptions
       // (billing_state.plan_tier fallback is only for when no gate products are set up)
-      if (!hasVision && gateProducts.length === 0 && result.plan !== 'free') { hasVision = true; }
+      if (!hasVision && gateProductIds.length === 0 && result.plan !== 'free') { hasVision = true; }
     } catch {
       // Stripe not configured — fall back to billing_state table directly
       const { withClient } = await import('../db/connection');
@@ -206,6 +199,47 @@ router.post('/checkout', authenticateJWT, requirePermission('billing.manage'), a
   }
 });
 
+// GET /admin/products - list all Stripe products with gate status (platform admin only)
+router.get('/admin/products', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Platform admin only' } });
+    }
+    const { getSetting } = await import('../services/settings.service');
+    const secretKey = await getSetting('stripe_secret_key') || process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      return res.status(400).json({ ok: false, error: { code: 'NO_STRIPE_KEY', message: 'No Stripe secret key configured' } });
+    }
+    const Stripe = (await import('stripe')).default;
+    const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' as any });
+
+    const products = await stripe.products.list({ active: true, limit: 100 });
+
+    // Load gate products setting (simple array of product IDs)
+    const gateProductsRaw = await getSetting('stripe_gate_products');
+    let gateProductIds: string[] = [];
+    if (gateProductsRaw) {
+      try { gateProductIds = JSON.parse(gateProductsRaw); } catch { /* ignore */ }
+    }
+    const gateSet = new Set(gateProductIds);
+
+    const result = products.data.map(p => ({
+      id: p.id,
+      name: p.name,
+      description: p.description || '',
+      isGateProduct: gateSet.has(p.id),
+    }));
+
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /admin/billing - list all tenant billing statuses with Stripe details (platform admin only)
 router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
   try {
@@ -215,13 +249,13 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
     const { getSetting } = await import('../services/settings.service');
     const { withClient } = await import('../db/connection');
 
-    // Load gate products config
+    // Load gate products config (simple array of product IDs)
     const gateProductsRaw = await getSetting('stripe_gate_products');
-    let gateProducts: Array<{ productId: string; mode: string }> = [];
+    let gateProductIdsList: string[] = [];
     if (gateProductsRaw) {
-      try { gateProducts = JSON.parse(gateProductsRaw); } catch { /* */ }
+      try { gateProductIdsList = JSON.parse(gateProductsRaw); } catch { /* */ }
     }
-    const gateProductIds = new Set(gateProducts.map(p => p.productId));
+    const gateProductIds = new Set(gateProductIdsList);
 
     // Load billing override settings
     const overrideResult = await withClient(async (client) => {
