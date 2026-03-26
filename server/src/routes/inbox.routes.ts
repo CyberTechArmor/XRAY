@@ -122,21 +122,50 @@ router.post('/', authenticateJWT, async (req, res, next) => {
       req.user!.sub, req.user!.tid, req.user!.is_platform_admin, data
     );
 
-    // Notify all thread participants via WebSocket (except sender)
+    // Notify all thread participants via WebSocket + push (except sender)
     try {
       const { sendToUser } = await import('../ws');
+      const { sendPushToUser } = await import('../services/push.service');
       const participants = await inboxService.getThreadParticipants(result.threadId);
+
+      // Get sender name for notifications
+      const { withClient } = await import('../db/connection');
+      const senderInfo = await withClient(async (client) => {
+        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        const r = await client.query('SELECT name, email FROM platform.users WHERE id = $1', [req.user!.sub]);
+        return r.rows[0] || { name: '', email: '' };
+      });
+      const senderDisplay = senderInfo.name || senderInfo.email || 'Someone';
+
       for (const pid of participants) {
         if (pid === req.user!.sub) continue; // don't notify sender
         const unreadCount = await inboxService.getUnreadCount(pid);
+        // WebSocket (real-time in-app)
         sendToUser(pid, 'inbox:new-message', {
           threadId: result.threadId,
           messageId: result.messageId,
           subject: data.subject || null,
-          senderName: req.user!.sub,
+          senderName: senderDisplay,
           preview: data.body.substring(0, 120),
           unreadCount,
         });
+        // Push notification (mobile/background)
+        try {
+          // Check user notification preferences
+          const userPrefs = await withClient(async (client) => {
+            await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+            const r = await client.query('SELECT preferences FROM platform.users WHERE id = $1', [pid]);
+            return r.rows[0]?.preferences || {};
+          });
+          if (userPrefs.notify_inbox !== false) {
+            await sendPushToUser(pid, {
+              title: senderDisplay,
+              body: data.body.substring(0, 120),
+              tag: 'inbox-' + result.threadId,
+              data: { type: 'inbox', threadId: result.threadId },
+            });
+          }
+        } catch { /* push failed — not critical */ }
       }
     } catch {}
 

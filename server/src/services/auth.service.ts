@@ -861,14 +861,14 @@ export async function beginPasskeyAuth(email?: string): Promise<unknown> {
 
   const options = await webauthn.generateAuthOptions(allowCredentials);
 
-  // Store challenge temporarily
+  // Store challenge with a unique key (UUID) to avoid collisions
+  const challengeKey = 'passkey_challenge_' + generateUUID();
   await withClient(async (client) => {
-    // Store in platform_settings as a temporary challenge
     await client.query(
       `INSERT INTO platform.platform_settings (key, value, updated_at)
        VALUES ($1, $2, now())
        ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()`,
-      ['passkey_challenge_' + options.challenge.substring(0, 16), JSON.stringify({ challenge: options.challenge, email, created: Date.now() })]
+      [challengeKey, JSON.stringify({ challenge: options.challenge, email, created: Date.now() })]
     );
   });
 
