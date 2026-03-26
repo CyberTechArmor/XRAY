@@ -2,29 +2,34 @@ import Stripe from 'stripe';
 import { withClient, withTransaction } from '../db/connection';
 import { config } from '../config';
 import { AppError } from '../middleware/error-handler';
-import { getStripeConfig } from './settings.service';
+import { getStripeConfig, getSetting } from './settings.service';
 import * as auditService from './audit.service';
 
-function getStripeClient(): Stripe {
-  // Use the secret key from env (not the publishable key from settings)
-  const secretKey = process.env.STRIPE_SECRET_KEY;
+async function getStripeClient(): Promise<Stripe> {
+  // Check platform settings first, fall back to env var
+  const secretKey = await getSetting('stripe_secret_key') || process.env.STRIPE_SECRET_KEY;
   if (!secretKey) {
-    throw new AppError(500, 'STRIPE_NOT_CONFIGURED', 'Stripe is not configured');
+    throw new AppError(500, 'STRIPE_NOT_CONFIGURED', 'Stripe secret key is not configured. Set it in Admin → Stripe or via STRIPE_SECRET_KEY env var.');
   }
   return new Stripe(secretKey, { apiVersion: '2024-06-20' as Stripe.LatestApiVersion });
+}
+
+async function getWebhookSecret(): Promise<string> {
+  const secret = await getSetting('stripe_webhook_secret') || config.stripeWebhookSecret;
+  if (!secret) {
+    throw new AppError(500, 'STRIPE_WEBHOOK_NOT_CONFIGURED', 'Stripe webhook secret is not configured. Set it in Admin → Stripe or via STRIPE_WEBHOOK_SECRET env var.');
+  }
+  return secret;
 }
 
 export async function handleWebhook(
   payload: string | Buffer,
   signature: string
 ): Promise<void> {
-  const stripe = getStripeClient();
+  const stripe = await getStripeClient();
+  const webhookSecret = await getWebhookSecret();
 
-  if (!config.stripeWebhookSecret) {
-    throw new AppError(500, 'STRIPE_WEBHOOK_NOT_CONFIGURED', 'Stripe webhook secret is not configured');
-  }
-
-  const event = stripe.webhooks.constructEvent(payload, signature, config.stripeWebhookSecret);
+  const event = stripe.webhooks.constructEvent(payload, signature, webhookSecret);
 
   switch (event.type) {
     case 'checkout.session.completed':
@@ -279,7 +284,7 @@ export async function createPortalSession(
   stripeCustomerId: string,
   returnUrl: string
 ): Promise<{ url: string }> {
-  const stripe = getStripeClient();
+  const stripe = await getStripeClient();
 
   const session = await stripe.billingPortal.sessions.create({
     customer: stripeCustomerId,
@@ -339,7 +344,7 @@ export async function getBillingStatus(tenantId: string): Promise<{
   // If we have a Stripe customer, fetch live data from Stripe
   if (tenant?.stripe_customer_id) {
     try {
-      const stripe = getStripeClient();
+      const stripe = await getStripeClient();
 
       // Fetch active subscriptions
       const subs = await stripe.subscriptions.list({
@@ -400,7 +405,7 @@ export async function createCheckoutSession(
   returnUrl: string,
   customerEmail?: string
 ): Promise<{ url: string; sessionId: string }> {
-  const stripe = getStripeClient();
+  const stripe = await getStripeClient();
 
   // Resolve product prices from Stripe
   const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [];
