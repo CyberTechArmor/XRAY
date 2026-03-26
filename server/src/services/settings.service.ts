@@ -72,14 +72,17 @@ export async function updateSettings(
         [key]
       );
 
-      const isSecret = existing.rows.length > 0 ? existing.rows[0].is_secret : false;
+      // Auto-detect secret keys by name pattern, or use existing DB flag
+      const SECRET_KEY_PATTERNS = ['_secret', '_key', 'password', 'token'];
+      const isSecretByName = SECRET_KEY_PATTERNS.some((p) => key.toLowerCase().includes(p));
+      const isSecret = existing.rows.length > 0 ? existing.rows[0].is_secret : isSecretByName;
       const storedValue = value !== null && isSecret ? encrypt(value) : value;
 
       await client.query(
-        `INSERT INTO platform.platform_settings (key, value, updated_by, updated_at)
-         VALUES ($1, $2, $3, now())
-         ON CONFLICT (key) DO UPDATE SET value = $2, updated_by = $3, updated_at = now()`,
-        [key, storedValue, userId]
+        `INSERT INTO platform.platform_settings (key, value, is_secret, updated_by, updated_at)
+         VALUES ($1, $2, $3, $4, now())
+         ON CONFLICT (key) DO UPDATE SET value = $2, is_secret = $3, updated_by = $4, updated_at = now()`,
+        [key, storedValue, isSecret, userId]
       );
     }
   });
