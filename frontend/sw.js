@@ -1,4 +1,4 @@
-var CACHE_NAME = 'xray-v6';
+var CACHE_NAME = 'xray-v7';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -101,7 +101,6 @@ self.addEventListener('push', function(e) {
   if (isMeetCall) {
     options.requireInteraction = true;
     options.actions = [
-      { action: 'join', title: 'Join Call' },
       { action: 'dismiss', title: 'Dismiss' }
     ];
     // Vibration pattern: urgent ringing (long repeating pattern)
@@ -131,9 +130,11 @@ self.addEventListener('notificationclick', function(e) {
     return;
   }
 
-  // Build the app URL with meet-join hash for auto-joining
+  // Build the app URL based on notification type
   var appUrl = '/';
-  if (isMeetCall) {
+  if (data.type === 'inbox' && data.threadId) {
+    appUrl = '/#inbox';
+  } else if (isMeetCall) {
     appUrl = '/#meet-join/' + (data.roomCode || '') + '?callId=' + (data.callId || '');
     if (data.joinUrl) {
       appUrl += '&joinUrl=' + encodeURIComponent(data.joinUrl);

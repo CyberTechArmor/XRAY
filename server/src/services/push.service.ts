@@ -112,15 +112,32 @@ export async function sendPushToAdmins(payload: Record<string, unknown>): Promis
   await withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     await ensureTable(client);
-    const result = await client.query(
-      `SELECT ps.endpoint, ps.keys_p256dh, ps.keys_auth
-       FROM platform.push_subscriptions ps
-       JOIN platform.users u ON u.id = ps.user_id
-       JOIN platform.roles r ON r.id = u.role_id
-       WHERE r.is_platform = true`
-    );
+    // Try to include preferences if column exists, fallback to without
+    let result;
+    try {
+      result = await client.query(
+        `SELECT ps.endpoint, ps.keys_p256dh, ps.keys_auth, u.preferences
+         FROM platform.push_subscriptions ps
+         JOIN platform.users u ON u.id = ps.user_id
+         JOIN platform.roles r ON r.id = u.role_id
+         WHERE r.is_platform = true`
+      );
+    } catch {
+      result = await client.query(
+        `SELECT ps.endpoint, ps.keys_p256dh, ps.keys_auth
+         FROM platform.push_subscriptions ps
+         JOIN platform.users u ON u.id = ps.user_id
+         JOIN platform.roles r ON r.id = u.role_id
+         WHERE r.is_platform = true`
+      );
+    }
+    // Filter by notification preference (notify_calls defaults to true)
+    const filteredRows = result.rows.filter((row: any) => {
+      const prefs = row.preferences || {};
+      return prefs.notify_calls !== false;
+    });
     const message = JSON.stringify(payload);
-    for (const row of result.rows) {
+    for (const row of filteredRows) {
       const sub = {
         endpoint: row.endpoint,
         keys: { p256dh: row.keys_p256dh, auth: row.keys_auth },
