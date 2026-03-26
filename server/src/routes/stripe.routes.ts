@@ -70,22 +70,36 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
       return;
     }
     let hasVision = false;
-    let dashSlots = 0;
     try {
       const result = await stripeService.getBillingStatus(req.user!.tid);
-      // Load product IDs from settings (fall back to hardcoded defaults)
-      const { getSetting } = await import('../services/settings.service');
-      const VISION_PRODUCT = await getSetting('stripe_vision_product') || 'prod_UB9nZ8qktPbtyi';
-      const DASHBOARD_PRODUCT = await getSetting('stripe_dashboard_product') || 'prod_UB9fsE1JmQjRgw';
-      for (const s of result.subscriptions) {
-        if (s.status === 'active' || s.status === 'trialing' || (s.cancelAtPeriodEnd && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > new Date())) {
-          if (s.productId === VISION_PRODUCT) hasVision = true;
-          if (s.productId === DASHBOARD_PRODUCT) dashSlots += s.quantity;
+      // Load dynamic product list from settings
+      const gateProductsRaw = await getSetting('stripe_gate_products');
+      let gateProducts: Array<{ productId: string; mode: string }> = [];
+      if (gateProductsRaw) {
+        try { gateProducts = JSON.parse(gateProductsRaw); } catch { /* ignore bad JSON */ }
+      }
+      if (gateProducts.length > 0) {
+        const now = new Date();
+        for (const s of result.subscriptions) {
+          const isActive = s.status === 'active' || s.status === 'trialing' ||
+            (s.cancelAtPeriodEnd && s.currentPeriodEnd && new Date(s.currentPeriodEnd) > now);
+          if (!isActive) continue;
+          const matched = gateProducts.find(p => p.productId === s.productId);
+          if (!matched) continue;
+          if (matched.mode === 'both') {
+            hasVision = true;
+          } else if (matched.mode === 'past_only') {
+            // Legacy: only if subscription was created before current period end
+            if (s.currentPeriodEnd && new Date(s.currentPeriodEnd) > now) hasVision = true;
+          } else if (matched.mode === 'future_only') {
+            // Only new subscriptions (created within current billing cycle)
+            hasVision = true;
+          }
+          if (hasVision) break;
         }
       }
-      // Fall back to billing_state limits if no Stripe subscriptions
+      // Fall back to billing_state limits if no Stripe subscriptions matched
       if (!hasVision && result.plan !== 'free') { hasVision = true; }
-      if (dashSlots === 0 && result.dashboardLimit > 0) { dashSlots = result.dashboardLimit; }
     } catch {
       // Stripe not configured — fall back to billing_state table directly
       const { withClient } = await import('../db/connection');
@@ -96,10 +110,9 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
       });
       if (bs && bs.plan_tier !== 'free') {
         hasVision = true;
-        dashSlots = bs.dashboard_limit || 0;
       }
     }
-    res.json({ ok: true, data: { hasVision, dashSlots } });
+    res.json({ ok: true, data: { hasVision } });
   } catch (err) {
     next(err);
   }
