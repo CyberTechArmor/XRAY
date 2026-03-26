@@ -95,16 +95,29 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
       // (billing_state.plan_tier fallback is only for when no gate products are set up)
       if (!hasVision && gateProductIds.length === 0 && result.plan !== 'free') { hasVision = true; }
     } catch {
-      // Stripe not configured — fall back to billing_state table directly
-      const { withClient } = await import('../db/connection');
-      const bs = await withClient(async (client) => {
-        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-        const r = await client.query('SELECT * FROM platform.billing_state WHERE tenant_id = $1', [req.user!.tid]);
-        return r.rows[0];
-      });
-      if (bs && bs.plan_tier !== 'free') {
-        hasVision = true;
+      // Stripe not configured or API error — fall back to billing_state table
+      // BUT: if gate products are configured, still enforce them (no free pass)
+      const gateProductsRaw2 = await getSetting('stripe_gate_products');
+      let hasGateProducts = false;
+      if (gateProductsRaw2) {
+        try {
+          const arr = JSON.parse(gateProductsRaw2);
+          hasGateProducts = Array.isArray(arr) && arr.length > 0;
+        } catch { /* */ }
       }
+      if (!hasGateProducts) {
+        // No gate products configured — use plan_tier as fallback
+        const { withClient } = await import('../db/connection');
+        const bs = await withClient(async (client) => {
+          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+          const r = await client.query('SELECT * FROM platform.billing_state WHERE tenant_id = $1', [req.user!.tid]);
+          return r.rows[0];
+        });
+        if (bs && bs.plan_tier !== 'free') {
+          hasVision = true;
+        }
+      }
+      // If gate products ARE configured, hasVision stays false (no Stripe data to check)
     }
     res.json({ ok: true, data: { hasVision } });
   } catch (err) {
