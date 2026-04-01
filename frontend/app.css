@@ -449,7 +449,7 @@ input[type="file"]::file-selector-button:hover,input[type='file']::file-selector
   #mobile-nav { z-index: 9000; -webkit-tap-highlight-color: transparent; }
   .mob-nav-btn { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
   /* Meet mobile adjustments */
-  .meet-panel { left: 8px !important; right: 8px !important; width: auto !important; }
+  .meet-panel { left: 8px !important; right: 8px !important; width: auto !important; top: auto !important; bottom: 80px !important; max-height: 60vh !important; }
   .meet-viewport.mode-pip { bottom: 76px; right: 8px; width: calc(100vw - 16px); }
   /* Meet fullscreen on mobile: leave room for bottom nav + raised DASH button */
   .meet-viewport.mode-fullscreen { bottom: 80px !important; }
