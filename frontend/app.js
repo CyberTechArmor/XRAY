@@ -595,6 +595,8 @@
       if (item.view === 'billing' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_billing) return;
       // Hide team nav for members without admin permission
       if (item.view === 'team' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
+      // Hide connections nav for members without admin permission
+      if (item.view === 'connections' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -686,6 +688,8 @@
       if (item.view === 'billing' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_billing) return;
       // Hide team nav for members without admin permission
       if (item.view === 'team' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
+      // Hide connections nav for members without admin permission
+      if (item.view === 'connections' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
