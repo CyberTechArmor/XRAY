@@ -39,31 +39,24 @@ export async function getProfile(userId: string) {
   return withClient(async (client) => {
     await bypassRLS(client);
 
-    let result;
-    try {
-      result = await client.query(
-        `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
-                u.created_at, u.tenant_id, u.has_admin, u.has_billing,
-                r.name as role_name, r.slug as role_slug,
-                r.is_platform as is_platform_admin
-         FROM platform.users u
-         JOIN platform.roles r ON r.id = u.role_id
-         WHERE u.id = $1`,
-        [userId]
-      );
-    } catch {
-      // Fallback if has_admin/has_billing columns don't exist yet
-      result = await client.query(
-        `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
-                u.created_at, u.tenant_id, false as has_admin, false as has_billing,
-                r.name as role_name, r.slug as role_slug,
-                r.is_platform as is_platform_admin
-         FROM platform.users u
-         JOIN platform.roles r ON r.id = u.role_id
-         WHERE u.id = $1`,
-        [userId]
-      );
-    }
+    // Check if new permission columns exist
+    const colCheck = await client.query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'platform' AND table_name = 'users' AND column_name = 'has_admin'`
+    );
+    const hasNewCols = colCheck.rows.length > 0;
+
+    const extraCols = hasNewCols ? 'u.has_admin, u.has_billing,' : 'false as has_admin, false as has_billing,';
+    const result = await client.query(
+      `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
+              u.created_at, u.tenant_id, ${extraCols}
+              r.name as role_name, r.slug as role_slug,
+              r.is_platform as is_platform_admin
+       FROM platform.users u
+       JOIN platform.roles r ON r.id = u.role_id
+       WHERE u.id = $1`,
+      [userId]
+    );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
 
     const user = result.rows[0];
@@ -242,11 +235,10 @@ export async function revokeSession(userId: string, sessionId: string) {
 }
 
 export async function listUsers(tenantId: string, query: { page: number; limit: number }) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
-    const offset = (query.page - 1) * query.limit;
-    // Try with has_admin/has_billing columns; fall back if migration hasn't run
-    try {
+  const offset = (query.page - 1) * query.limit;
+  try {
+    return await withClient(async (client) => {
+      await bypassRLS(client);
       const result = await client.query(
         `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
                 u.has_admin, u.has_billing, u.tenant_id,
@@ -259,8 +251,11 @@ export async function listUsers(tenantId: string, query: { page: number; limit: 
         [tenantId, query.limit, offset]
       );
       return result.rows;
-    } catch {
-      // Fallback if has_admin/has_billing columns don't exist yet
+    });
+  } catch {
+    // Fallback with FRESH connection if has_admin/has_billing columns don't exist
+    return await withClient(async (client) => {
+      await bypassRLS(client);
       const result = await client.query(
         `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
                 u.tenant_id, false as has_admin, false as has_billing,
@@ -273,8 +268,8 @@ export async function listUsers(tenantId: string, query: { page: number; limit: 
         [tenantId, query.limit, offset]
       );
       return result.rows;
-    }
-  });
+    });
+  }
 }
 
 export async function updateUser(
