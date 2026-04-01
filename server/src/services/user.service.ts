@@ -235,41 +235,32 @@ export async function revokeSession(userId: string, sessionId: string) {
 }
 
 export async function listUsers(tenantId: string, query: { page: number; limit: number }) {
-  const offset = (query.page - 1) * query.limit;
-  try {
-    return await withClient(async (client) => {
-      await bypassRLS(client);
-      const result = await client.query(
-        `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
-                u.has_admin, u.has_billing, u.tenant_id,
-                r.name as role_name, r.slug as role_slug
-         FROM platform.users u
-         JOIN platform.roles r ON r.id = u.role_id
-         WHERE u.tenant_id = $1
-         ORDER BY u.created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [tenantId, query.limit, offset]
-      );
-      return result.rows;
-    });
-  } catch {
-    // Fallback with FRESH connection if has_admin/has_billing columns don't exist
-    return await withClient(async (client) => {
-      await bypassRLS(client);
-      const result = await client.query(
-        `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
-                u.tenant_id, false as has_admin, false as has_billing,
-                r.name as role_name, r.slug as role_slug
-         FROM platform.users u
-         JOIN platform.roles r ON r.id = u.role_id
-         WHERE u.tenant_id = $1
-         ORDER BY u.created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [tenantId, query.limit, offset]
-      );
-      return result.rows;
-    });
-  }
+  return withClient(async (client) => {
+    await bypassRLS(client);
+    const offset = (query.page - 1) * query.limit;
+
+    // Check if new columns exist via information_schema (never fails)
+    const colCheck = await client.query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'platform' AND table_name = 'users' AND column_name = 'has_admin'`
+    );
+    const extraCols = colCheck.rows.length > 0
+      ? 'u.has_admin, u.has_billing, u.tenant_id,'
+      : 'false as has_admin, false as has_billing, u.tenant_id,';
+
+    const result = await client.query(
+      `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
+              ${extraCols}
+              r.name as role_name, r.slug as role_slug
+       FROM platform.users u
+       JOIN platform.roles r ON r.id = u.role_id
+       WHERE u.tenant_id = $1
+       ORDER BY u.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [tenantId, query.limit, offset]
+    );
+    return result.rows;
+  });
 }
 
 export async function updateUser(
