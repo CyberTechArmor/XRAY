@@ -144,6 +144,8 @@ router.post('/override/:tenantId', authenticateJWT, async (req, res, next) => {
     const key = 'billing.override.' + req.params.tenantId;
     const enabled = req.body && req.body.enabled;
     await updateSettings({ [key]: enabled ? 'true' : null }, req.user!.sub);
+    const { broadcastToTenant } = await import('../ws');
+    broadcastToTenant(req.params.tenantId, 'billing:updated', { billingOverride: !!enabled });
     res.json({ ok: true, data: { override: !!enabled } });
   } catch (err) {
     next(err);
