@@ -37,7 +37,34 @@ async function getUserPermissions(userId: string): Promise<string[]> {
        WHERE u.id = $1`,
       [userId]
     );
-    return result.rows.map((r: { key: string }) => r.key);
+    const perms = result.rows.map((r: { key: string }) => r.key);
+
+    // Augment permissions based on user-level permission flags
+    const flagResult = await client.query(
+      `SELECT has_admin, has_billing FROM platform.users WHERE id = $1`,
+      [userId]
+    );
+    if (flagResult.rows.length > 0) {
+      const { has_admin, has_billing } = flagResult.rows[0];
+      if (has_admin && !perms.includes('users.manage')) perms.push('users.manage');
+      if (has_billing) {
+        if (!perms.includes('billing.manage')) perms.push('billing.manage');
+        if (!perms.includes('billing.view')) perms.push('billing.view');
+      }
+    }
+
+    return perms;
+  });
+}
+
+async function getUserFlags(userId: string): Promise<{ has_admin: boolean; has_billing: boolean }> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `SELECT has_admin, has_billing FROM platform.users WHERE id = $1`,
+      [userId]
+    );
+    if (result.rows.length === 0) return { has_admin: false, has_billing: false };
+    return { has_admin: !!result.rows[0].has_admin, has_billing: !!result.rows[0].has_billing };
   });
 }
 
@@ -219,6 +246,8 @@ export async function firstBootSetup(input: {
       permissions,
       is_owner: true,
       is_platform_admin: true,
+      has_admin: true,
+      has_billing: true,
     });
 
     auditService.log({
@@ -983,6 +1012,7 @@ export async function createSession(
     const isPlatformAdmin = user.role_slug === 'platform_admin';
 
     const permissions = await getUserPermissions(userId);
+    const flags = await getUserFlags(userId);
 
     const refreshToken = signRefreshToken();
     const refreshTokenHash = hashRefreshToken(refreshToken);
@@ -1002,6 +1032,8 @@ export async function createSession(
       permissions,
       is_owner: user.is_owner,
       is_platform_admin: isPlatformAdmin,
+      has_admin: flags.has_admin,
+      has_billing: flags.has_billing,
     });
 
     return {

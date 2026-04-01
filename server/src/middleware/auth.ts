@@ -10,6 +10,8 @@ export interface JWTPayload {
   permissions: string[];
   is_owner: boolean;
   is_platform_admin: boolean;
+  has_admin: boolean;
+  has_billing: boolean;
   iat: number;
   exp: number;
 }
