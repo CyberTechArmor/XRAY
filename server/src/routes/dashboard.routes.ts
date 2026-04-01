@@ -234,6 +234,38 @@ router.get('/:id/access', authenticateJWT, requirePermission('dashboards.manage'
   }
 });
 
+// GET /:id/team-access - list ALL tenant users with their access status (JWT, dashboards.view)
+router.get('/:id/team-access', authenticateJWT, async (req, res, next) => {
+  try {
+    const { withClient } = await import('../db/connection');
+    const result = await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      // Get the dashboard's tenant
+      const dashRow = await client.query('SELECT tenant_id FROM platform.dashboards WHERE id = $1', [req.params.id]);
+      if (dashRow.rows.length === 0) return [];
+      const tenantId = dashRow.rows[0].tenant_id;
+      // Get all users in this tenant with their access status for this dashboard
+      const users = await client.query(
+        `SELECT u.id, u.email, u.name, u.is_owner,
+                CASE WHEN da.id IS NOT NULL THEN true ELSE false END as has_access
+         FROM platform.users u
+         LEFT JOIN platform.dashboard_access da ON da.user_id = u.id AND da.dashboard_id = $1
+         WHERE u.tenant_id = $2 AND u.status = 'active'
+         ORDER BY u.is_owner DESC, u.name ASC`,
+        [req.params.id, tenantId]
+      );
+      return users.rows;
+    });
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /:id/access - grant access to dashboard (JWT, dashboards.manage)
 router.post('/:id/access', authenticateJWT, requirePermission('dashboards.manage'), async (req, res, next) => {
   try {
