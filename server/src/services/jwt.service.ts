@@ -9,6 +9,8 @@ interface AccessTokenInput {
   permissions: string[];
   is_owner: boolean;
   is_platform_admin: boolean;
+  has_admin?: boolean;
+  has_billing?: boolean;
 }
 
 export function signAccessToken(payload: AccessTokenInput): string {

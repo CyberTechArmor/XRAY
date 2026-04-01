@@ -37,7 +37,34 @@ async function getUserPermissions(userId: string): Promise<string[]> {
        WHERE u.id = $1`,
       [userId]
     );
-    return result.rows.map((r: { key: string }) => r.key);
+    const perms = result.rows.map((r: { key: string }) => r.key);
+
+    // Augment permissions based on user-level permission flags
+    const flagResult = await client.query(
+      `SELECT has_admin, has_billing FROM platform.users WHERE id = $1`,
+      [userId]
+    );
+    if (flagResult.rows.length > 0) {
+      const { has_admin, has_billing } = flagResult.rows[0];
+      if (has_admin && !perms.includes('users.manage')) perms.push('users.manage');
+      if (has_billing) {
+        if (!perms.includes('billing.manage')) perms.push('billing.manage');
+        if (!perms.includes('billing.view')) perms.push('billing.view');
+      }
+    }
+
+    return perms;
+  });
+}
+
+async function getUserFlags(userId: string): Promise<{ has_admin: boolean; has_billing: boolean }> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `SELECT has_admin, has_billing FROM platform.users WHERE id = $1`,
+      [userId]
+    );
+    if (result.rows.length === 0) return { has_admin: false, has_billing: false };
+    return { has_admin: !!result.rows[0].has_admin, has_billing: !!result.rows[0].has_billing };
   });
 }
 
@@ -219,6 +246,8 @@ export async function firstBootSetup(input: {
       permissions,
       is_owner: true,
       is_platform_admin: true,
+      has_admin: true,
+      has_billing: true,
     });
 
     auditService.log({
@@ -497,6 +526,7 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
       [user.id, tenant.id, refreshTokenHash, expiresAt]
     );
 
+    const flags = await getUserFlags(user.id);
     const accessToken = signAccessToken({
       sub: user.id,
       tid: tenant.id,
@@ -504,6 +534,8 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
       permissions,
       is_owner: true,
       is_platform_admin: isPlatformAdmin,
+      has_admin: flags.has_admin,
+      has_billing: flags.has_billing,
     });
 
     auditService.log({
@@ -633,6 +665,7 @@ export async function completeLogin(magicLink: MagicLink, selectedTenantId?: str
       [user.id, user.tenant_id, refreshTokenHash, expiresAt]
     );
 
+    const loginFlags = await getUserFlags(user.id);
     const accessToken = signAccessToken({
       sub: user.id,
       tid: user.tenant_id,
@@ -640,6 +673,8 @@ export async function completeLogin(magicLink: MagicLink, selectedTenantId?: str
       permissions,
       is_owner: user.is_owner,
       is_platform_admin: isPlatformAdmin,
+      has_admin: loginFlags.has_admin,
+      has_billing: loginFlags.has_billing,
     });
 
     auditService.log({
@@ -712,6 +747,7 @@ export async function loginToTenant(email: string, tenantId: string): Promise<To
       [user.id, user.tenant_id, refreshTokenHash, expiresAt]
     );
 
+    const tenantFlags = await getUserFlags(user.id);
     const accessToken = signAccessToken({
       sub: user.id,
       tid: user.tenant_id,
@@ -719,6 +755,8 @@ export async function loginToTenant(email: string, tenantId: string): Promise<To
       permissions,
       is_owner: user.is_owner,
       is_platform_admin: isPlatformAdmin,
+      has_admin: tenantFlags.has_admin,
+      has_billing: tenantFlags.has_billing,
     });
 
     auditService.log({
@@ -809,6 +847,7 @@ export async function refreshSession(refreshTokenHash: string): Promise<TokenPai
     );
     const permissions = permResult.rows.map((r: { key: string }) => r.key);
 
+    const refreshFlags = await getUserFlags(session.user_id);
     const accessToken = signAccessToken({
       sub: session.user_id,
       tid: session.tenant_id,
@@ -816,6 +855,8 @@ export async function refreshSession(refreshTokenHash: string): Promise<TokenPai
       permissions,
       is_owner: session.is_owner,
       is_platform_admin: isPlatformAdmin,
+      has_admin: refreshFlags.has_admin,
+      has_billing: refreshFlags.has_billing,
     });
 
     return {
@@ -983,6 +1024,7 @@ export async function createSession(
     const isPlatformAdmin = user.role_slug === 'platform_admin';
 
     const permissions = await getUserPermissions(userId);
+    const flags = await getUserFlags(userId);
 
     const refreshToken = signRefreshToken();
     const refreshTokenHash = hashRefreshToken(refreshToken);
@@ -1002,6 +1044,8 @@ export async function createSession(
       permissions,
       is_owner: user.is_owner,
       is_platform_admin: isPlatformAdmin,
+      has_admin: flags.has_admin,
+      has_billing: flags.has_billing,
     });
 
     return {

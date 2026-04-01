@@ -5,6 +5,8 @@ import { sendTemplateEmail } from './email.service';
 import { signAccessToken, signRefreshToken } from './jwt.service';
 import { config } from '../config';
 import * as auditService from './audit.service';
+import * as inboxService from './inbox.service';
+import { broadcastToTenant } from '../ws';
 
 export async function createInvitation(
   tenantId: string,
@@ -178,6 +180,8 @@ export async function acceptInvitation(input: { token: string; name: string }) {
       permissions,
       is_owner: false,
       is_platform_admin: false,
+      has_admin: false,
+      has_billing: false,
     });
 
     auditService.log({
@@ -187,6 +191,62 @@ export async function acceptInvitation(input: { token: string; name: string }) {
       resourceType: 'invitation',
       resourceId: invitation.id,
     });
+
+    // Notify tenant owner via inbox
+    const ownerResult = await client.query(
+      `SELECT id FROM platform.users WHERE tenant_id = $1 AND is_owner = true LIMIT 1`,
+      [invitation.tenant_id]
+    );
+    const tenantNameResult = await client.query(
+      `SELECT name FROM platform.tenants WHERE id = $1`,
+      [invitation.tenant_id]
+    );
+    const tenantName = tenantNameResult.rows[0]?.name || 'your team';
+    const memberName = user.name || user.email;
+
+    if (ownerResult.rows.length > 0) {
+      const ownerId = ownerResult.rows[0].id;
+      try {
+        await inboxService.sendMessage(user.id, invitation.tenant_id, false, {
+          recipientIds: [ownerId],
+          subject: 'New team member joined',
+          body: `${memberName} accepted your invitation and joined ${tenantName}.`,
+          tag: 'system',
+        });
+      } catch (e) {
+        console.error('Failed to send join notification to owner:', e);
+      }
+    }
+
+    // Also notify any users with has_admin flag
+    const adminResult = await client.query(
+      `SELECT id FROM platform.users WHERE tenant_id = $1 AND has_admin = true AND is_owner = false AND id != $2`,
+      [invitation.tenant_id, user.id]
+    );
+    for (const admin of adminResult.rows) {
+      try {
+        await inboxService.sendMessage(user.id, invitation.tenant_id, false, {
+          recipientIds: [admin.id],
+          subject: 'New team member joined',
+          body: `${memberName} accepted an invitation and joined ${tenantName}.`,
+          tag: 'system',
+        });
+      } catch (e) {
+        console.error('Failed to send join notification to admin:', e);
+      }
+    }
+
+    // Broadcast WebSocket event to tenant for real-time team list refresh
+    try {
+      broadcastToTenant(invitation.tenant_id, 'team:member-joined', {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role_name: roleSlug,
+      });
+    } catch (e) {
+      console.error('Failed to broadcast team:member-joined:', e);
+    }
 
     return {
       user,

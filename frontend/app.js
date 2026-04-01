@@ -591,6 +591,8 @@
 
     bundle.nav.forEach(function(item) {
       if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
+      // Hide billing nav for members without billing permission
+      if (item.view === 'billing' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_billing) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -678,6 +680,8 @@
     var isAdmin = currentUser && currentUser.is_platform_admin;
     bundle.nav.forEach(function(item) {
       if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
+      // Hide billing nav for members without billing permission
+      if (item.view === 'billing' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_billing) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -1596,19 +1600,11 @@
           } else {
             fetchInboxUnread();
           }
-          // Show toast notification
+          // Show toast notification (in-app only, not a system notification)
           if (window.__xrayToast) {
-            window.__xrayToast('New message in inbox', 'info');
+            window.__xrayToast(msg.data.senderName ? msg.data.senderName + ': ' + (msg.data.preview || 'New message') : 'New message in inbox', 'info');
           }
-          // Browser notification for inbox (no server-side push for inbox yet)
-          if ('Notification' in window && Notification.permission === 'granted') {
-            var inboxN = new Notification('XRay Inbox', {
-              body: msg.data.preview || 'You have a new message',
-              icon: '/icon-192.png',
-              tag: 'inbox-' + msg.data.threadId
-            });
-            inboxN.onclick = function() { window.focus(); inboxN.close(); };
-          }
+          // System notification is handled by service worker push — no duplicate here
           // If inbox view is currently open, refresh it
           if (window.__xrayRefreshInboxView) window.__xrayRefreshInboxView();
         } else if (msg.type === 'dashboard:access-granted' || msg.type === 'dashboard:access-revoked') {
@@ -1616,6 +1612,9 @@
           if (window.__xrayDashWsHandler) {
             window.__xrayDashWsHandler(evt);
           }
+        } else if (msg.type === 'team:member-joined' && msg.data) {
+          if (window.__xrayToast) window.__xrayToast((msg.data.name || msg.data.email || 'Someone') + ' joined the team', 'info');
+          if (window.__xrayRefreshTeamView) window.__xrayRefreshTeamView();
         } else if (msg.type === 'billing:updated' && msg.data) {
           // Billing gate changed — reload dashboard view to update access
           if (msg.data.gateChanged) {

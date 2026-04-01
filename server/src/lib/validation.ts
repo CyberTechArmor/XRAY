@@ -43,6 +43,8 @@ export const userUpdateSchema = z.object({
   name: nameSchema.optional(),
   roleId: uuidSchema.optional(),
   status: z.enum(['active', 'suspended', 'deactivated']).optional(),
+  has_admin: z.boolean().optional(),
+  has_billing: z.boolean().optional(),
 });
 
 export const roleCreateSchema = z.object({
