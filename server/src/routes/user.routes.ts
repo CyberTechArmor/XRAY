@@ -237,6 +237,19 @@ router.patch('/:id', authenticateJWT, requirePermission('users.manage'), async (
   try {
     const data = validateBody(userUpdateSchema, req.body);
     const result = await userService.updateUser(req.user!.tid, req.params.id, data);
+
+    // If permissions changed, notify the user so their sidebar updates in real-time
+    if (data.has_admin !== undefined || data.has_billing !== undefined || data.roleId) {
+      try {
+        const { sendToUser } = await import('../ws');
+        sendToUser(req.params.id, 'user:permissions-changed', {
+          has_admin: result.has_admin,
+          has_billing: result.has_billing,
+          role_name: result.role_name,
+        });
+      } catch {}
+    }
+
     res.json({
       ok: true,
       data: result,

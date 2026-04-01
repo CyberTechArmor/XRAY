@@ -593,6 +593,8 @@
       if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
       // Hide billing nav for members without billing permission
       if (item.view === 'billing' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_billing) return;
+      // Hide team nav for members without admin permission
+      if (item.view === 'team' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -682,6 +684,8 @@
       if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
       // Hide billing nav for members without billing permission
       if (item.view === 'billing' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_billing) return;
+      // Hide team nav for members without admin permission
+      if (item.view === 'team' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -1628,6 +1632,17 @@
           if (window.__xrayRefreshDashboardList) window.__xrayRefreshDashboardList();
           // Trigger a re-check of billing status for any active dashboard view
           if (window.__xrayBillingChanged) window.__xrayBillingChanged(msg.data);
+        } else if (msg.type === 'user:permissions-changed' && msg.data) {
+          // Permissions were updated by an admin — update currentUser and rebuild sidebar
+          if (msg.data.has_admin !== undefined) currentUser.has_admin = msg.data.has_admin;
+          if (msg.data.has_billing !== undefined) currentUser.has_billing = msg.data.has_billing;
+          if (msg.data.role_name) currentUser.role_name = msg.data.role_name;
+          buildSidebar();
+          buildMobileNav();
+          if (window.__xrayToast) window.__xrayToast('Your permissions have been updated', 'info');
+        } else if (msg.type === 'team:member-joined' && msg.data) {
+          if (window.__xrayToast) window.__xrayToast((msg.data.name || 'A new member') + ' has joined the team', 'success');
+          if (window.__xrayRefreshTeamView) window.__xrayRefreshTeamView();
         }
       } catch(e) {}
     };
