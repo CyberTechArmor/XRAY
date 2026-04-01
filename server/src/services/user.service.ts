@@ -41,7 +41,8 @@ export async function getProfile(userId: string) {
 
     const result = await client.query(
       `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
-              u.created_at, u.tenant_id, r.name as role_name, r.slug as role_slug,
+              u.created_at, u.tenant_id, u.has_admin, u.has_billing,
+              r.name as role_name, r.slug as role_slug,
               r.is_platform as is_platform_admin
        FROM platform.users u
        JOIN platform.roles r ON r.id = u.role_id
@@ -231,6 +232,7 @@ export async function listUsers(tenantId: string, query: { page: number; limit: 
     const offset = (query.page - 1) * query.limit;
     const result = await client.query(
       `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
+              u.has_admin, u.has_billing, u.tenant_id,
               r.name as role_name, r.slug as role_slug
        FROM platform.users u
        JOIN platform.roles r ON r.id = u.role_id
@@ -246,7 +248,7 @@ export async function listUsers(tenantId: string, query: { page: number; limit: 
 export async function updateUser(
   tenantId: string,
   userId: string,
-  updates: { name?: string; roleId?: string; status?: string }
+  updates: { name?: string; roleId?: string; status?: string; has_admin?: boolean; has_billing?: boolean }
 ) {
   return withClient(async (client) => {
     await bypassRLS(client);
@@ -257,6 +259,8 @@ export async function updateUser(
     if (updates.name !== undefined) { fields.push(`name = $${idx}`); values.push(updates.name); idx++; }
     if (updates.roleId !== undefined) { fields.push(`role_id = $${idx}`); values.push(updates.roleId); idx++; }
     if (updates.status !== undefined) { fields.push(`status = $${idx}`); values.push(updates.status); idx++; }
+    if (updates.has_admin !== undefined) { fields.push(`has_admin = $${idx}`); values.push(updates.has_admin); idx++; }
+    if (updates.has_billing !== undefined) { fields.push(`has_billing = $${idx}`); values.push(updates.has_billing); idx++; }
 
     if (fields.length === 0) throw new AppError(400, 'NO_UPDATES', 'No fields to update');
     fields.push('updated_at = now()');

@@ -591,6 +591,8 @@
 
     bundle.nav.forEach(function(item) {
       if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
+      // Hide billing nav for members without billing permission
+      if (item.view === 'billing' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_billing) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -678,6 +680,8 @@
     var isAdmin = currentUser && currentUser.is_platform_admin;
     bundle.nav.forEach(function(item) {
       if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
+      // Hide billing nav for members without billing permission
+      if (item.view === 'billing' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_billing) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -1616,6 +1620,9 @@
           if (window.__xrayDashWsHandler) {
             window.__xrayDashWsHandler(evt);
           }
+        } else if (msg.type === 'team:member-joined' && msg.data) {
+          if (window.__xrayToast) window.__xrayToast((msg.data.name || msg.data.email || 'Someone') + ' joined the team', 'info');
+          if (window.__xrayRefreshTeamView) window.__xrayRefreshTeamView();
         } else if (msg.type === 'billing:updated' && msg.data) {
           // Billing gate changed — reload dashboard view to update access
           if (msg.data.gateChanged) {

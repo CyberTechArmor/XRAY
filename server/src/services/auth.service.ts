@@ -526,6 +526,7 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
       [user.id, tenant.id, refreshTokenHash, expiresAt]
     );
 
+    const flags = await getUserFlags(user.id);
     const accessToken = signAccessToken({
       sub: user.id,
       tid: tenant.id,
@@ -533,6 +534,8 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
       permissions,
       is_owner: true,
       is_platform_admin: isPlatformAdmin,
+      has_admin: flags.has_admin,
+      has_billing: flags.has_billing,
     });
 
     auditService.log({
@@ -662,6 +665,7 @@ export async function completeLogin(magicLink: MagicLink, selectedTenantId?: str
       [user.id, user.tenant_id, refreshTokenHash, expiresAt]
     );
 
+    const loginFlags = await getUserFlags(user.id);
     const accessToken = signAccessToken({
       sub: user.id,
       tid: user.tenant_id,
@@ -669,6 +673,8 @@ export async function completeLogin(magicLink: MagicLink, selectedTenantId?: str
       permissions,
       is_owner: user.is_owner,
       is_platform_admin: isPlatformAdmin,
+      has_admin: loginFlags.has_admin,
+      has_billing: loginFlags.has_billing,
     });
 
     auditService.log({
@@ -741,6 +747,7 @@ export async function loginToTenant(email: string, tenantId: string): Promise<To
       [user.id, user.tenant_id, refreshTokenHash, expiresAt]
     );
 
+    const tenantFlags = await getUserFlags(user.id);
     const accessToken = signAccessToken({
       sub: user.id,
       tid: user.tenant_id,
@@ -748,6 +755,8 @@ export async function loginToTenant(email: string, tenantId: string): Promise<To
       permissions,
       is_owner: user.is_owner,
       is_platform_admin: isPlatformAdmin,
+      has_admin: tenantFlags.has_admin,
+      has_billing: tenantFlags.has_billing,
     });
 
     auditService.log({
@@ -838,6 +847,7 @@ export async function refreshSession(refreshTokenHash: string): Promise<TokenPai
     );
     const permissions = permResult.rows.map((r: { key: string }) => r.key);
 
+    const refreshFlags = await getUserFlags(session.user_id);
     const accessToken = signAccessToken({
       sub: session.user_id,
       tid: session.tenant_id,
@@ -845,6 +855,8 @@ export async function refreshSession(refreshTokenHash: string): Promise<TokenPai
       permissions,
       is_owner: session.is_owner,
       is_platform_admin: isPlatformAdmin,
+      has_admin: refreshFlags.has_admin,
+      has_billing: refreshFlags.has_billing,
     });
 
     return {
