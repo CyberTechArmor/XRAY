@@ -1239,9 +1239,13 @@
     var joinCodeInput = document.getElementById('meet-join-code');
     if (joinCodeInput) joinCodeInput.onkeydown = function(e) { if (e.key === 'Enter' && joinBtn) joinBtn.click(); };
 
-    // XRay Support button
+    // XRay Support button (owners only)
     var supportBtn = document.getElementById('meet-opt-support');
-    if (supportBtn) supportBtn.onclick = function() {
+    if (supportBtn) {
+      if (!currentUser || (!currentUser.is_owner && !currentUser.is_platform_admin)) {
+        supportBtn.style.display = 'none';
+      } else {
+        supportBtn.onclick = function() {
       supportBtn.disabled = true;
       supportBtn.textContent = 'Connecting...';
       api.post('/api/meet/support-call', {}).then(function(r) {
@@ -1260,6 +1264,8 @@
         toast('Network error', 'error');
       });
     };
+      } // end else (owner check)
+    } // end if (supportBtn)
 
     // Close panel when clicking outside
     document.addEventListener('mousedown', function(e) {
