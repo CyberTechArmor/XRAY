@@ -39,16 +39,31 @@ export async function getProfile(userId: string) {
   return withClient(async (client) => {
     await bypassRLS(client);
 
-    const result = await client.query(
-      `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
-              u.created_at, u.tenant_id, u.has_admin, u.has_billing,
-              r.name as role_name, r.slug as role_slug,
-              r.is_platform as is_platform_admin
-       FROM platform.users u
-       JOIN platform.roles r ON r.id = u.role_id
-       WHERE u.id = $1`,
-      [userId]
-    );
+    let result;
+    try {
+      result = await client.query(
+        `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
+                u.created_at, u.tenant_id, u.has_admin, u.has_billing,
+                r.name as role_name, r.slug as role_slug,
+                r.is_platform as is_platform_admin
+         FROM platform.users u
+         JOIN platform.roles r ON r.id = u.role_id
+         WHERE u.id = $1`,
+        [userId]
+      );
+    } catch {
+      // Fallback if has_admin/has_billing columns don't exist yet
+      result = await client.query(
+        `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
+                u.created_at, u.tenant_id, false as has_admin, false as has_billing,
+                r.name as role_name, r.slug as role_slug,
+                r.is_platform as is_platform_admin
+         FROM platform.users u
+         JOIN platform.roles r ON r.id = u.role_id
+         WHERE u.id = $1`,
+        [userId]
+      );
+    }
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
 
     const user = result.rows[0];
@@ -230,18 +245,35 @@ export async function listUsers(tenantId: string, query: { page: number; limit: 
   return withClient(async (client) => {
     await bypassRLS(client);
     const offset = (query.page - 1) * query.limit;
-    const result = await client.query(
-      `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
-              u.has_admin, u.has_billing, u.tenant_id,
-              r.name as role_name, r.slug as role_slug
-       FROM platform.users u
-       JOIN platform.roles r ON r.id = u.role_id
-       WHERE u.tenant_id = $1
-       ORDER BY u.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [tenantId, query.limit, offset]
-    );
-    return result.rows;
+    // Try with has_admin/has_billing columns; fall back if migration hasn't run
+    try {
+      const result = await client.query(
+        `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
+                u.has_admin, u.has_billing, u.tenant_id,
+                r.name as role_name, r.slug as role_slug
+         FROM platform.users u
+         JOIN platform.roles r ON r.id = u.role_id
+         WHERE u.tenant_id = $1
+         ORDER BY u.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [tenantId, query.limit, offset]
+      );
+      return result.rows;
+    } catch {
+      // Fallback if has_admin/has_billing columns don't exist yet
+      const result = await client.query(
+        `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
+                u.tenant_id, false as has_admin, false as has_billing,
+                r.name as role_name, r.slug as role_slug
+         FROM platform.users u
+         JOIN platform.roles r ON r.id = u.role_id
+         WHERE u.tenant_id = $1
+         ORDER BY u.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [tenantId, query.limit, offset]
+      );
+      return result.rows;
+    }
   });
 }
 
