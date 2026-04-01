@@ -1012,12 +1012,15 @@
 
   function openMeetPanel() {
     var panel = document.getElementById('meet-panel');
+    if (!panel) return;
     var btn = document.getElementById('btn-meet-header');
-    if (!panel || !btn) return;
-    // Position below the meet button
-    var rect = btn.getBoundingClientRect();
-    panel.style.top = (rect.bottom + 8) + 'px';
-    panel.style.right = '20px';
+    if (btn) {
+      // Desktop: position below the header button
+      var rect = btn.getBoundingClientRect();
+      panel.style.top = (rect.bottom + 8) + 'px';
+      panel.style.right = '20px';
+    }
+    // On mobile the CSS override positions it at bottom:80px via !important
     panel.style.display = '';
     meetState.panelOpen = true;
     showMeetPanelView('initial');
