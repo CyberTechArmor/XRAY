@@ -1600,19 +1600,11 @@
           } else {
             fetchInboxUnread();
           }
-          // Show toast notification
+          // Show toast notification (in-app only, not a system notification)
           if (window.__xrayToast) {
-            window.__xrayToast('New message in inbox', 'info');
+            window.__xrayToast(msg.data.senderName ? msg.data.senderName + ': ' + (msg.data.preview || 'New message') : 'New message in inbox', 'info');
           }
-          // Browser notification for inbox (no server-side push for inbox yet)
-          if ('Notification' in window && Notification.permission === 'granted') {
-            var inboxN = new Notification('XRay Inbox', {
-              body: msg.data.preview || 'You have a new message',
-              icon: '/icon-192.png',
-              tag: 'inbox-' + msg.data.threadId
-            });
-            inboxN.onclick = function() { window.focus(); inboxN.close(); };
-          }
+          // System notification is handled by service worker push — no duplicate here
           // If inbox view is currently open, refresh it
           if (window.__xrayRefreshInboxView) window.__xrayRefreshInboxView();
         } else if (msg.type === 'dashboard:access-granted' || msg.type === 'dashboard:access-revoked') {
