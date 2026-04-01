@@ -40,12 +40,25 @@ export async function createInvitation(
 
     // Check for pending invitation
     const pendingInvite = await client.query(
-      `SELECT id FROM platform.invitations
+      `SELECT id, expires_at FROM platform.invitations
        WHERE email = $1 AND tenant_id = $2 AND status = 'pending'`,
       [input.email, tenantId]
     );
     if (pendingInvite.rows.length > 0) {
-      throw new AppError(409, 'ALREADY_INVITED', 'An invitation is already pending for this email');
+      const inv = pendingInvite.rows[0];
+      // If expired, auto-revoke and allow resending
+      if (new Date(inv.expires_at) < new Date()) {
+        await client.query(
+          `UPDATE platform.invitations SET status = 'expired' WHERE id = $1`,
+          [inv.id]
+        );
+      } else {
+        // Revoke the old one and create a fresh invitation (resend)
+        await client.query(
+          `UPDATE platform.invitations SET status = 'revoked' WHERE id = $1`,
+          [inv.id]
+        );
+      }
     }
 
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
