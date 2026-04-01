@@ -425,6 +425,20 @@
   function logout() {
     stopTokenRefresh();
     if (typeof closeWebSocket === 'function') closeWebSocket();
+    // Unsubscribe push notifications so the next user on this device doesn't get them
+    try {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.ready.then(function(reg) {
+          reg.pushManager.getSubscription().then(function(sub) {
+            if (sub) {
+              // Remove from server
+              api.post('/api/meet/push/unsubscribe', { endpoint: sub.endpoint }).catch(function() {});
+              sub.unsubscribe().catch(function() {});
+            }
+          });
+        });
+      }
+    } catch(e) {}
     if (accessToken) api.post('/api/auth/logout').catch(function() {});
     accessToken = null;
     currentUser = null;
