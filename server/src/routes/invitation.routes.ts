@@ -54,8 +54,8 @@ router.post('/accept', async (req, res, next) => {
   }
 });
 
-// POST / - create invitation (JWT, users.invite)
-router.post('/', authenticateJWT, requirePermission('users.invite'), async (req, res, next) => {
+// POST / - create invitation (JWT, users.manage)
+router.post('/', authenticateJWT, requirePermission('users.manage'), async (req, res, next) => {
   try {
     const data = validateBody(invitationCreateSchema, req.body);
     const result = await invitationService.createInvitation(req.user!.tid, req.user!.sub, data);
@@ -69,8 +69,8 @@ router.post('/', authenticateJWT, requirePermission('users.invite'), async (req,
   }
 });
 
-// GET / - list invitations (JWT, users.invite)
-router.get('/', authenticateJWT, requirePermission('users.invite'), async (req, res, next) => {
+// GET / - list invitations (JWT, users.manage)
+router.get('/', authenticateJWT, requirePermission('users.manage'), async (req, res, next) => {
   try {
     const query = validateQuery(paginationSchema, req.query);
     const result = await invitationService.listInvitations(req.user!.tid, query);
@@ -84,8 +84,8 @@ router.get('/', authenticateJWT, requirePermission('users.invite'), async (req, 
   }
 });
 
-// DELETE /:id - revoke invitation (JWT, users.invite)
-router.delete('/:id', authenticateJWT, requirePermission('users.invite'), async (req, res, next) => {
+// DELETE /:id - revoke invitation (JWT, users.manage)
+router.delete('/:id', authenticateJWT, requirePermission('users.manage'), async (req, res, next) => {
   try {
     await invitationService.revokeInvitation(req.user!.tid, req.params.id);
     res.json({

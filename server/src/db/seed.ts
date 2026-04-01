@@ -32,8 +32,7 @@ async function seed() {
       INSERT INTO platform.roles (name, slug, is_system, is_platform) VALUES
         ('Platform Admin', 'platform_admin', true, true),
         ('Owner',          'owner',          true, false),
-        ('Admin',          'admin',          true, false),
-        ('Viewer',         'viewer',         true, false)
+        ('Member',         'member',         true, false)
       ON CONFLICT (slug) DO NOTHING;
     `);
 
@@ -58,29 +57,19 @@ async function seed() {
       ON CONFLICT DO NOTHING;
     `);
 
-    // Admin gets dashboards.*, users.*, connections.view, audit.view, account.*
+    // Member gets view permissions + account
     await client.query(`
       INSERT INTO platform.role_permissions (role_id, permission_id)
       SELECT r.id, p.id
       FROM platform.roles r
       CROSS JOIN platform.permissions p
-      WHERE r.slug = 'admin' AND p.key IN (
-        'dashboards.view', 'dashboards.manage', 'dashboards.embed',
-        'users.view', 'users.invite', 'users.manage',
-        'connections.view', 'audit.view',
-        'account.view', 'account.edit'
-      )
-      ON CONFLICT DO NOTHING;
-    `);
-
-    // Viewer gets dashboards.view, account.view, account.edit
-    await client.query(`
-      INSERT INTO platform.role_permissions (role_id, permission_id)
-      SELECT r.id, p.id
-      FROM platform.roles r
-      CROSS JOIN platform.permissions p
-      WHERE r.slug = 'viewer' AND p.key IN (
-        'dashboards.view', 'account.view', 'account.edit'
+      WHERE r.slug = 'member' AND p.key IN (
+        'account.view', 'account.edit',
+        'users.view',
+        'dashboards.view',
+        'connections.view',
+        'billing.view',
+        'audit.view'
       )
       ON CONFLICT DO NOTHING;
     `);
