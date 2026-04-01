@@ -92,9 +92,7 @@ export async function firstBootSetup(input: {
         INSERT INTO platform.roles (name, slug, description, is_system, is_platform) VALUES
           ('Platform Admin', 'platform_admin', 'Full platform access', true, true),
           ('Owner',          'owner',          'Tenant owner',          true, false),
-          ('Admin',          'admin',          'Tenant admin',          true, false),
-          ('Member',         'member',         'Standard member',       true, false),
-          ('Viewer',         'viewer',         'View-only access',      true, false)
+          ('Member',         'member',         'Standard member — views dashboards, manages account', true, false)
         ON CONFLICT (slug) DO NOTHING
       `);
 
@@ -129,6 +127,17 @@ export async function firstBootSetup(input: {
         INSERT INTO platform.role_permissions (role_id, permission_id)
           SELECT r.id, p.id FROM platform.roles r CROSS JOIN platform.permissions p
           WHERE r.slug = 'owner' AND p.key != 'platform.admin'
+        ON CONFLICT DO NOTHING
+      `);
+
+      // member gets view permissions + account
+      await client.query(`
+        INSERT INTO platform.role_permissions (role_id, permission_id)
+          SELECT r.id, p.id FROM platform.roles r CROSS JOIN platform.permissions p
+          WHERE r.slug = 'member' AND p.key IN (
+            'account.view', 'account.edit', 'users.view',
+            'dashboards.view', 'connections.view', 'billing.view', 'audit.view'
+          )
         ON CONFLICT DO NOTHING
       `);
 
