@@ -117,9 +117,14 @@ router.get('/support-config', authenticateJWT, async (req, res, next) => {
   }
 });
 
-// POST /support-call - tenant user requests XRay support (creates room + notifies admin)
+// POST /support-call - account owner requests XRay support (creates room + notifies admin)
 router.post('/support-call', authenticateJWT, async (req, res, next) => {
   try {
+    // Only account owners can call XRay support
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only account owners can contact XRay Support.' } });
+      return;
+    }
     // Check if support calls are enabled and within active hours
     const supportConfig = await meetService.getSupportCallConfig();
     if (!supportConfig.enabled) {
