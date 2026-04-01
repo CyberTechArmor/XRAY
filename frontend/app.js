@@ -1670,6 +1670,9 @@
         } else if (msg.type === 'team:member-joined' && msg.data) {
           if (window.__xrayToast) window.__xrayToast((msg.data.name || 'A new member') + ' has joined the team', 'success');
           if (window.__xrayRefreshTeamView) window.__xrayRefreshTeamView();
+        } else if (msg.type === 'team:invitation-changed') {
+          // Invitation created/revoked — refresh invitations list
+          if (window.__xrayRefreshTeamView) window.__xrayRefreshTeamView();
         }
       } catch(e) {}
     };

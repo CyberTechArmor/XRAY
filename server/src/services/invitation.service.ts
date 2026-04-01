@@ -99,6 +99,11 @@ export async function createInvitation(
       metadata: { email: input.email },
     });
 
+    // Broadcast to tenant so team view updates in real-time
+    try {
+      broadcastToTenant(tenantId, 'team:invitation-changed', { email: input.email, status: 'pending' });
+    } catch {}
+
     return invitation;
   });
 }
@@ -308,5 +313,10 @@ export async function revokeInvitation(tenantId: string, invitationId: string) {
     if (result.rows.length === 0) {
       throw new AppError(404, 'NOT_FOUND', 'Invitation not found or already processed');
     }
+
+    // Broadcast to tenant so team view updates in real-time
+    try {
+      broadcastToTenant(tenantId, 'team:invitation-changed', { status: 'revoked' });
+    } catch {}
   });
 }
