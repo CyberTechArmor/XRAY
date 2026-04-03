@@ -369,6 +369,8 @@ router.patch('/:id/share', authenticateJWT, async (req, res, next) => {
         [!!is_public, req.params.id]
       );
     });
+    // Clear share page cache so toggling takes effect immediately
+    try { const { clearShareCache } = await import('./share.routes'); clearShareCache(); } catch {}
     // Broadcast to tenant for real-time UI update
     try {
       const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
@@ -393,6 +395,13 @@ router.delete('/:id/share', authenticateJWT, async (req, res, next) => {
     }
     const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
     await dashboardService.makePrivate(req.params.id, tenantId);
+    // Clear share page cache
+    try { const { clearShareCache } = await import('./share.routes'); clearShareCache(); } catch {}
+    // Broadcast to tenant
+    try {
+      const { broadcastToTenant } = await import('../ws');
+      broadcastToTenant(tenantId, 'dashboard:share-changed', { dashboardId: req.params.id, is_public: false, revoked: true });
+    } catch {}
     res.json({
       ok: true,
       data: { message: 'Dashboard is now private' },
