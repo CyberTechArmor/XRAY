@@ -323,11 +323,11 @@ async function resolveDashboardTenant(dashboardId: string, user: any): Promise<s
   });
 }
 
-// POST /:id/share - make dashboard public (owner or platform admin only)
+// POST /:id/share - create share link (default: internal, admin-only access to link)
 router.post('/:id/share', authenticateJWT, async (req, res, next) => {
   try {
     if (!req.user!.is_owner && !req.user!.is_platform_admin) {
-      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can share dashboards publicly' } });
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can share dashboards' } });
     }
     const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
     const result = await dashboardService.makePublic(req.params.id, tenantId);
@@ -346,7 +346,7 @@ router.post('/:id/share', authenticateJWT, async (req, res, next) => {
 
     res.json({
       ok: true,
-      data: { public_token: result.public_token, share_url: shareUrl },
+      data: { public_token: result.public_token, share_url: shareUrl, is_public: result.is_public },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {
@@ -354,7 +354,38 @@ router.post('/:id/share', authenticateJWT, async (req, res, next) => {
   }
 });
 
-// DELETE /:id/share - make dashboard private / delist (owner or platform admin only)
+// PATCH /:id/share - toggle internal/public visibility (owner or platform admin only)
+router.patch('/:id/share', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can manage sharing' } });
+    }
+    const { is_public } = req.body;
+    const { withClient } = await import('../db/connection');
+    await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      await client.query(
+        'UPDATE platform.dashboards SET is_public = $1, updated_at = now() WHERE id = $2',
+        [!!is_public, req.params.id]
+      );
+    });
+    // Broadcast to tenant for real-time UI update
+    try {
+      const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
+      const { broadcastToTenant } = await import('../ws');
+      broadcastToTenant(tenantId, 'dashboard:share-changed', { dashboardId: req.params.id, is_public: !!is_public });
+    } catch {}
+    res.json({
+      ok: true,
+      data: { is_public: !!is_public },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /:id/share - revoke share link entirely (owner or platform admin only)
 router.delete('/:id/share', authenticateJWT, async (req, res, next) => {
   try {
     if (!req.user!.is_owner && !req.user!.is_platform_admin) {
