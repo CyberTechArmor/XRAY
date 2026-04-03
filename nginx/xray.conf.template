@@ -58,6 +58,12 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
+    # Public share pages — serve share.html for /share/* routes
+    location /share/ {
+        try_files /share.html =404;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
     # No-cache for index.html (ensures latest version)
     location = /index.html {
         add_header Cache-Control "no-cache, no-store, must-revalidate";
