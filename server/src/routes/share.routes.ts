@@ -7,6 +7,15 @@ const router = Router();
 const shareCache = new Map<string, { data: any; ts: number }>();
 const SHARE_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
+/** Clear cache entries for a specific token or all entries for a dashboard */
+export function clearShareCache(token?: string) {
+  if (token) {
+    shareCache.delete(token);
+  } else {
+    shareCache.clear();
+  }
+}
+
 // GET /:token - render public shared dashboard (no auth, token-based)
 router.get('/:token', async (req, res, next) => {
   try {

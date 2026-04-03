@@ -369,21 +369,30 @@ export async function revokeEmbed(
 export async function makePublic(
   dashboardId: string,
   tenantId: string
-): Promise<{ public_token: string }> {
+): Promise<{ public_token: string; is_public: boolean }> {
   const token = generateToken(16); // 32 hex chars
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    // Check if already has a token — if so, just return it
+    const existing = await client.query(
+      'SELECT public_token, is_public FROM platform.dashboards WHERE id = $1 AND tenant_id = $2 AND public_token IS NOT NULL',
+      [dashboardId, tenantId]
+    );
+    if (existing.rows.length > 0 && existing.rows[0].public_token) {
+      return { public_token: existing.rows[0].public_token, is_public: existing.rows[0].is_public };
+    }
+    // Create new share link — default to internal (is_public = false)
     const result = await client.query(
       `UPDATE platform.dashboards
-       SET is_public = true, public_token = $1, updated_at = now()
+       SET is_public = false, public_token = $1, updated_at = now()
        WHERE id = $2 AND tenant_id = $3
-       RETURNING public_token`,
+       RETURNING public_token, is_public`,
       [token, dashboardId, tenantId]
     );
     if (result.rows.length === 0) {
       throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
     }
-    return { public_token: result.rows[0].public_token };
+    return { public_token: result.rows[0].public_token, is_public: result.rows[0].is_public };
   });
 }
 
