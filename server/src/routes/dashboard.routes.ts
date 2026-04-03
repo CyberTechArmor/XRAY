@@ -420,14 +420,16 @@ router.get('/:id/share', authenticateJWT, async (req, res, next) => {
     }
     const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
     const dashboard = await dashboardService.getDashboard(req.params.id, tenantId);
-    if (!dashboard.is_public || !dashboard.public_token) {
+    if (!dashboard.public_token) {
+      // No share link exists at all
       return res.json({ ok: true, data: { is_public: false, share_url: null, public_token: null } });
     }
+    // Link exists — return it regardless of is_public (internal vs public)
     const shareDomain = (await getSetting('platform.share_domain')) || (await getSetting('platform.domain')) || config.webauthn.origin;
     const shareUrl = `${shareDomain.replace(/\/+$/, '')}/share/${dashboard.public_token}`;
     return res.json({
       ok: true,
-      data: { is_public: true, share_url: shareUrl, public_token: dashboard.public_token },
+      data: { is_public: !!dashboard.is_public, share_url: shareUrl, public_token: dashboard.public_token },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {

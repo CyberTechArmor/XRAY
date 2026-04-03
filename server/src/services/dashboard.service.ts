@@ -420,13 +420,15 @@ export async function getPublicDashboard(
 ): Promise<Dashboard> {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    // Share link works as long as the token exists (regardless of is_public flag)
+    // is_public only controls whether non-admin users can see/copy the link in the app
     const result = await client.query(
       `SELECT * FROM platform.dashboards
-       WHERE public_token = $1 AND is_public = true AND status = 'active'`,
+       WHERE public_token = $1 AND status = 'active'`,
       [publicToken]
     );
     if (result.rows.length === 0) {
-      throw new AppError(404, 'NOT_FOUND', 'Dashboard not found or no longer public');
+      throw new AppError(404, 'NOT_FOUND', 'Dashboard not found or share link has been revoked');
     }
     return result.rows[0];
   });
