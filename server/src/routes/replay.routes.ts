@@ -209,6 +209,53 @@ router.get('/segments/:segmentId/events', authenticateJWT, requirePermission('se
   }
 });
 
+// GET /segments/:segmentId/clicks — get detailed click information
+router.get('/segments/:segmentId/clicks', authenticateJWT, requirePermission('session_replay.view'), async (req, res, next) => {
+  try {
+    const clicks = await replayService.getClickDetails(req.params.segmentId);
+    res.json({
+      ok: true,
+      data: clicks,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /segments/:segmentId/storage — get storage size of the segment
+router.get('/segments/:segmentId/storage', authenticateJWT, requirePermission('session_replay.view'), async (req, res, next) => {
+  try {
+    const storage = await replayService.getSegmentStorageSize(req.params.segmentId);
+    res.json({
+      ok: true,
+      data: storage,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /segments/:segmentId/export — export segment data for AI review
+router.get('/segments/:segmentId/export', authenticateJWT, requirePermission('session_replay.view'), async (req, res, next) => {
+  try {
+    const format = (req.query.format as string) || 'json';
+    const exportData = await replayService.exportSegment(req.params.segmentId, format);
+    if (format === 'csv') {
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="session-replay-${req.params.segmentId}.csv"`);
+      res.send(exportData);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="session-replay-${req.params.segmentId}.json"`);
+      res.json(exportData);
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PATCH /segments/:segmentId/training — flag as training
 router.patch('/segments/:segmentId/training', authenticateJWT, requirePermission('session_replay.manage'), async (req, res, next) => {
   try {
