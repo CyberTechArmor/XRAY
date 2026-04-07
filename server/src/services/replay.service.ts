@@ -192,6 +192,7 @@ export async function listSegments(filters?: {
   isPermanent?: boolean;
   limit?: number;
   offset?: number;
+  search?: string;
 }) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
@@ -236,6 +237,11 @@ export async function listSegments(filters?: {
       conditions.push(`seg.is_permanent = $${idx++}`);
       values.push(filters.isPermanent);
     }
+    if (filters?.search) {
+      conditions.push(`(u.name ILIKE $${idx} OR u.email ILIKE $${idx} OR t.name ILIKE $${idx})`);
+      values.push(`%${filters.search}%`);
+      idx++;
+    }
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
     const limit = Math.min(filters?.limit || 50, 200);
@@ -245,6 +251,8 @@ export async function listSegments(filters?: {
       `SELECT count(*)::int AS total
        FROM platform.session_segments seg
        JOIN platform.sessions s ON s.id = seg.session_id
+       LEFT JOIN platform.users u ON u.id = s.user_id
+       LEFT JOIN platform.tenants t ON t.id = s.tenant_id
        ${where}`,
       values
     );
@@ -252,11 +260,13 @@ export async function listSegments(filters?: {
     const result = await client.query(
       `SELECT seg.*, s.user_id, s.tenant_id, s.user_agent,
               u.name AS user_name, u.email AS user_email,
-              d.name AS dashboard_name
+              d.name AS dashboard_name,
+              t.name AS tenant_name
        FROM platform.session_segments seg
        JOIN platform.sessions s ON s.id = seg.session_id
        LEFT JOIN platform.users u ON u.id = s.user_id
        LEFT JOIN platform.dashboards d ON d.id = seg.dashboard_id
+       LEFT JOIN platform.tenants t ON t.id = s.tenant_id
        ${where}
        ORDER BY seg.started_at DESC
        LIMIT $${idx++} OFFSET $${idx++}`,

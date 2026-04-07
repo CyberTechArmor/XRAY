@@ -156,7 +156,7 @@ router.get('/segments', authenticateJWT, requirePermission('session_replay.view'
   try {
     const {
       dashboardId, segmentType, userId, tenantId,
-      dateFrom, dateTo, isTraining, limit, offset,
+      dateFrom, dateTo, isTraining, limit, offset, search,
     } = req.query;
     const effectiveTenantId = req.user!.is_platform_admin ? (tenantId as string) : req.user!.tid;
     const result = await replayService.listSegments({
@@ -169,6 +169,7 @@ router.get('/segments', authenticateJWT, requirePermission('session_replay.view'
       isTraining: isTraining !== undefined ? isTraining === 'true' : undefined,
       limit: limit ? parseInt(limit as string, 10) : undefined,
       offset: offset ? parseInt(offset as string, 10) : undefined,
+      search: search as string,
     });
     res.json({
       ok: true,

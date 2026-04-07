@@ -140,40 +140,33 @@
   }
 
   function detectSegmentType() {
-    var hash = (window.location.hash || '').replace('#', '').split('?')[0];
-    if (hash === 'dashboard_list' || !hash) {
-      return { type: 'platform', dashboardId: null };
-    }
-    // Check if we're viewing a specific dashboard (the dashboard viewer is active)
+    // Check dashboard viewer FIRST - it overlays the dashboard_list view
     var viewer = document.querySelector('.dash-fullview.active');
     if (viewer) {
       var dashId = viewer.dataset && viewer.dataset.dashboardId;
       if (dashId) return { type: 'dashboard', dashboardId: dashId };
     }
-    // Non-dashboard views are platform segments
-    var platformViews = ['team','billing','account','files','connections','inbox','session_replay','audit_log',
-      'tenants','admin_dashboards','admin_connections','admin_roles','admin_email','admin_bundles',
-      'admin_webhooks','admin_stripe','admin_meet','admin_replay','admin_replay_config','admin_audit'];
-    if (platformViews.indexOf(hash) >= 0) {
-      return { type: 'platform', dashboardId: null };
-    }
-    // If hash looks like it could be a dashboard view (not in known platform views), default to platform
+    // Otherwise it's a platform view
     return { type: 'platform', dashboardId: null };
   }
 
   function createReplaySegment(segType, dashboardId) {
     if (!_replaySessionId) return;
-    // Close current segment first
-    if (_replaySegmentId) {
+    var oldSegmentId = _replaySegmentId;
+    // Flush events for the old segment before switching
+    if (oldSegmentId) {
       flushReplayEvents();
-      api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments/' + _replaySegmentId + '/close').catch(function() {});
     }
-    // Create new segment
+    // Create new segment first, then close old (avoids gap where no segment is active)
     var body = { segmentType: segType };
     if (dashboardId) body.dashboardId = dashboardId;
     api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments', body).then(function(r) {
       if (r.ok && r.data) {
         _replaySegmentId = r.data.id || r.data.segmentId;
+        // Now close the old segment (after new one is active)
+        if (oldSegmentId) {
+          api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments/' + oldSegmentId + '/close').catch(function() {});
+        }
       }
     }).catch(function() {});
   }
