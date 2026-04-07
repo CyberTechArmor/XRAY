@@ -382,6 +382,23 @@ export async function flagPermanent(segmentId: string, isPermanent: boolean) {
   });
 }
 
+// ── Delete Segment ─────────────────────────────────────────────────────────
+
+export async function deleteSegment(segmentId: string) {
+  return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    // Delete recordings, tags, comments, then the segment itself (CASCADE handles most)
+    await client.query(`DELETE FROM platform.segment_recordings WHERE segment_id = $1`, [segmentId]);
+    await client.query(`DELETE FROM platform.segment_tags WHERE segment_id = $1`, [segmentId]);
+    await client.query(`DELETE FROM platform.segment_comments WHERE segment_id = $1`, [segmentId]);
+    const result = await client.query(
+      `DELETE FROM platform.session_segments WHERE id = $1 RETURNING id`,
+      [segmentId]
+    );
+    if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Segment not found');
+  });
+}
+
 // ── Tags ────────────────────────────────────────────────────────────────────
 
 export async function addTag(segmentId: string, tag: string, userId: string) {
