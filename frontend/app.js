@@ -55,13 +55,12 @@
         var segType = detectSegmentType();
         createReplaySegment(segType.type, segType.dashboardId);
 
-        // Start rrweb recording with periodic full snapshots
+        // Start rrweb recording — captures initial FullSnapshot + all DOM mutations
         _replayStopFn = window.rrweb.record({
           emit: onRrwebEvent,
           recordCanvas: false,
           recordCrossOriginIframes: false,
           collectFonts: false,
-          checkoutEveryNms: 15000, // full snapshot every 15s for segment independence
           sampling: {
             mousemove: true,
             mouseInteraction: true,
@@ -158,26 +157,12 @@
     if (oldSegmentId) {
       flushReplayEvents();
     }
-    // Create new segment, then close old (avoids gap where no segment is active)
+    // Create new segment, then close old
     var body = { segmentType: segType };
     if (dashboardId) body.dashboardId = dashboardId;
     api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments', body).then(function(r) {
       if (r.ok && r.data) {
         _replaySegmentId = r.data.id || r.data.segmentId;
-        // Force a full DOM snapshot for this new segment so it can be played independently.
-        // Use rrweb's checkout mechanism: stop and immediately restart recording.
-        // This captures the current DOM state as the segment's starting point.
-        if (_replayStopFn && window.rrweb && window.rrweb.record) {
-          _replayStopFn();
-          _replayStopFn = window.rrweb.record({
-            emit: onRrwebEvent,
-            recordCanvas: false,
-            recordCrossOriginIframes: false,
-            collectFonts: false,
-            checkoutEveryNms: 15000,
-            sampling: { mousemove: true, mouseInteraction: true, scroll: 150, input: 'last' }
-          });
-        }
         // Close the old segment
         if (oldSegmentId) {
           api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments/' + oldSegmentId + '/close').catch(function() {});
