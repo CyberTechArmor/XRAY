@@ -1066,7 +1066,8 @@
       admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);',
       admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);',
       inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);',
-      files: 'if(typeof initFiles==="function")initFiles(container,api,user);'
+      files: 'if(typeof initFiles==="function")initFiles(container,api,user);',
+      session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);'
     };
     return fnMap[viewName] || '';
   }
