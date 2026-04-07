@@ -293,7 +293,7 @@ export async function getSegment(segmentId: string) {
     const tags = await client.query(
       `SELECT t.*, u.name AS created_by_name
        FROM platform.segment_tags t
-       LEFT JOIN platform.users u ON u.id = t.user_id
+       LEFT JOIN platform.users u ON u.id = t.created_by
        WHERE t.segment_id = $1
        ORDER BY t.created_at`,
       [segmentId]
@@ -377,7 +377,7 @@ export async function addTag(segmentId: string, tag: string, userId: string) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.segment_tags (segment_id, tag, user_id)
+      `INSERT INTO platform.segment_tags (segment_id, tag, created_by)
        VALUES ($1, $2, $3)
        RETURNING *`,
       [segmentId, tag, userId]
