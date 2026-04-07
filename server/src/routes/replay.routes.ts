@@ -129,6 +129,26 @@ router.post('/sessions/:sessionId/finalize', authenticateJWT, async (req, res, n
   }
 });
 
+// POST /sessions/:sessionId/beacon — beacon-friendly finalize (token in body, for sendBeacon)
+router.post('/sessions/:sessionId/beacon', async (req, res, next) => {
+  try {
+    const token = req.body?.token;
+    if (token) {
+      const jwt = require('jsonwebtoken');
+      const { config } = require('../config');
+      try { jwt.verify(token, config.jwtSecret); } catch { return res.status(401).json({ ok: false }); }
+    }
+    // Also store any last events if provided
+    if (req.body?.segmentId && Array.isArray(req.body?.events) && req.body.events.length > 0) {
+      await replayService.storeEvents(req.body.segmentId, req.body.events);
+    }
+    const session = await replayService.finalizeStaleSession(req.params.sessionId);
+    res.json({ ok: true, data: session });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── Segments ────────────────────────────────────────────────────────────────
 
 // GET /segments — list segments

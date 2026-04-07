@@ -150,6 +150,14 @@
       var dashId = viewer.dataset && viewer.dataset.dashboardId;
       if (dashId) return { type: 'dashboard', dashboardId: dashId };
     }
+    // Non-dashboard views are platform segments
+    var platformViews = ['team','billing','account','files','connections','inbox','session_replay','audit_log',
+      'tenants','admin_dashboards','admin_connections','admin_roles','admin_email','admin_bundles',
+      'admin_webhooks','admin_stripe','admin_meet','admin_replay','admin_replay_config','admin_audit'];
+    if (platformViews.indexOf(hash) >= 0) {
+      return { type: 'platform', dashboardId: null };
+    }
+    // If hash looks like it could be a dashboard view (not in known platform views), default to platform
     return { type: 'platform', dashboardId: null };
   }
 
@@ -629,19 +637,32 @@
   // Finalize replay session on tab close
   window.addEventListener('beforeunload', function() {
     if (_replaySessionId && accessToken) {
-      // Flush remaining events and finalize via sync XHR (last resort on tab close)
+      // Use beacon endpoint: includes token + last events in body (no auth header needed)
+      var beaconBody = { token: accessToken };
+      if (_replayEventBuffer.length > 0 && _replaySegmentId) {
+        beaconBody.segmentId = _replaySegmentId;
+        beaconBody.events = _replayEventBuffer;
+        _replayEventBuffer = [];
+      }
       try {
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/v1/replay/sessions/' + _replaySessionId + '/finalize', false); // sync
-        xhr.setRequestHeader('Content-Type', 'application/json');
-        xhr.setRequestHeader('Authorization', 'Bearer ' + accessToken);
-        xhr.send('{}');
-      } catch(e) {}
+        navigator.sendBeacon('/api/v1/replay/sessions/' + _replaySessionId + '/beacon',
+          new Blob([JSON.stringify(beaconBody)], { type: 'application/json' }));
+      } catch(e) {
+        // Fallback to sync XHR
+        try {
+          var xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/v1/replay/sessions/' + _replaySessionId + '/finalize', false);
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.setRequestHeader('Authorization', 'Bearer ' + accessToken);
+          xhr.send('{}');
+        } catch(e2) {}
+      }
     }
   });
   document.getElementById('header-logo').onclick = function() { if (accessToken) navigateTo('dashboard_list'); };
   window.logout = logout;
   window.getAccessToken = function() { return accessToken; };
+  window.onReplaySegmentChange = onReplaySegmentChange;
 
   // ── Proactive token refresh ──
   // Access tokens expire in 15min. Refresh every 12min to avoid silent expiry.

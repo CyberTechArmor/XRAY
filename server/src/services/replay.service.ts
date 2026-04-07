@@ -68,7 +68,7 @@ export async function storeEvents(segmentId: string, events: any[]) {
     const compressed = gzipSync(Buffer.from(JSON.stringify(events)));
 
     await client.query(
-      `INSERT INTO platform.segment_recordings (segment_id, data)
+      `INSERT INTO platform.segment_recordings (segment_id, events)
        VALUES ($1, $2)`,
       [segmentId, compressed]
     );
@@ -103,12 +103,12 @@ export async function getEvents(segmentId: string) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `SELECT data FROM platform.segment_recordings WHERE segment_id = $1 ORDER BY id`,
+      `SELECT events FROM platform.segment_recordings WHERE segment_id = $1 ORDER BY id`,
       [segmentId]
     );
     const allEvents: any[] = [];
     for (const row of result.rows) {
-      const decompressed = gunzipSync(row.data);
+      const decompressed = gunzipSync(row.events);
       const parsed = JSON.parse(decompressed.toString());
       allEvents.push(...parsed);
     }
@@ -540,6 +540,40 @@ export async function updateShadowViewEnd(segmentId: string, userId: string) {
       `UPDATE platform.session_segments SET shadow_views = $2::jsonb WHERE id = $1`,
       [segmentId, JSON.stringify(views)]
     );
+  });
+}
+
+// ── Stale Session Cleanup ──────────────────────────────────────────────────
+
+export async function finalizeStaleActiveSessions(maxAgeMinutes: number = 120) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+
+    // Find sessions that have been active for longer than maxAgeMinutes
+    // and have no recent segment activity
+    const result = await client.query(
+      `SELECT s.id FROM platform.sessions s
+       WHERE s.is_active = true
+         AND s.started_at < now() - ($1 || ' minutes')::interval
+         AND NOT EXISTS (
+           SELECT 1 FROM platform.session_segments seg
+           WHERE seg.session_id = s.id AND seg.ended_at IS NULL
+             AND seg.started_at > now() - ($1 || ' minutes')::interval
+         )`,
+      [maxAgeMinutes]
+    );
+
+    let count = 0;
+    for (const row of result.rows) {
+      try {
+        await finalizeStaleSession(row.id);
+        count++;
+      } catch (e) {
+        // Non-fatal: session may have been finalized concurrently
+      }
+    }
+    if (count > 0) console.log(`[Replay] Finalized ${count} stale sessions`);
+    return { finalized: count };
   });
 }
 
