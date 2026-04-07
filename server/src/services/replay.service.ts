@@ -571,6 +571,28 @@ export async function updateShadowViewEnd(segmentId: string, userId: string) {
   });
 }
 
+// ── Finalize User Sessions (on WS disconnect) ────────────────────────────
+
+export async function finalizeUserSessions(userId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT id FROM platform.sessions WHERE user_id = $1 AND is_active = true`,
+      [userId]
+    );
+    for (const row of result.rows) {
+      try {
+        await finalizeStaleSession(row.id);
+      } catch (e) {
+        // Non-fatal
+      }
+    }
+    if (result.rows.length > 0) {
+      console.log(`[Replay] Finalized ${result.rows.length} sessions for disconnected user ${userId}`);
+    }
+  });
+}
+
 // ── Stale Session Cleanup ──────────────────────────────────────────────────
 
 export async function finalizeStaleActiveSessions(maxAgeMinutes: number = 120) {
