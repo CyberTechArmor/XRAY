@@ -10,6 +10,177 @@
   var pendingFlow = null; // 'login' | 'signup'
   window.__pendingFlow = null;
 
+  // ── Session Replay (rrweb) ──
+  var _replaySessionId = null;
+  var _replaySegmentId = null;
+  var _replayStopFn = null;
+  var _replayEventBuffer = [];
+  var _replayFlushTimer = null;
+  var _replayLastEventTime = 0;
+  var _replayInactivityTimer = null;
+  var _rrwebLoaded = false;
+  var REPLAY_FLUSH_INTERVAL = 2000; // flush events every 2 seconds
+  var REPLAY_INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 1 hour
+
+  function loadRrweb(cb) {
+    if (_rrwebLoaded && window.rrweb) { cb(); return; }
+    var script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.17/dist/rrweb-all.umd.cjs';
+    script.onload = function() { _rrwebLoaded = true; cb(); };
+    script.onerror = function() { console.warn('Failed to load rrweb'); };
+    document.head.appendChild(script);
+  }
+
+  function startReplaySession() {
+    if (!currentUser || currentUser.is_platform_admin) return;
+    if (_replaySessionId) return; // already recording
+
+    loadRrweb(function() {
+      if (!window.rrweb || !window.rrweb.record) { console.warn('rrweb not available'); return; }
+
+      // Create session on server
+      var body = {
+        userAgent: navigator.userAgent,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight
+      };
+      api.post('/api/v1/replay/sessions', body).then(function(r) {
+        if (!r.ok || !r.data) return;
+        _replaySessionId = r.data.id || r.data.sessionId;
+
+        // Create initial segment
+        var segType = detectSegmentType();
+        createReplaySegment(segType.type, segType.dashboardId);
+
+        // Start rrweb recording
+        _replayStopFn = window.rrweb.record({
+          emit: onRrwebEvent,
+          recordCanvas: false,
+          recordCrossOriginIframes: false,
+          collectFonts: false,
+          sampling: {
+            mousemove: true,
+            mouseInteraction: true,
+            scroll: 150,
+            input: 'last'
+          }
+        });
+
+        // Start periodic flush
+        _replayFlushTimer = setInterval(flushReplayEvents, REPLAY_FLUSH_INTERVAL);
+
+        // Start inactivity timer
+        resetInactivityTimer();
+      }).catch(function() {});
+    });
+  }
+
+  function stopReplaySession() {
+    if (_replayStopFn) { _replayStopFn(); _replayStopFn = null; }
+    if (_replayFlushTimer) { clearInterval(_replayFlushTimer); _replayFlushTimer = null; }
+    if (_replayInactivityTimer) { clearTimeout(_replayInactivityTimer); _replayInactivityTimer = null; }
+
+    // Flush remaining events
+    flushReplayEvents();
+
+    // Close current segment
+    if (_replaySegmentId && _replaySessionId) {
+      api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments/' + _replaySegmentId + '/close').catch(function() {});
+    }
+
+    // Finalize session
+    if (_replaySessionId) {
+      api.post('/api/v1/replay/sessions/' + _replaySessionId + '/finalize').catch(function() {});
+    }
+
+    _replaySessionId = null;
+    _replaySegmentId = null;
+    _replayEventBuffer = [];
+  }
+
+  function onRrwebEvent(event) {
+    _replayEventBuffer.push(event);
+    _replayLastEventTime = Date.now();
+    resetInactivityTimer();
+  }
+
+  function flushReplayEvents() {
+    if (_replayEventBuffer.length === 0) return;
+    if (!_replaySessionId || !_replaySegmentId) return;
+
+    var events = _replayEventBuffer;
+    _replayEventBuffer = [];
+
+    // Try WebSocket first
+    if (window.__xrayWs && window.__xrayWs.readyState === WebSocket.OPEN) {
+      try {
+        window.__xrayWs.send(JSON.stringify({
+          type: 'replay:events',
+          data: {
+            sessionId: _replaySessionId,
+            segmentId: _replaySegmentId,
+            events: events
+          }
+        }));
+        return;
+      } catch(e) {}
+    }
+
+    // HTTP fallback
+    api.post('/api/v1/replay/sessions/' + _replaySessionId + '/events', {
+      segmentId: _replaySegmentId,
+      events: events
+    }).catch(function() {
+      // Re-add events to buffer on failure
+      _replayEventBuffer = events.concat(_replayEventBuffer);
+    });
+  }
+
+  function detectSegmentType() {
+    var hash = (window.location.hash || '').replace('#', '').split('?')[0];
+    if (hash === 'dashboard_list' || !hash) {
+      return { type: 'platform', dashboardId: null };
+    }
+    // Check if we're viewing a specific dashboard (the dashboard viewer is active)
+    var viewer = document.querySelector('.dash-fullview.active');
+    if (viewer) {
+      var dashId = viewer.dataset && viewer.dataset.dashboardId;
+      if (dashId) return { type: 'dashboard', dashboardId: dashId };
+    }
+    return { type: 'platform', dashboardId: null };
+  }
+
+  function createReplaySegment(segType, dashboardId) {
+    if (!_replaySessionId) return;
+    // Close current segment first
+    if (_replaySegmentId) {
+      flushReplayEvents();
+      api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments/' + _replaySegmentId + '/close').catch(function() {});
+    }
+    // Create new segment
+    var body = { segmentType: segType };
+    if (dashboardId) body.dashboardId = dashboardId;
+    api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments', body).then(function(r) {
+      if (r.ok && r.data) {
+        _replaySegmentId = r.data.id || r.data.segmentId;
+      }
+    }).catch(function() {});
+  }
+
+  function onReplaySegmentChange() {
+    if (!_replaySessionId) return;
+    var seg = detectSegmentType();
+    createReplaySegment(seg.type, seg.dashboardId);
+  }
+
+  function resetInactivityTimer() {
+    if (_replayInactivityTimer) clearTimeout(_replayInactivityTimer);
+    _replayInactivityTimer = setTimeout(function() {
+      // 1 hour of inactivity — end session, start new one if user becomes active
+      stopReplaySession();
+    }, REPLAY_INACTIVITY_TIMEOUT);
+  }
+
   // ── Icons (simple SVG paths) ──
   var icons = {
     grid: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
@@ -374,6 +545,8 @@
       startTokenRefresh();
       // Start WebSocket for real-time updates (all users)
       if (!currentUser.is_platform_admin) { connectWebSocket(); subscribeToPush(); }
+      // Start session replay recording (non-platform-admins only)
+      startReplaySession();
       // Check if we were opened from a push notification with a meet-join hash
       checkMeetJoinHash();
       // Also listen for hash changes (when SW navigates an existing client to a meet-join hash)
@@ -423,6 +596,7 @@
 
   // ── Logout ──
   function logout() {
+    stopReplaySession();
     stopTokenRefresh();
     if (typeof closeWebSocket === 'function') closeWebSocket();
     // Unsubscribe push notifications so the next user on this device doesn't get them
@@ -448,6 +622,20 @@
     closeModal();
   }
   document.getElementById('btn-logout').onclick = logout;
+
+  // Finalize replay session on tab close
+  window.addEventListener('beforeunload', function() {
+    if (_replaySessionId && accessToken) {
+      // Flush remaining events and finalize via sync XHR (last resort on tab close)
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/v1/replay/sessions/' + _replaySessionId + '/finalize', false); // sync
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.setRequestHeader('Authorization', 'Bearer ' + accessToken);
+        xhr.send('{}');
+      } catch(e) {}
+    }
+  });
   document.getElementById('header-logo').onclick = function() { if (accessToken) navigateTo('dashboard_list'); };
   window.logout = logout;
   window.getAccessToken = function() { return accessToken; };
@@ -807,6 +995,8 @@
     if (window.location.hash.split('?')[0].replace('#', '') !== viewName) {
       window.location.hash = viewName;
     }
+    // Notify replay of segment change
+    onReplaySegmentChange();
 
     // Clear full-viewport dashboard viewer state
     var hdrTitle = document.getElementById('header-center-title');
@@ -876,7 +1066,8 @@
       admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);',
       admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);',
       inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);',
-      files: 'if(typeof initFiles==="function")initFiles(container,api,user);'
+      files: 'if(typeof initFiles==="function")initFiles(container,api,user);',
+      session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);'
     };
     return fnMap[viewName] || '';
   }
@@ -1673,6 +1864,9 @@
         } else if (msg.type === 'team:invitation-changed') {
           // Invitation created/revoked — refresh invitations list
           if (window.__xrayRefreshTeamView) window.__xrayRefreshTeamView();
+        } else if (msg.type === 'replay:events' && msg.data && msg.data.events) {
+          // Shadow view: forward events to the shadow player handler
+          if (window.__xrayShadowHandler) window.__xrayShadowHandler(msg.data.events);
         }
       } catch(e) {}
     };
