@@ -11,6 +11,7 @@ interface AccessTokenInput {
   is_platform_admin: boolean;
   has_admin?: boolean;
   has_billing?: boolean;
+  has_replay?: boolean;
 }
 
 export function signAccessToken(payload: AccessTokenInput): string {
