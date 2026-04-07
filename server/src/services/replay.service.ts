@@ -102,16 +102,65 @@ export async function storeEvents(segmentId: string, events: any[]) {
 export async function getEvents(segmentId: string) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-    const result = await client.query(
-      `SELECT events FROM platform.segment_recordings WHERE segment_id = $1 ORDER BY id`,
+
+    // Get the session ID for this segment
+    const segResult = await client.query(
+      `SELECT session_id FROM platform.session_segments WHERE id = $1`,
       [segmentId]
     );
+    if (segResult.rows.length === 0) return [];
+
+    const sessionId = segResult.rows[0].session_id;
+
+    // Get ALL events from ALL segments in this session (ordered by recording time).
+    // This ensures the FullSnapshot from session start is always included,
+    // making every segment independently playable.
+    const result = await client.query(
+      `SELECT r.events FROM platform.segment_recordings r
+       JOIN platform.session_segments s ON s.id = r.segment_id
+       WHERE s.session_id = $1
+       ORDER BY r.id`,
+      [sessionId]
+    );
+
     const allEvents: any[] = [];
     for (const row of result.rows) {
       const decompressed = gunzipSync(row.events);
       const parsed = JSON.parse(decompressed.toString());
       allEvents.push(...parsed);
     }
+
+    // If requesting a specific segment (not the first), trim events to start
+    // from the segment's time range but always include the last FullSnapshot before it
+    const segTimeResult = await client.query(
+      `SELECT started_at, ended_at FROM platform.session_segments WHERE id = $1`,
+      [segmentId]
+    );
+    const segStarted = segTimeResult.rows[0]?.started_at;
+    const segEnded = segTimeResult.rows[0]?.ended_at;
+
+    if (segStarted && allEvents.length > 0) {
+      const segStartMs = new Date(segStarted).getTime();
+      const segEndMs = segEnded ? new Date(segEnded).getTime() : Infinity;
+
+      // Find the last FullSnapshot (type 2) before or at segment start
+      let lastFullSnapshotIdx = -1;
+      for (let i = 0; i < allEvents.length; i++) {
+        if (allEvents[i].type === 2 && allEvents[i].timestamp <= segStartMs + 5000) {
+          lastFullSnapshotIdx = i;
+        }
+      }
+
+      // If we found a FullSnapshot, return events from that point through segment end
+      if (lastFullSnapshotIdx >= 0) {
+        const filtered = allEvents.filter((ev, idx) => {
+          if (idx >= lastFullSnapshotIdx && (!ev.timestamp || ev.timestamp <= segEndMs + 2000)) return true;
+          return false;
+        });
+        if (filtered.length >= 2) return filtered;
+      }
+    }
+
     return allEvents;
   });
 }

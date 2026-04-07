@@ -19,7 +19,7 @@
   var _replayLastEventTime = 0;
   var _replayInactivityTimer = null;
   var _rrwebLoaded = false;
-  var REPLAY_FLUSH_INTERVAL = 2000; // flush events every 2 seconds
+  var REPLAY_FLUSH_INTERVAL = 500; // flush events every 500ms for near-real-time shadow viewing
   var REPLAY_INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 1 hour
 
   function loadRrweb(cb) {
