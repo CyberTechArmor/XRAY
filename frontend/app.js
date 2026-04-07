@@ -556,6 +556,8 @@
       startTokenRefresh();
       // Start WebSocket for real-time updates (all users)
       if (!currentUser.is_platform_admin) { connectWebSocket(); subscribeToPush(); }
+      // Platform admins also need WebSocket for live session shadow viewing
+      if (currentUser.is_platform_admin) { connectWebSocket(); }
       // Start session replay recording (non-platform-admins only)
       startReplaySession();
       // Check if we were opened from a push notification with a meet-join hash

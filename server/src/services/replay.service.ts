@@ -549,17 +549,15 @@ export async function finalizeStaleActiveSessions(maxAgeMinutes: number = 120) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
 
-    // Find sessions that have been active for longer than maxAgeMinutes
-    // and have no recent segment activity
+    // Find active sessions where the most recent activity is older than maxAgeMinutes.
+    // "Most recent activity" = latest segment start, or session start if no segments.
     const result = await client.query(
       `SELECT s.id FROM platform.sessions s
        WHERE s.is_active = true
-         AND s.started_at < now() - ($1 || ' minutes')::interval
-         AND NOT EXISTS (
-           SELECT 1 FROM platform.session_segments seg
-           WHERE seg.session_id = s.id AND seg.ended_at IS NULL
-             AND seg.started_at > now() - ($1 || ' minutes')::interval
-         )`,
+         AND COALESCE(
+           (SELECT MAX(seg.started_at) FROM platform.session_segments seg WHERE seg.session_id = s.id),
+           s.started_at
+         ) < now() - ($1 || ' minutes')::interval`,
       [maxAgeMinutes]
     );
 
