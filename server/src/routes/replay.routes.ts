@@ -1,6 +1,8 @@
 import { Router } from 'express';
+import jwt from 'jsonwebtoken';
 import { authenticateJWT } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
+import { config } from '../config';
 import * as replayService from '../services/replay.service';
 
 const router = Router();
@@ -134,8 +136,6 @@ router.post('/sessions/:sessionId/beacon', async (req, res, next) => {
   try {
     const token = req.body?.token;
     if (token) {
-      const jwt = require('jsonwebtoken');
-      const { config } = require('../config');
       try { jwt.verify(token, config.jwtSecret); } catch { return res.status(401).json({ ok: false }); }
     }
     // Also store any last events if provided

@@ -30,6 +30,7 @@ import meetRoutes from './routes/meet.routes';
 import shareRoutes from './routes/share.routes';
 import inboxRoutes from './routes/inbox.routes';
 import replayRoutes from './routes/replay.routes';
+import { finalizeStaleActiveSessions } from './services/replay.service';
 // Upload routes loaded lazily to avoid crash if multer not installed
 let uploadRoutes: any;
 try {
@@ -171,16 +172,11 @@ async function start() {
     });
 
     // Periodically finalize stale replay sessions (every 5 minutes)
-    try {
-      const { finalizeStaleActiveSessions } = require('./services/replay.service');
-      setInterval(() => {
-        finalizeStaleActiveSessions(120).catch((err: any) => {
-          console.error('[Replay] Stale session cleanup error:', err);
-        });
-      }, 5 * 60 * 1000);
-    } catch (e) {
-      // Non-fatal if replay service not available
-    }
+    setInterval(() => {
+      finalizeStaleActiveSessions(120).catch((err: unknown) => {
+        console.error('[Replay] Stale session cleanup error:', err);
+      });
+    }, 5 * 60 * 1000);
   } catch (err) {
     console.error('Failed to start server:', err);
     process.exit(1);
