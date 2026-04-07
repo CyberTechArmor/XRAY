@@ -163,6 +163,13 @@
     api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments', body).then(function(r) {
       if (r.ok && r.data) {
         _replaySegmentId = r.data.id || r.data.segmentId;
+        // Take a full DOM snapshot for the new segment so it's independently playable.
+        // Delay slightly to let the new view render before snapshotting.
+        setTimeout(function() {
+          if (window.rrweb && window.rrweb.record && typeof window.rrweb.record.takeFullSnapshot === 'function') {
+            try { window.rrweb.record.takeFullSnapshot(); } catch(e) {}
+          }
+        }, 500);
         // Now close the old segment (after new one is active)
         if (oldSegmentId) {
           api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments/' + oldSegmentId + '/close').catch(function() {});
