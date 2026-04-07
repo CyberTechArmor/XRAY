@@ -173,6 +173,8 @@ export async function getClickDetails(segmentId: string) {
       const nodeId = ev.data.id;
       const node = nodeMap.get(nodeId);
       const elInfo = describeNode(node, nodeMap);
+      // Gather ancestor context: walk up to find meaningful parent content
+      const context = getClickContext(node, nodeMap);
       clicks.push({
         timestamp: ev.timestamp,
         timeOffset: ev.timestamp - sessionStart,
@@ -183,6 +185,7 @@ export async function getClickDetails(segmentId: string) {
         text: elInfo.text,
         selector: elInfo.selector,
         attributes: elInfo.attributes,
+        context: context,
       });
     }
   }
@@ -246,6 +249,58 @@ function describeNode(node: any, nodeMap: Map<number, any>): { tag: string; text
   if (attrs.class) selector += '.' + attrs.class.split(/\s+/).filter(Boolean).join('.');
 
   return { tag, text, selector, attributes: attrs };
+}
+
+function getClickContext(node: any, nodeMap: Map<number, any>): { nearbyText: string[]; parentChain: string[]; rowContent: string } {
+  const nearbyText: string[] = [];
+  const parentChain: string[] = [];
+  let rowContent = '';
+
+  // Collect all text from siblings and nearby nodes
+  function collectText(n: any, depth: number): void {
+    if (!n || depth > 2) return;
+    if (n.type === 3 && n.textContent?.trim()) {
+      const t = n.textContent.trim();
+      if (t.length > 0 && t.length < 200) nearbyText.push(t);
+    }
+    if (n.childNodes) {
+      for (const child of n.childNodes) collectText(child, depth + 1);
+    }
+  }
+
+  // Walk up the ancestor chain to find context
+  let current = node;
+  for (let i = 0; i < 8 && current; i++) {
+    if (current.tagName) {
+      const tag = current.tagName.toLowerCase();
+      const cls = current.attributes?.class || '';
+      parentChain.push(tag + (cls ? '.' + cls.split(/\s+/)[0] : ''));
+
+      // If we hit a table row, collect all text in the row
+      if (tag === 'tr' && !rowContent) {
+        const rowTexts: string[] = [];
+        function walkRow(rn: any) {
+          if (rn.type === 3 && rn.textContent?.trim()) rowTexts.push(rn.textContent.trim());
+          if (rn.childNodes) rn.childNodes.forEach(walkRow);
+        }
+        walkRow(current);
+        rowContent = rowTexts.join(' | ');
+        if (rowContent.length > 300) rowContent = rowContent.substring(0, 300) + '...';
+      }
+
+      // If we hit a meaningful container (button, a, li, card-like divs), collect its text
+      if (['button', 'a', 'li', 'label', 'h1', 'h2', 'h3', 'h4', 'td', 'th'].includes(tag) && i <= 3) {
+        collectText(current, 0);
+      }
+    }
+    current = current.parentId ? nodeMap.get(current.parentId) : null;
+  }
+
+  return {
+    nearbyText: [...new Set(nearbyText)].slice(0, 5),
+    parentChain: parentChain.slice(0, 5),
+    rowContent,
+  };
 }
 
 function formatMs(ms: number): string {
@@ -336,6 +391,7 @@ export async function exportSegment(segmentId: string, format: string) {
       selector: c.selector,
       coordinates: { x: c.x, y: c.y },
       attributes: c.attributes,
+      context: c.context,
     })),
     tags: (segment.tags || []).map((t: any) => t.tag || t.name || t),
     comments: (segment.comments || []).map((c: any) => ({

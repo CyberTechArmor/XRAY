@@ -46,10 +46,15 @@ export async function getFileById(fileId: string): Promise<FileRecord> {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     // Try by UUID first, then by stored_name (for /uploads/:filename/download URLs)
-    let result = await client.query(
-      `SELECT * FROM platform.file_uploads WHERE id = $1`,
-      [fileId]
-    );
+    let result: any = { rows: [] };
+    // Only try UUID lookup if it looks like a UUID (avoid PG cast error)
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (uuidPattern.test(fileId)) {
+      result = await client.query(
+        `SELECT * FROM platform.file_uploads WHERE id = $1`,
+        [fileId]
+      );
+    }
     if (result.rows.length === 0) {
       result = await client.query(
         `SELECT * FROM platform.file_uploads WHERE stored_name = $1`,
