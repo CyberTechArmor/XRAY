@@ -1067,9 +1067,7 @@
       admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);',
       inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);',
       files: 'if(typeof initFiles==="function")initFiles(container,api,user);',
-      session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);',
-      replay_player: 'if(typeof initReplayPlayer==="function")initReplayPlayer(container,api,user);',
-      replay_live: 'if(typeof initReplayLive==="function")initReplayLive(container,api,user);'
+      session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);'
     };
     return fnMap[viewName] || '';
   }
