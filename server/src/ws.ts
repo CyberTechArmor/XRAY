@@ -189,7 +189,7 @@ export function broadcastToTenant(tenantId: string, event: string, data: Record<
  * Stores events and fans them out to any shadow-view subscribers.
  */
 function handleReplayEvents(ws: AuthenticatedSocket, msg: any) {
-  const { sessionId, segmentId, events } = msg;
+  const { sessionId, segmentId, events } = msg.data || msg;
   if (!sessionId || !segmentId || !Array.isArray(events) || events.length === 0) return;
 
   // Store events (fire-and-forget, errors logged)
@@ -217,7 +217,7 @@ function handleReplayEvents(ws: AuthenticatedSocket, msg: any) {
  * Admin subscribes to watch a live session (shadow viewing).
  */
 function handleShadowSubscribe(ws: AuthenticatedSocket, msg: any) {
-  const { sessionId, segmentId } = msg;
+  const { sessionId, segmentId } = msg.data || msg;
   if (!sessionId) return;
 
   if (!shadowSubscribers.has(sessionId)) {
@@ -243,7 +243,7 @@ function handleShadowSubscribe(ws: AuthenticatedSocket, msg: any) {
  * Admin leaves shadow view of a session.
  */
 function handleShadowUnsubscribe(ws: AuthenticatedSocket, msg: any) {
-  const { sessionId, segmentId } = msg;
+  const { sessionId, segmentId } = msg.data || msg;
   if (!sessionId) return;
 
   const subs = shadowSubscribers.get(sessionId);

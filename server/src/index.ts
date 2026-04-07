@@ -169,6 +169,18 @@ async function start() {
       console.log(`XRay server running on port ${config.port}`);
       console.log(`Environment: ${config.nodeEnv}`);
     });
+
+    // Periodically finalize stale replay sessions (every 5 minutes)
+    try {
+      const { finalizeStaleActiveSessions } = require('./services/replay.service');
+      setInterval(() => {
+        finalizeStaleActiveSessions(120).catch((err: any) => {
+          console.error('[Replay] Stale session cleanup error:', err);
+        });
+      }, 5 * 60 * 1000);
+    } catch (e) {
+      // Non-fatal if replay service not available
+    }
   } catch (err) {
     console.error('Failed to start server:', err);
     process.exit(1);
