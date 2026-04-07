@@ -242,15 +242,13 @@ router.get('/segments/:segmentId/export', authenticateJWT, requirePermission('se
   try {
     const format = (req.query.format as string) || 'json';
     const exportData = await replayService.exportSegment(req.params.segmentId, format);
-    if (format === 'csv') {
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename="session-replay-${req.params.segmentId}.csv"`);
-      res.send(exportData);
-    } else {
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Content-Disposition', `attachment; filename="session-replay-${req.params.segmentId}.json"`);
-      res.json(exportData);
-    }
+    // Always return JSON wrapper so api.get can parse it
+    res.json({
+      ok: true,
+      data: exportData,
+      format,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
   } catch (err) {
     next(err);
   }
