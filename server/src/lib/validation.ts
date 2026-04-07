@@ -45,6 +45,7 @@ export const userUpdateSchema = z.object({
   status: z.enum(['active', 'suspended', 'deactivated']).optional(),
   has_admin: z.boolean().optional(),
   has_billing: z.boolean().optional(),
+  has_replay: z.boolean().optional(),
 });
 
 export const roleCreateSchema = z.object({

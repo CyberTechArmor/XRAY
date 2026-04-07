@@ -46,7 +46,7 @@ export async function getProfile(userId: string) {
     );
     const hasNewCols = colCheck.rows.length > 0;
 
-    const extraCols = hasNewCols ? 'u.has_admin, u.has_billing,' : 'false as has_admin, false as has_billing,';
+    const extraCols = hasNewCols ? 'u.has_admin, u.has_billing, u.has_replay,' : 'false as has_admin, false as has_billing, false as has_replay,';
     const result = await client.query(
       `SELECT u.id, u.email, u.name, u.is_owner, u.auth_method, u.status, u.last_login_at,
               u.created_at, u.tenant_id, ${extraCols}
@@ -245,8 +245,8 @@ export async function listUsers(tenantId: string, query: { page: number; limit: 
        WHERE table_schema = 'platform' AND table_name = 'users' AND column_name = 'has_admin'`
     );
     const extraCols = colCheck.rows.length > 0
-      ? 'u.has_admin, u.has_billing, u.tenant_id,'
-      : 'false as has_admin, false as has_billing, u.tenant_id,';
+      ? 'u.has_admin, u.has_billing, u.has_replay, u.tenant_id,'
+      : 'false as has_admin, false as has_billing, false as has_replay, u.tenant_id,';
 
     const result = await client.query(
       `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
@@ -266,7 +266,7 @@ export async function listUsers(tenantId: string, query: { page: number; limit: 
 export async function updateUser(
   tenantId: string,
   userId: string,
-  updates: { name?: string; roleId?: string; status?: string; has_admin?: boolean; has_billing?: boolean }
+  updates: { name?: string; roleId?: string; status?: string; has_admin?: boolean; has_billing?: boolean; has_replay?: boolean }
 ) {
   return withClient(async (client) => {
     await bypassRLS(client);
@@ -279,6 +279,7 @@ export async function updateUser(
     if (updates.status !== undefined) { fields.push(`status = $${idx}`); values.push(updates.status); idx++; }
     if (updates.has_admin !== undefined) { fields.push(`has_admin = $${idx}`); values.push(updates.has_admin); idx++; }
     if (updates.has_billing !== undefined) { fields.push(`has_billing = $${idx}`); values.push(updates.has_billing); idx++; }
+    if (updates.has_replay !== undefined) { fields.push(`has_replay = $${idx}`); values.push(updates.has_replay); idx++; }
 
     if (fields.length === 0) throw new AppError(400, 'NO_UPDATES', 'No fields to update');
     fields.push('updated_at = now()');

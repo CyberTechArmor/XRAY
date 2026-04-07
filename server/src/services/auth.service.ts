@@ -41,15 +41,18 @@ async function getUserPermissions(userId: string): Promise<string[]> {
 
     // Augment permissions based on user-level permission flags
     const flagResult = await client.query(
-      `SELECT has_admin, has_billing FROM platform.users WHERE id = $1`,
+      `SELECT has_admin, has_billing, has_replay FROM platform.users WHERE id = $1`,
       [userId]
     );
     if (flagResult.rows.length > 0) {
-      const { has_admin, has_billing } = flagResult.rows[0];
+      const { has_admin, has_billing, has_replay } = flagResult.rows[0];
       if (has_admin && !perms.includes('users.manage')) perms.push('users.manage');
       if (has_billing) {
         if (!perms.includes('billing.manage')) perms.push('billing.manage');
         if (!perms.includes('billing.view')) perms.push('billing.view');
+      }
+      if (has_replay) {
+        if (!perms.includes('session_replay.view')) perms.push('session_replay.view');
       }
     }
 
@@ -57,14 +60,14 @@ async function getUserPermissions(userId: string): Promise<string[]> {
   });
 }
 
-async function getUserFlags(userId: string): Promise<{ has_admin: boolean; has_billing: boolean }> {
+async function getUserFlags(userId: string): Promise<{ has_admin: boolean; has_billing: boolean; has_replay: boolean }> {
   return withClient(async (client) => {
     const result = await client.query(
-      `SELECT has_admin, has_billing FROM platform.users WHERE id = $1`,
+      `SELECT has_admin, has_billing, has_replay FROM platform.users WHERE id = $1`,
       [userId]
     );
-    if (result.rows.length === 0) return { has_admin: false, has_billing: false };
-    return { has_admin: !!result.rows[0].has_admin, has_billing: !!result.rows[0].has_billing };
+    if (result.rows.length === 0) return { has_admin: false, has_billing: false, has_replay: false };
+    return { has_admin: !!result.rows[0].has_admin, has_billing: !!result.rows[0].has_billing, has_replay: !!result.rows[0].has_replay };
   });
 }
 
@@ -536,6 +539,7 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
       is_platform_admin: isPlatformAdmin,
       has_admin: flags.has_admin,
       has_billing: flags.has_billing,
+      has_replay: flags.has_replay,
     });
 
     auditService.log({
@@ -675,6 +679,7 @@ export async function completeLogin(magicLink: MagicLink, selectedTenantId?: str
       is_platform_admin: isPlatformAdmin,
       has_admin: loginFlags.has_admin,
       has_billing: loginFlags.has_billing,
+      has_replay: loginFlags.has_replay,
     });
 
     auditService.log({
@@ -757,6 +762,7 @@ export async function loginToTenant(email: string, tenantId: string): Promise<To
       is_platform_admin: isPlatformAdmin,
       has_admin: tenantFlags.has_admin,
       has_billing: tenantFlags.has_billing,
+      has_replay: tenantFlags.has_replay,
     });
 
     auditService.log({
@@ -857,6 +863,7 @@ export async function refreshSession(refreshTokenHash: string): Promise<TokenPai
       is_platform_admin: isPlatformAdmin,
       has_admin: refreshFlags.has_admin,
       has_billing: refreshFlags.has_billing,
+      has_replay: refreshFlags.has_replay,
     });
 
     return {
@@ -1046,6 +1053,7 @@ export async function createSession(
       is_platform_admin: isPlatformAdmin,
       has_admin: flags.has_admin,
       has_billing: flags.has_billing,
+      has_replay: flags.has_replay,
     });
 
     return {
