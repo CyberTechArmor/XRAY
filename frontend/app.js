@@ -1067,7 +1067,9 @@
       admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);',
       inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);',
       files: 'if(typeof initFiles==="function")initFiles(container,api,user);',
-      session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);'
+      session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);',
+      replay_player: 'if(typeof initReplayPlayer==="function")initReplayPlayer(container,api,user);',
+      replay_live: 'if(typeof initReplayLive==="function")initReplayLive(container,api,user);'
     };
     return fnMap[viewName] || '';
   }
@@ -1864,6 +1866,9 @@
         } else if (msg.type === 'team:invitation-changed') {
           // Invitation created/revoked — refresh invitations list
           if (window.__xrayRefreshTeamView) window.__xrayRefreshTeamView();
+        } else if (msg.type === 'replay:events' && msg.data && msg.data.events) {
+          // Shadow view: forward events to the shadow player handler
+          if (window.__xrayShadowHandler) window.__xrayShadowHandler(msg.data.events);
         }
       } catch(e) {}
     };
