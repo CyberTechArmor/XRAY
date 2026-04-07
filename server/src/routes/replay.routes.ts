@@ -237,6 +237,19 @@ router.patch('/segments/:segmentId/permanent', authenticateJWT, requirePermissio
   }
 });
 
+// DELETE /segments/:segmentId — delete segment and its recordings
+router.delete('/segments/:segmentId', authenticateJWT, requirePermission('session_replay.manage'), async (req, res, next) => {
+  try {
+    await replayService.deleteSegment(req.params.segmentId);
+    res.json({
+      ok: true,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── Tags ────────────────────────────────────────────────────────────────────
 
 // POST /segments/:segmentId/tags — add tag

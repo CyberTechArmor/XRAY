@@ -55,12 +55,13 @@
         var segType = detectSegmentType();
         createReplaySegment(segType.type, segType.dashboardId);
 
-        // Start rrweb recording
+        // Start rrweb recording with periodic full snapshots
         _replayStopFn = window.rrweb.record({
           emit: onRrwebEvent,
           recordCanvas: false,
           recordCrossOriginIframes: false,
           collectFonts: false,
+          checkoutEveryNms: 30000, // full snapshot every 30s for segment independence
           sampling: {
             mousemove: true,
             mouseInteraction: true,
@@ -163,14 +164,22 @@
     api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments', body).then(function(r) {
       if (r.ok && r.data) {
         _replaySegmentId = r.data.id || r.data.segmentId;
-        // Take a full DOM snapshot for the new segment so it's independently playable.
-        // Delay slightly to let the new view render before snapshotting.
+        // Restart rrweb recording to force a new FullSnapshot for this segment.
+        // Wait briefly to let the new view render first.
         setTimeout(function() {
-          if (window.rrweb && window.rrweb.record && typeof window.rrweb.record.takeFullSnapshot === 'function') {
-            try { window.rrweb.record.takeFullSnapshot(); } catch(e) {}
+          if (_replayStopFn) { _replayStopFn(); _replayStopFn = null; }
+          if (window.rrweb && window.rrweb.record) {
+            _replayStopFn = window.rrweb.record({
+              emit: onRrwebEvent,
+              recordCanvas: false,
+              recordCrossOriginIframes: false,
+              collectFonts: false,
+              checkoutEveryNms: 30000,
+              sampling: { mousemove: true, mouseInteraction: true, scroll: 150, input: 'last' }
+            });
           }
-        }, 500);
-        // Now close the old segment (after new one is active)
+        }, 800);
+        // Close the old segment
         if (oldSegmentId) {
           api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments/' + oldSegmentId + '/close').catch(function() {});
         }
