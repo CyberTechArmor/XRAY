@@ -259,6 +259,7 @@ export async function listSegments(filters?: {
 
     const result = await client.query(
       `SELECT seg.*, s.user_id, s.tenant_id, s.user_agent,
+              s.is_active AS session_is_active, s.id AS session_id,
               u.name AS user_name, u.email AS user_email,
               d.name AS dashboard_name,
               t.name AS tenant_name
