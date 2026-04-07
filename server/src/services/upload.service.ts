@@ -45,10 +45,17 @@ export async function createFileRecord(input: {
 export async function getFileById(fileId: string): Promise<FileRecord> {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-    const result = await client.query(
+    // Try by UUID first, then by stored_name (for /uploads/:filename/download URLs)
+    let result = await client.query(
       `SELECT * FROM platform.file_uploads WHERE id = $1`,
       [fileId]
     );
+    if (result.rows.length === 0) {
+      result = await client.query(
+        `SELECT * FROM platform.file_uploads WHERE stored_name = $1`,
+        [fileId]
+      );
+    }
     if (result.rows.length === 0) {
       throw new AppError(404, 'NOT_FOUND', 'File not found');
     }

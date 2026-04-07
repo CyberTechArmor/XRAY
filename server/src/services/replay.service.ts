@@ -143,7 +143,7 @@ export async function getEvents(segmentId: string) {
 export async function getClickDetails(segmentId: string) {
   const events = await getEvents(segmentId);
 
-  // Build node map from FullSnapshot for element identification
+  // Build node map from FullSnapshot AND incremental mutations
   const nodeMap = new Map<number, any>();
   function walkNodes(node: any, parentId?: number) {
     if (!node) return;
@@ -152,8 +152,15 @@ export async function getClickDetails(segmentId: string) {
     if (node.childNodes) node.childNodes.forEach((child: any) => walkNodes(child, node.id));
   }
   for (const ev of events) {
+    // FullSnapshot (type 2)
     if (ev.type === 2 && ev.data?.node) {
       walkNodes(ev.data.node);
+    }
+    // IncrementalSnapshot (type 3) with DOM mutations - source 0 = Mutation
+    if (ev.type === 3 && ev.data?.source === 0 && ev.data?.adds) {
+      for (const add of ev.data.adds) {
+        if (add.node) walkNodes(add.node, add.parentId);
+      }
     }
   }
 
