@@ -29,6 +29,7 @@ import webhookRoutes from './routes/webhook.routes';
 import meetRoutes from './routes/meet.routes';
 import shareRoutes from './routes/share.routes';
 import inboxRoutes from './routes/inbox.routes';
+import replayRoutes from './routes/replay.routes';
 // Upload routes loaded lazily to avoid crash if multer not installed
 let uploadRoutes: any;
 try {
@@ -95,6 +96,7 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/meet', meetRoutes);
 app.use('/api/share', shareRoutes);
 app.use('/api/inbox', inboxRoutes);
+app.use('/api/v1/replay', replayRoutes);
 if (uploadRoutes) app.use('/api/uploads', uploadRoutes);
 
 // Serve frontend static files (fallback when nginx is not in front)
