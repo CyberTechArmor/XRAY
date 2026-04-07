@@ -25,18 +25,20 @@
   function loadRrweb(cb) {
     if (_rrwebLoaded && window.rrweb) { cb(); return; }
     var script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.17/dist/rrweb-all.umd.cjs';
+    script.src = 'https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.13/dist/rrweb.min.js';
     script.onload = function() { _rrwebLoaded = true; cb(); };
-    script.onerror = function() { console.warn('Failed to load rrweb'); };
+    script.onerror = function() { console.warn('[XRay Replay] Failed to load rrweb from CDN'); };
     document.head.appendChild(script);
   }
 
   function startReplaySession() {
     if (!currentUser || currentUser.is_platform_admin) return;
     if (_replaySessionId) return; // already recording
+    console.log('[XRay Replay] Starting session for', currentUser.email);
 
     loadRrweb(function() {
-      if (!window.rrweb || !window.rrweb.record) { console.warn('rrweb not available'); return; }
+      if (!window.rrweb || !window.rrweb.record) { console.warn('[XRay Replay] rrweb not available after load'); return; }
+      console.log('[XRay Replay] rrweb loaded, creating session...');
 
       // Create session on server
       var body = {
@@ -45,7 +47,8 @@
         viewportHeight: window.innerHeight
       };
       api.post('/api/v1/replay/sessions', body).then(function(r) {
-        if (!r.ok || !r.data) return;
+        if (!r.ok || !r.data) { console.warn('[XRay Replay] Failed to create session:', r.error || r); return; }
+        console.log('[XRay Replay] Session created:', r.data.id || r.data.sessionId);
         _replaySessionId = r.data.id || r.data.sessionId;
 
         // Create initial segment
