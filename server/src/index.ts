@@ -171,12 +171,14 @@ async function start() {
       console.log(`Environment: ${config.nodeEnv}`);
     });
 
-    // Periodically finalize stale replay sessions (every 5 minutes)
+    // Finalize stale replay sessions: run on startup + every 2 minutes
+    // Sessions inactive for >30 minutes are considered stale
+    finalizeStaleActiveSessions(30).catch(() => {});
     setInterval(() => {
-      finalizeStaleActiveSessions(120).catch((err: unknown) => {
+      finalizeStaleActiveSessions(30).catch((err: unknown) => {
         console.error('[Replay] Stale session cleanup error:', err);
       });
-    }, 5 * 60 * 1000);
+    }, 2 * 60 * 1000);
   } catch (err) {
     console.error('Failed to start server:', err);
     process.exit(1);
