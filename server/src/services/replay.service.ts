@@ -145,10 +145,11 @@ export async function getClickDetails(segmentId: string) {
 
   // Build node map from FullSnapshot for element identification
   const nodeMap = new Map<number, any>();
-  function walkNodes(node: any) {
+  function walkNodes(node: any, parentId?: number) {
     if (!node) return;
+    if (parentId !== undefined) node.parentId = parentId;
     nodeMap.set(node.id, node);
-    if (node.childNodes) node.childNodes.forEach(walkNodes);
+    if (node.childNodes) node.childNodes.forEach((child: any) => walkNodes(child, node.id));
   }
   for (const ev of events) {
     if (ev.type === 2 && ev.data?.node) {
@@ -184,7 +185,7 @@ export async function getClickDetails(segmentId: string) {
 function describeNode(node: any, nodeMap: Map<number, any>): { tag: string; text: string; selector: string; attributes: Record<string, string> } {
   if (!node) return { tag: 'unknown', text: '', selector: '', attributes: {} };
 
-  const tag = (node.tagName || 'text').toLowerCase();
+  const tag = (node.tagName || (node.type === 3 ? 'text' : 'unknown')).toLowerCase();
   const attrs: Record<string, string> = {};
   if (node.attributes) {
     for (const [k, v] of Object.entries(node.attributes)) {
@@ -192,35 +193,50 @@ function describeNode(node: any, nodeMap: Map<number, any>): { tag: string; text
     }
   }
 
-  // Get text content from child text nodes
+  // Get text content: check direct textContent, child text nodes, and value attrs
   let text = '';
-  if (node.childNodes) {
+  if (node.type === 3) {
+    text = (node.textContent || '').trim();
+  }
+  if (!text && node.childNodes) {
     for (const child of node.childNodes) {
-      if (child.type === 3) { // text node
-        text += (child.textContent || '').trim();
+      if (child.type === 3) {
+        text += (child.textContent || '').trim() + ' ';
       }
     }
+    text = text.trim();
   }
-  if (!text && node.textContent) text = node.textContent.trim();
+  if (!text && attrs.value) text = attrs.value;
+  if (!text && attrs.placeholder) text = attrs.placeholder;
+  if (!text && attrs.title) text = attrs.title;
+  if (!text && attrs['aria-label']) text = attrs['aria-label'];
+  if (!text && attrs.alt) text = attrs.alt;
+
+  // Search up to 3 parent levels for text if we're on a non-text element
+  if (!text) {
+    let searchNode = node;
+    for (let depth = 0; depth < 3 && !text && searchNode; depth++) {
+      if (searchNode.childNodes) {
+        for (const child of searchNode.childNodes) {
+          if (child.type === 3 && (child.textContent || '').trim()) {
+            text = (child.textContent || '').trim();
+            break;
+          }
+        }
+      }
+      // Walk up via nodeMap (find parent by checking all nodes)
+      if (!text && searchNode.parentId) {
+        searchNode = nodeMap.get(searchNode.parentId);
+      } else break;
+    }
+  }
+
   if (text.length > 100) text = text.substring(0, 100) + '...';
 
   // Build a CSS-like selector
   let selector = tag;
   if (attrs.id) selector += '#' + attrs.id;
-  if (attrs.class) selector += '.' + attrs.class.split(/\s+/).join('.');
-
-  // If no text, check parent
-  if (!text && node.id) {
-    const parent = nodeMap.get(node.parentNode);
-    if (parent?.childNodes) {
-      for (const child of parent.childNodes) {
-        if (child.type === 3 && child.textContent?.trim()) {
-          text = child.textContent.trim();
-          break;
-        }
-      }
-    }
-  }
+  if (attrs.class) selector += '.' + attrs.class.split(/\s+/).filter(Boolean).join('.');
 
   return { tag, text, selector, attributes: attrs };
 }
