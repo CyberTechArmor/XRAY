@@ -1018,14 +1018,18 @@
     if (window.location.hash.split('?')[0].replace('#', '') !== viewName) {
       window.location.hash = viewName;
     }
-    // Notify replay of segment change
-    onReplaySegmentChange();
 
-    // Clear full-viewport dashboard viewer state
+    // Clear full-viewport dashboard viewer state BEFORE checking segment type
     var hdrTitle = document.getElementById('header-center-title');
     if (hdrTitle) { hdrTitle.style.display = 'none'; hdrTitle.textContent = ''; }
     var sidebar = document.getElementById('sidebar');
     if (sidebar) { sidebar.style.display = ''; if (sidebar.dataset.dashCollapsed) { sidebar.classList.remove('collapsed'); delete sidebar.dataset.dashCollapsed; } }
+    // Also explicitly remove active class from dashboard viewer
+    var dashViewer = document.querySelector('.dash-fullview.active');
+    if (dashViewer) { dashViewer.classList.remove('active'); delete dashViewer.dataset.dashboardId; }
+
+    // Notify replay of segment change (AFTER dashboard viewer is cleared)
+    onReplaySegmentChange();
 
     // Clear inbox badge immediately when navigating to inbox
     if (viewName === 'inbox') {
