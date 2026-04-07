@@ -1019,6 +1019,10 @@
       window.location.hash = viewName;
     }
 
+    // Clean up any floating overlays/modals from previous views
+    document.querySelectorAll('.modal-overlay').forEach(function(m) {
+      if (m.id !== 'loginModal') m.remove();
+    });
     // Clear full-viewport dashboard viewer state BEFORE checking segment type
     var hdrTitle = document.getElementById('header-center-title');
     if (hdrTitle) { hdrTitle.style.display = 'none'; hdrTitle.textContent = ''; }
@@ -1026,7 +1030,7 @@
     if (sidebar) { sidebar.style.display = ''; if (sidebar.dataset.dashCollapsed) { sidebar.classList.remove('collapsed'); delete sidebar.dataset.dashCollapsed; } }
     // Also explicitly remove active class from dashboard viewer
     var dashViewer = document.querySelector('.dash-fullview.active');
-    if (dashViewer) { dashViewer.classList.remove('active'); delete dashViewer.dataset.dashboardId; }
+    if (dashViewer) { dashViewer.classList.remove('active'); dashViewer.innerHTML = ''; delete dashViewer.dataset.dashboardId; }
 
     // Notify replay of segment change (AFTER dashboard viewer is cleared)
     onReplaySegmentChange();
