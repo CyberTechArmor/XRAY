@@ -802,6 +802,8 @@
       if (item.view === 'team' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
       // Hide connections nav for members without admin permission
       if (item.view === 'connections' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
+      // Hide session replay nav for members without replay permission
+      if (item.view === 'session_replay' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_replay) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -895,6 +897,8 @@
       if (item.view === 'team' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
       // Hide connections nav for members without admin permission
       if (item.view === 'connections' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
+      // Hide session replay nav for members without replay permission
+      if (item.view === 'session_replay' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_replay) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -1070,7 +1074,9 @@
       admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);',
       inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);',
       files: 'if(typeof initFiles==="function")initFiles(container,api,user);',
-      session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);'
+      session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);',
+      admin_replay: 'if(typeof initAdminReplay==="function")initAdminReplay(container,api,user);',
+      admin_replay_config: 'if(typeof initReplayConfig==="function")initReplayConfig(container,api,user);'
     };
     return fnMap[viewName] || '';
   }
