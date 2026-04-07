@@ -138,6 +138,209 @@ export async function getEvents(segmentId: string) {
   });
 }
 
+// ── Click Details ──────────────────────────────────────────────────────────
+
+export async function getClickDetails(segmentId: string) {
+  const events = await getEvents(segmentId);
+
+  // Build node map from FullSnapshot for element identification
+  const nodeMap = new Map<number, any>();
+  function walkNodes(node: any) {
+    if (!node) return;
+    nodeMap.set(node.id, node);
+    if (node.childNodes) node.childNodes.forEach(walkNodes);
+  }
+  for (const ev of events) {
+    if (ev.type === 2 && ev.data?.node) {
+      walkNodes(ev.data.node);
+    }
+  }
+
+  // Extract click events with element info
+  const clicks: any[] = [];
+  const sessionStart = events.length > 0 ? events[0].timestamp : 0;
+
+  for (const ev of events) {
+    if (ev.type === 3 && ev.data?.source === 2 && ev.data?.type === 2) {
+      const nodeId = ev.data.id;
+      const node = nodeMap.get(nodeId);
+      const elInfo = describeNode(node, nodeMap);
+      clicks.push({
+        timestamp: ev.timestamp,
+        timeOffset: ev.timestamp - sessionStart,
+        timeFormatted: formatMs(ev.timestamp - sessionStart),
+        x: ev.data.x,
+        y: ev.data.y,
+        element: elInfo.tag,
+        text: elInfo.text,
+        selector: elInfo.selector,
+        attributes: elInfo.attributes,
+      });
+    }
+  }
+  return clicks;
+}
+
+function describeNode(node: any, nodeMap: Map<number, any>): { tag: string; text: string; selector: string; attributes: Record<string, string> } {
+  if (!node) return { tag: 'unknown', text: '', selector: '', attributes: {} };
+
+  const tag = (node.tagName || 'text').toLowerCase();
+  const attrs: Record<string, string> = {};
+  if (node.attributes) {
+    for (const [k, v] of Object.entries(node.attributes)) {
+      if (k !== 'style' && typeof v === 'string') attrs[k] = v as string;
+    }
+  }
+
+  // Get text content from child text nodes
+  let text = '';
+  if (node.childNodes) {
+    for (const child of node.childNodes) {
+      if (child.type === 3) { // text node
+        text += (child.textContent || '').trim();
+      }
+    }
+  }
+  if (!text && node.textContent) text = node.textContent.trim();
+  if (text.length > 100) text = text.substring(0, 100) + '...';
+
+  // Build a CSS-like selector
+  let selector = tag;
+  if (attrs.id) selector += '#' + attrs.id;
+  if (attrs.class) selector += '.' + attrs.class.split(/\s+/).join('.');
+
+  // If no text, check parent
+  if (!text && node.id) {
+    const parent = nodeMap.get(node.parentNode);
+    if (parent?.childNodes) {
+      for (const child of parent.childNodes) {
+        if (child.type === 3 && child.textContent?.trim()) {
+          text = child.textContent.trim();
+          break;
+        }
+      }
+    }
+  }
+
+  return { tag, text, selector, attributes: attrs };
+}
+
+function formatMs(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+}
+
+// ── Storage Size ───────────────────────────────────────────────────────────
+
+export async function getSegmentStorageSize(segmentId: string) {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+
+    // Get the session for this segment to sum all session recordings
+    const segResult = await client.query(
+      `SELECT session_id FROM platform.session_segments WHERE id = $1`,
+      [segmentId]
+    );
+    if (segResult.rows.length === 0) return { segmentBytes: 0, sessionBytes: 0 };
+    const sessionId = segResult.rows[0].session_id;
+
+    // Segment-specific size
+    const segSize = await client.query(
+      `SELECT COALESCE(SUM(octet_length(events)), 0)::bigint AS bytes
+       FROM platform.segment_recordings WHERE segment_id = $1`,
+      [segmentId]
+    );
+
+    // Total session size (all segments)
+    const sessSize = await client.query(
+      `SELECT COALESCE(SUM(octet_length(r.events)), 0)::bigint AS bytes
+       FROM platform.segment_recordings r
+       JOIN platform.session_segments s ON s.id = r.segment_id
+       WHERE s.session_id = $1`,
+      [sessionId]
+    );
+
+    return {
+      segmentBytes: parseInt(segSize.rows[0].bytes, 10),
+      sessionBytes: parseInt(sessSize.rows[0].bytes, 10),
+      segmentFormatted: formatBytes(parseInt(segSize.rows[0].bytes, 10)),
+      sessionFormatted: formatBytes(parseInt(sessSize.rows[0].bytes, 10)),
+    };
+  });
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+}
+
+// ── Export ──────────────────────────────────────────────────────────────────
+
+export async function exportSegment(segmentId: string, format: string) {
+  const segment = await getSegment(segmentId);
+  const clicks = await getClickDetails(segmentId);
+  const storage = await getSegmentStorageSize(segmentId);
+
+  const exportData = {
+    session: {
+      segmentId: segment.id,
+      sessionId: segment.session_id,
+      user: { name: segment.user_name, email: segment.user_email },
+      tenant: segment.tenant_name || undefined,
+      dashboard: segment.dashboard_name || undefined,
+      segmentType: segment.segment_type,
+      startedAt: segment.started_at,
+      endedAt: segment.ended_at,
+      durationSeconds: segment.duration_seconds,
+      viewport: { width: segment.viewport_width, height: segment.viewport_height },
+      userAgent: segment.user_agent,
+    },
+    metrics: {
+      clickCount: segment.click_count,
+      pageCount: segment.page_count,
+      storageSizeCompressed: storage.segmentFormatted,
+      storageBytesCompressed: storage.segmentBytes,
+      totalSessionStorage: storage.sessionFormatted,
+    },
+    clicks: clicks.map((c: any) => ({
+      time: c.timeFormatted,
+      timeMs: c.timeOffset,
+      element: c.element,
+      text: c.text,
+      selector: c.selector,
+      coordinates: { x: c.x, y: c.y },
+      attributes: c.attributes,
+    })),
+    tags: (segment.tags || []).map((t: any) => t.tag || t.name || t),
+    comments: (segment.comments || []).map((c: any) => ({
+      author: c.user_name || c.user_email,
+      body: c.body,
+      timestampSeconds: c.timestamp_seconds,
+    })),
+    flags: {
+      isTraining: segment.is_training,
+      isPermanent: segment.is_permanent,
+    },
+    _exportedAt: new Date().toISOString(),
+    _format: 'xray-session-replay-v1',
+    _aiReviewPrompt: 'This is a session replay export from XRay BI. Review the user\'s click sequence, timing between clicks, and the elements they interacted with. Identify: 1) User intent and workflow patterns, 2) Potential UX friction points (long gaps, repeated clicks, back-and-forth), 3) Feature adoption metrics, 4) Suggested improvements.',
+  };
+
+  if (format === 'csv') {
+    // CSV format: one row per click
+    const header = 'Time,Element,Text,Selector,X,Y,Attributes';
+    const rows = clicks.map((c: any) =>
+      `"${c.timeFormatted}","${c.element}","${(c.text || '').replace(/"/g, '""')}","${c.selector}",${c.x},${c.y},"${JSON.stringify(c.attributes).replace(/"/g, '""')}"`
+    );
+    return header + '\n' + rows.join('\n');
+  }
+
+  return exportData;
+}
+
 // ── List / Query ────────────────────────────────────────────────────────────
 
 export async function listSessions(
