@@ -101,7 +101,10 @@ export function initWebSocketServer(server: HttpServer) {
         if (userSockets.size === 0) {
           clients.delete(ws.userId!);
           // No more connections for this user — finalize any active replay sessions
-          replayService.finalizeUserSessions(ws.userId!).catch((err) => {
+          replayService.finalizeUserSessions(ws.userId!).then(() => {
+            // Notify admins so replay lists refresh immediately
+            broadcastToAdmins('replay:session-ended', { userId: ws.userId });
+          }).catch((err) => {
             console.error('Failed to finalize replay sessions on WS close:', err);
           });
         }
