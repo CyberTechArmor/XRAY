@@ -98,7 +98,13 @@ export function initWebSocketServer(server: HttpServer) {
       const userSockets = clients.get(ws.userId!);
       if (userSockets) {
         userSockets.delete(ws);
-        if (userSockets.size === 0) clients.delete(ws.userId!);
+        if (userSockets.size === 0) {
+          clients.delete(ws.userId!);
+          // No more connections for this user — finalize any active replay sessions
+          replayService.finalizeUserSessions(ws.userId!).catch((err) => {
+            console.error('Failed to finalize replay sessions on WS close:', err);
+          });
+        }
       }
       adminSockets.delete(ws);
 
@@ -196,6 +202,9 @@ function handleReplayEvents(ws: AuthenticatedSocket, msg: any) {
   replayService.storeEvents(segmentId, events).catch((err) => {
     console.error('Failed to store replay events:', err);
   });
+
+  // Notify all admins about segment activity (for real-time list refresh)
+  broadcastToAdmins('replay:segment-update', { sessionId, segmentId });
 
   // Fan out to shadow subscribers watching this session
   const subs = shadowSubscribers.get(sessionId);
