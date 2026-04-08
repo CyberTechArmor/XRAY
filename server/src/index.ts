@@ -179,6 +179,14 @@ async function start() {
         console.error('[Replay] Stale session cleanup error:', err);
       });
     }, 2 * 60 * 1000);
+
+    // Clean up old rendered videos every hour (keep for 24 hours)
+    setInterval(() => {
+      try {
+        const { cleanupOldVideos } = require('./services/video-render.service');
+        cleanupOldVideos(24).catch(() => {});
+      } catch (e) { /* video render service not available */ }
+    }, 60 * 60 * 1000);
   } catch (err) {
     console.error('Failed to start server:', err);
     process.exit(1);
