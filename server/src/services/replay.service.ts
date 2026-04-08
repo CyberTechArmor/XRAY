@@ -256,9 +256,9 @@ function getClickContext(node: any, nodeMap: Map<number, any>): { nearbyText: st
   const parentChain: string[] = [];
   let rowContent = '';
 
-  // Collect all text from siblings and nearby nodes
+  // Collect text from a subtree (limited depth)
   function collectText(n: any, depth: number): void {
-    if (!n || depth > 2) return;
+    if (!n || depth > 3) return;
     if (n.type === 3 && n.textContent?.trim()) {
       const t = n.textContent.trim();
       if (t.length > 0 && t.length < 200) nearbyText.push(t);
@@ -270,13 +270,14 @@ function getClickContext(node: any, nodeMap: Map<number, any>): { nearbyText: st
 
   // Walk up the ancestor chain to find context
   let current = node;
-  for (let i = 0; i < 8 && current; i++) {
+  for (let i = 0; i < 10 && current; i++) {
     if (current.tagName) {
       const tag = current.tagName.toLowerCase();
       const cls = current.attributes?.class || '';
+      const role = current.attributes?.role || '';
       parentChain.push(tag + (cls ? '.' + cls.split(/\s+/)[0] : ''));
 
-      // If we hit a table row, collect all text in the row
+      // Table row: collect all cell text
       if (tag === 'tr' && !rowContent) {
         const rowTexts: string[] = [];
         function walkRow(rn: any) {
@@ -285,11 +286,29 @@ function getClickContext(node: any, nodeMap: Map<number, any>): { nearbyText: st
         }
         walkRow(current);
         rowContent = rowTexts.join(' | ');
-        if (rowContent.length > 300) rowContent = rowContent.substring(0, 300) + '...';
+        if (rowContent.length > 400) rowContent = rowContent.substring(0, 400) + '...';
       }
 
-      // If we hit a meaningful container (button, a, li, card-like divs), collect its text
-      if (['button', 'a', 'li', 'label', 'h1', 'h2', 'h3', 'h4', 'td', 'th'].includes(tag) && i <= 3) {
+      // Modal/dialog: collect title and visible content
+      if ((role === 'dialog' || cls.includes('modal') || cls.includes('dialog') || cls.includes('overlay') || cls.includes('popup')) && !rowContent) {
+        const modalTexts: string[] = [];
+        function walkModal(mn: any, d: number) {
+          if (!mn || d > 4) return;
+          if (mn.type === 3 && mn.textContent?.trim()) modalTexts.push(mn.textContent.trim());
+          if (mn.childNodes) mn.childNodes.forEach((c: any) => walkModal(c, d + 1));
+        }
+        walkModal(current, 0);
+        rowContent = 'Modal: ' + modalTexts.slice(0, 10).join(' | ');
+        if (rowContent.length > 400) rowContent = rowContent.substring(0, 400) + '...';
+      }
+
+      // Card/panel: collect heading + content
+      if ((cls.includes('card') || cls.includes('panel') || cls.includes('section')) && !rowContent && i <= 4) {
+        collectText(current, 0);
+      }
+
+      // Meaningful containers: collect text
+      if (['button', 'a', 'li', 'label', 'h1', 'h2', 'h3', 'h4', 'h5', 'td', 'th', 'select', 'option'].includes(tag) && i <= 4) {
         collectText(current, 0);
       }
     }
@@ -297,8 +316,8 @@ function getClickContext(node: any, nodeMap: Map<number, any>): { nearbyText: st
   }
 
   return {
-    nearbyText: [...new Set(nearbyText)].slice(0, 5),
-    parentChain: parentChain.slice(0, 5),
+    nearbyText: [...new Set(nearbyText)].slice(0, 8),
+    parentChain: parentChain.slice(0, 6),
     rowContent,
   };
 }
