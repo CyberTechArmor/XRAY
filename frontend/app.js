@@ -191,6 +191,20 @@
     createReplaySegment(seg.type, seg.dashboardId);
   }
 
+  // Force rrweb to take a new FullSnapshot, capturing current DOM including iframe content.
+  // Called after dashboard iframes render via document.write(), which rrweb's
+  // MutationObserver misses because the content is written synchronously before
+  // rrweb can attach observers to the new iframe document.
+  function triggerReplaySnapshot() {
+    if (!_replaySessionId) return;
+    if (window.rrweb && window.rrweb.record && window.rrweb.record.takeFullSnapshot) {
+      // Short delay to let iframe content finish rendering
+      setTimeout(function() {
+        try { window.rrweb.record.takeFullSnapshot(); } catch(e) { console.warn('[XRay Replay] takeFullSnapshot failed', e); }
+      }, 500);
+    }
+  }
+
   function resetInactivityTimer() {
     if (_replayInactivityTimer) clearTimeout(_replayInactivityTimer);
     _replayInactivityTimer = setTimeout(function() {
@@ -676,6 +690,7 @@
   window.logout = logout;
   window.getAccessToken = function() { return accessToken; };
   window.onReplaySegmentChange = onReplaySegmentChange;
+  window.triggerReplaySnapshot = triggerReplaySnapshot;
 
   // ── Proactive token refresh ──
   // Access tokens expire in 15min. Refresh every 12min to avoid silent expiry.
