@@ -201,10 +201,7 @@ function handleReplayEvents(ws: AuthenticatedSocket, msg: any) {
   const { sessionId, segmentId, events } = msg.data || msg;
   if (!sessionId || !segmentId || !Array.isArray(events) || events.length === 0) return;
 
-  // Store events (fire-and-forget, errors logged)
-  replayService.storeEvents(segmentId, events).catch((err) => {
-    console.error('Failed to store replay events:', err);
-  });
+  // Events are stored via HTTP POST (reliable). WS is only for real-time fan-out.
 
   // Notify all admins about segment activity (for real-time list refresh)
   broadcastToAdmins('replay:segment-update', { sessionId, segmentId });

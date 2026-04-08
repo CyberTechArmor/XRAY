@@ -118,48 +118,29 @@
 
   function flushReplayEvents() {
     if (_replayEventBuffer.length === 0) return;
-    // Always use the primary segment for event storage
     var flushSegId = _replayPrimarySegmentId || _replaySegmentId;
-    if (!_replaySessionId || !flushSegId) {
-      console.warn('[XRay Replay] Flush skipped: no session/segment ID', { session: !!_replaySessionId, segment: !!flushSegId, buffered: _replayEventBuffer.length });
-      return;
-    }
+    if (!_replaySessionId || !flushSegId) return;
 
     var events = _replayEventBuffer;
     _replayEventBuffer = [];
-    var eventTypes = {};
-    events.forEach(function(e) { eventTypes[e.type] = (eventTypes[e.type] || 0) + 1; });
-    console.log('[XRay Replay] Flushing', events.length, 'events to segment', flushSegId.substring(0, 8), eventTypes);
 
-    // Try WebSocket first
-    var wsOk = false;
+    // Always use HTTP for reliable event storage (WS drops events silently)
+    api.post('/api/v1/replay/sessions/' + _replaySessionId + '/events', {
+      segmentId: flushSegId,
+      events: events
+    }).catch(function() {
+      // Re-add events to buffer on failure
+      _replayEventBuffer = events.concat(_replayEventBuffer);
+    });
+
+    // Also send via WS for real-time shadow viewing (fire-and-forget, no storage)
     if (window.__xrayWs && window.__xrayWs.readyState === WebSocket.OPEN) {
       try {
-        var payload = JSON.stringify({
+        window.__xrayWs.send(JSON.stringify({
           type: 'replay:events',
           data: { sessionId: _replaySessionId, segmentId: flushSegId, events: events }
-        });
-        // WS messages over 1MB may fail — use HTTP for large payloads
-        if (payload.length < 1000000) {
-          window.__xrayWs.send(payload);
-          wsOk = true;
-        } else {
-          console.log('[XRay Replay] Payload too large for WS (' + (payload.length / 1024).toFixed(0) + 'KB), using HTTP');
-        }
-      } catch(e) {
-        console.warn('[XRay Replay] WS send failed, falling back to HTTP', e);
-      }
-    }
-
-    if (!wsOk) {
-      // HTTP fallback (also used for large payloads)
-      api.post('/api/v1/replay/sessions/' + _replaySessionId + '/events', {
-        segmentId: flushSegId,
-        events: events
-      }).catch(function() {
-        // Re-add events to buffer on failure
-        _replayEventBuffer = events.concat(_replayEventBuffer);
-      });
+        }));
+      } catch(e) {}
     }
   }
 
