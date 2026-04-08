@@ -51,29 +51,36 @@
         console.log('[XRay Replay] Session created:', r.data.id || r.data.sessionId);
         _replaySessionId = r.data.id || r.data.sessionId;
 
-        // Create initial segment
+        // Create initial segment — WAIT for it before starting recording
         var segType = detectSegmentType();
-        createReplaySegment(segType.type, segType.dashboardId);
-
-        // Start rrweb recording — captures every DOM mutation, click, scroll, input
-        _replayStopFn = window.rrweb.record({
-          emit: onRrwebEvent,
-          recordCanvas: false,
-          recordCrossOriginIframes: false,
-          collectFonts: false,
-          sampling: {
-            mousemove: true,
-            mouseInteraction: true,
-            scroll: 150,
-            input: 'last'
+        var segBody = { segmentType: segType.type };
+        if (segType.dashboardId) segBody.dashboardId = segType.dashboardId;
+        api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments', segBody).then(function(sr) {
+          if (sr.ok && sr.data) {
+            _replaySegmentId = sr.data.id || sr.data.segmentId;
+            console.log('[XRay Replay] Segment created:', _replaySegmentId);
           }
-        });
 
-        // Start periodic flush
-        _replayFlushTimer = setInterval(flushReplayEvents, REPLAY_FLUSH_INTERVAL);
+          // Start rrweb recording AFTER segment ID is ready
+          _replayStopFn = window.rrweb.record({
+            emit: onRrwebEvent,
+            recordCanvas: false,
+            recordCrossOriginIframes: false,
+            collectFonts: false,
+            sampling: {
+              mousemove: true,
+              mouseInteraction: true,
+              scroll: 150,
+              input: 'last'
+            }
+          });
 
-        // Start inactivity timer
-        resetInactivityTimer();
+          // Start periodic flush
+          _replayFlushTimer = setInterval(flushReplayEvents, REPLAY_FLUSH_INTERVAL);
+
+          // Start inactivity timer
+          resetInactivityTimer();
+        }).catch(function() {});
       }).catch(function() {});
     });
   }
