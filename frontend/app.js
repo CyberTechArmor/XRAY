@@ -65,14 +65,15 @@
           // Start rrweb recording AFTER segment ID is ready
           _replayStopFn = window.rrweb.record({
             emit: onRrwebEvent,
-            recordCanvas: false,
+            recordCanvas: true,
             recordCrossOriginIframes: false,
             collectFonts: false,
             sampling: {
               mousemove: true,
               mouseInteraction: true,
               scroll: 150,
-              input: 'last'
+              input: 'last',
+              canvas: 2
             }
           });
 
@@ -189,6 +190,28 @@
     if (!_replaySessionId) return;
     var seg = detectSegmentType();
     createReplaySegment(seg.type, seg.dashboardId);
+  }
+
+  // Take a full snapshot after dashboard iframe loads to capture dynamically
+  // added DOM elements inside the iframe. The iframe content is written via
+  // document.write(), so rrweb's initial serialization may miss elements added
+  // later by the dashboard's own JS (data fetching, chart rendering, etc.).
+  var _snapshotTimers = [];
+  function triggerReplaySnapshot() {
+    if (!_replaySessionId) return;
+    if (window.rrweb && window.rrweb.record && window.rrweb.record.takeFullSnapshot) {
+      _snapshotTimers.forEach(function(t) { clearTimeout(t); });
+      _snapshotTimers = [];
+      // 500ms: capture initial iframe content
+      // 3s: capture after dashboard JS has fetched data and rendered charts
+      [500, 3000].forEach(function(delay) {
+        _snapshotTimers.push(setTimeout(function() {
+          if (_replaySessionId) {
+            try { window.rrweb.record.takeFullSnapshot(); } catch(e) {}
+          }
+        }, delay));
+      });
+    }
   }
 
   function resetInactivityTimer() {
@@ -676,6 +699,7 @@
   window.logout = logout;
   window.getAccessToken = function() { return accessToken; };
   window.onReplaySegmentChange = onReplaySegmentChange;
+  window.triggerReplaySnapshot = triggerReplaySnapshot;
 
   // ── Proactive token refresh ──
   // Access tokens expire in 15min. Refresh every 12min to avoid silent expiry.
