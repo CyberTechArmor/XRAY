@@ -58,6 +58,7 @@
         api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments', segBody).then(function(sr) {
           if (sr.ok && sr.data) {
             _replaySegmentId = sr.data.id || sr.data.segmentId;
+            _replayPrimarySegmentId = _replaySegmentId; // primary segment stores all events
             console.log('[XRay Replay] Segment created:', _replaySegmentId);
           }
 
@@ -105,6 +106,7 @@
 
     _replaySessionId = null;
     _replaySegmentId = null;
+    _replayPrimarySegmentId = null;
     _replayEventBuffer = [];
   }
 
@@ -116,7 +118,9 @@
 
   function flushReplayEvents() {
     if (_replayEventBuffer.length === 0) return;
-    if (!_replaySessionId || !_replaySegmentId) return;
+    // Always use the primary segment for event storage (never loses events on segment switch)
+    var flushSegId = _replayPrimarySegmentId || _replaySegmentId;
+    if (!_replaySessionId || !flushSegId) return;
 
     var events = _replayEventBuffer;
     _replayEventBuffer = [];
@@ -128,7 +132,7 @@
           type: 'replay:events',
           data: {
             sessionId: _replaySessionId,
-            segmentId: _replaySegmentId,
+            segmentId: flushSegId,
             events: events
           }
         }));
@@ -138,7 +142,7 @@
 
     // HTTP fallback
     api.post('/api/v1/replay/sessions/' + _replaySessionId + '/events', {
-      segmentId: _replaySegmentId,
+      segmentId: flushSegId,
       events: events
     }).catch(function() {
       // Re-add events to buffer on failure
@@ -157,19 +161,26 @@
     return { type: 'platform', dashboardId: null };
   }
 
+  // The primary segment ID used for all event storage — set once at session start
+  var _replayPrimarySegmentId = null;
+
   function createReplaySegment(segType, dashboardId) {
     if (!_replaySessionId) return;
     var oldSegmentId = _replaySegmentId;
-    // Flush events for the old segment before switching
+    // Flush events before switching
     if (oldSegmentId) {
       flushReplayEvents();
     }
-    // Create new segment, then close old
+    // Create new segment for metadata tracking, but keep storing events under primary segment
     var body = { segmentType: segType };
     if (dashboardId) body.dashboardId = dashboardId;
     api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments', body).then(function(r) {
       if (r.ok && r.data) {
         _replaySegmentId = r.data.id || r.data.segmentId;
+        // First segment becomes the primary — all events stored here
+        if (!_replayPrimarySegmentId) {
+          _replayPrimarySegmentId = _replaySegmentId;
+        }
         // Close the old segment
         if (oldSegmentId) {
           api.post('/api/v1/replay/sessions/' + _replaySessionId + '/segments/' + oldSegmentId + '/close').catch(function() {});
