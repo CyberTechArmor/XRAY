@@ -10,8 +10,10 @@ const CHROMIUM_PATH = '/usr/bin/chromium-browser';
 const SCREENSHOT_INTERVAL_MS = 33; // ~30fps
 const FPS = 30;
 
-const RRWEB_PLAYER_JS = 'https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/index.js';
-const RRWEB_PLAYER_CSS = 'https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/style.css';
+// CDN URLs for rrweb (loaded inside headless browser via page.addScriptTag)
+const RRWEB_CDN = 'https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.13/dist/rrweb.min.js';
+const RRWEB_PLAYER_CDN = 'https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/index.js';
+const RRWEB_PLAYER_CSS_CDN = 'https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/style.css';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -38,133 +40,31 @@ function buildPlayerHTML(
     }
   }
 
+  // Minimal HTML shell — rrweb scripts will be injected by Puppeteer via addScriptTag
+  // which handles network fetching at the Puppeteer level (more reliable than in-page fetch)
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <title>XRay Replay Renderer</title>
-  <link rel="stylesheet" href="${RRWEB_PLAYER_CSS}">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body {
-      width: ${viewportWidth}px;
-      height: ${viewportHeight}px;
-      overflow: hidden;
-      background: #fff;
-    }
-    #player-container {
-      width: ${viewportWidth}px;
-      height: ${viewportHeight}px;
-      position: relative;
-      overflow: hidden;
-    }
-    /* Override rrweb-player wrapper styles to fill viewport */
-    .rr-player {
-      width: ${viewportWidth}px !important;
-      height: ${viewportHeight}px !important;
-    }
-    .rr-player__frame {
-      width: ${viewportWidth}px !important;
-      height: ${viewportHeight}px !important;
-    }
-    /* Hide the rrweb-player controls bar */
-    .rr-controller { display: none !important; }
-    .rr-timeline { display: none !important; }
-    .rr-player-controller { display: none !important; }
-
-    /* Click marker animation */
-    .click-marker {
-      position: absolute;
-      width: 30px;
-      height: 30px;
-      border-radius: 50%;
-      border: 3px solid #e74c3c;
-      background: rgba(231, 76, 60, 0.3);
-      pointer-events: none;
-      z-index: 999999;
-      animation: click-ripple 0.6s ease-out forwards;
-      transform: translate(-50%, -50%);
-    }
-    @keyframes click-ripple {
-      0% { transform: translate(-50%, -50%) scale(0.3); opacity: 1; }
-      50% { transform: translate(-50%, -50%) scale(1); opacity: 0.7; }
-      100% { transform: translate(-50%, -50%) scale(1.5); opacity: 0; }
-    }
+    html, body { width: ${viewportWidth}px; height: ${viewportHeight}px; overflow: hidden; background: #1a1a2e; }
+    #player-container { width: ${viewportWidth}px; height: ${viewportHeight}px; position: relative; overflow: hidden; }
+    .replayer-wrapper { position: absolute !important; top: 0 !important; left: 0 !important; }
+    .replayer-mouse-tail { stroke: rgba(74,222,128,0.6); stroke-width: 2; }
+    .click-marker { position: absolute; width: 30px; height: 30px; border-radius: 50%; border: 3px solid #e74c3c; background: rgba(231,76,60,0.3); pointer-events: none; z-index: 999999; animation: click-ripple 0.6s ease-out forwards; transform: translate(-50%,-50%); }
+    @keyframes click-ripple { 0% { transform: translate(-50%,-50%) scale(0.3); opacity: 1; } 50% { transform: translate(-50%,-50%) scale(1); opacity: 0.7; } 100% { transform: translate(-50%,-50%) scale(1.5); opacity: 0; } }
   </style>
 </head>
 <body>
   <div id="player-container"></div>
-  <script src="${RRWEB_PLAYER_JS}"></script>
   <script>
     window.__REPLAY_DONE = false;
     window.__EVENTS = ${JSON.stringify(events)};
     window.__CLICKS = ${JSON.stringify(clicks)};
-
-    (function() {
-      const events = window.__EVENTS;
-      if (!events || events.length === 0) {
-        console.error('No events to replay');
-        window.__REPLAY_DONE = true;
-        return;
-      }
-
-      const container = document.getElementById('player-container');
-
-      // Create rrweb player
-      const player = new rrwebPlayer({
-        target: container,
-        props: {
-          events: events,
-          autoPlay: true,
-          speed: 1,
-          showController: false,
-          width: ${viewportWidth},
-          height: ${viewportHeight},
-          skipInactive: true,
-          mouseTail: true,
-        },
-      });
-
-      // Calculate session timeline
-      const startTime = events[0].timestamp;
-      const endTime = events[events.length - 1].timestamp;
-      const totalDuration = endTime - startTime;
-
-      // Schedule click markers
-      const clickEvents = window.__CLICKS;
-      for (const click of clickEvents) {
-        const delay = click.timestamp - startTime;
-        if (delay >= 0 && delay <= totalDuration) {
-          setTimeout(() => {
-            const marker = document.createElement('div');
-            marker.className = 'click-marker';
-            marker.style.left = click.x + 'px';
-            marker.style.top = click.y + 'px';
-            container.appendChild(marker);
-            // Remove marker after animation completes
-            setTimeout(() => {
-              if (marker.parentNode) marker.parentNode.removeChild(marker);
-            }, 700);
-          }, delay);
-        }
-      }
-
-      // Signal replay completion
-      // Add a small buffer after the last event for the final frame
-      const completionDelay = totalDuration + 1000;
-      setTimeout(() => {
-        console.log('Replay complete');
-        window.__REPLAY_DONE = true;
-      }, completionDelay);
-
-      // Safety timeout: if replay doesn't complete in 5 minutes, force done
-      setTimeout(() => {
-        if (!window.__REPLAY_DONE) {
-          console.warn('Replay safety timeout reached');
-          window.__REPLAY_DONE = true;
-        }
-      }, 300000);
-    })();
+    window.__VP_W = ${viewportWidth};
+    window.__VP_H = ${viewportHeight};
   </script>
 </body>
 </html>`;
@@ -287,19 +187,86 @@ export async function renderSegmentVideo(segmentId: string): Promise<RenderResul
     const page = await browser.newPage();
     await page.setViewport({ width: viewportWidth, height: viewportHeight });
 
-    // Load the replay HTML
+    // Load the replay HTML (no external scripts yet)
     console.log('[video-render] Loading replay page...');
-    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30000 });
+    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-    // Give the player a moment to initialize
-    await page.waitForFunction('typeof rrwebPlayer !== "undefined" || document.querySelector(".rr-player")', {
-      timeout: 10000,
-    }).catch(() => {
-      console.log('[video-render] Player element check timed out, proceeding anyway...');
+    // Load rrweb and rrweb-player via Puppeteer's addScriptTag (handles network at browser level)
+    console.log('[video-render] Loading rrweb scripts...');
+    try {
+      await page.addStyleTag({ url: RRWEB_PLAYER_CSS_CDN });
+      await page.addScriptTag({ url: RRWEB_CDN });
+      await page.addScriptTag({ url: RRWEB_PLAYER_CDN });
+    } catch (cdnErr: any) {
+      console.error('[video-render] CDN script load failed:', cdnErr.message);
+      // Try alternate approach: use rrweb Replayer directly
+      console.log('[video-render] Attempting fallback with rrweb Replayer...');
+      try {
+        await page.addScriptTag({ url: 'https://unpkg.com/rrweb@2.0.0-alpha.13/dist/rrweb.min.js' });
+      } catch (e2: any) {
+        return { success: false, error: `Cannot load rrweb scripts: ${cdnErr.message}` };
+      }
+    }
+
+    // Initialize the player inside the page
+    console.log('[video-render] Initializing player...');
+    await page.evaluate(() => {
+      const events = (window as any).__EVENTS;
+      const clicks = (window as any).__CLICKS;
+      const vpW = (window as any).__VP_W;
+      const vpH = (window as any).__VP_H;
+      const container = document.getElementById('player-container')!;
+
+      if (!events || events.length === 0) {
+        (window as any).__REPLAY_DONE = true;
+        return;
+      }
+
+      // Try rrweb-player first, fall back to rrweb.Replayer
+      let player: any;
+      const RRWebPlayer = (window as any).rrwebPlayer || (window as any).RRWebPlayer;
+      if (RRWebPlayer) {
+        const Ctor = RRWebPlayer.default || RRWebPlayer;
+        player = new Ctor({
+          target: container,
+          props: { events, autoPlay: true, speed: 1, showController: false, width: vpW, height: vpH, skipInactive: true, mouseTail: true }
+        });
+      } else if ((window as any).rrweb && (window as any).rrweb.Replayer) {
+        player = new (window as any).rrweb.Replayer(events, {
+          root: container, speed: 1, skipInactive: true, mouseTail: true,
+          UNSAFE_replayCanvas: false, liveMode: false,
+        });
+        player.play();
+      } else {
+        console.error('No rrweb player available');
+        (window as any).__REPLAY_DONE = true;
+        return;
+      }
+
+      // Schedule click markers
+      const startTime = events[0].timestamp;
+      const endTime = events[events.length - 1].timestamp;
+      const totalDuration = endTime - startTime;
+      for (const click of clicks) {
+        const delay = click.timestamp - startTime;
+        if (delay >= 0 && delay <= totalDuration) {
+          setTimeout(() => {
+            const marker = document.createElement('div');
+            marker.className = 'click-marker';
+            marker.style.left = click.x + 'px';
+            marker.style.top = click.y + 'px';
+            container.appendChild(marker);
+            setTimeout(() => { if (marker.parentNode) marker.parentNode.removeChild(marker); }, 700);
+          }, delay);
+        }
+      }
+
+      setTimeout(() => { (window as any).__REPLAY_DONE = true; }, totalDuration + 1500);
+      setTimeout(() => { if (!(window as any).__REPLAY_DONE) (window as any).__REPLAY_DONE = true; }, 300000);
     });
 
-    // Small initial delay to ensure first frame renders
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Wait for player to start rendering
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     // Start screenshot capture + ffmpeg encoding
     console.log('[video-render] Starting screenshot capture at 30fps...');

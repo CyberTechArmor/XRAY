@@ -21,7 +21,7 @@
   var _replayInactivityTimer = null;
   var _rrwebLoaded = false;
   var REPLAY_FLUSH_INTERVAL = 500; // flush events every 500ms for near-real-time shadow viewing
-  var REPLAY_SNAPSHOT_INTERVAL = 10000; // take a full DOM snapshot every 10 seconds for reliable scrubbing
+  var REPLAY_SNAPSHOT_INTERVAL = 30000; // full DOM snapshot every 30 seconds for reliable seeking
   var REPLAY_INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 1 hour
 
   function loadRrweb(cb) {
