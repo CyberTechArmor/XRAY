@@ -154,7 +154,7 @@ export async function getEvents(segmentId: string) {
 export async function getClickDetails(segmentId: string) {
   const events = await getEvents(segmentId);
 
-  // Build node map from FullSnapshot AND incremental mutations
+  // Build node map from FullSnapshot AND ALL incremental mutations
   const nodeMap = new Map<number, any>();
   function walkNodes(node: any, parentId?: number) {
     if (!node) return;
@@ -168,12 +168,33 @@ export async function getClickDetails(segmentId: string) {
       walkNodes(ev.data.node);
     }
     // IncrementalSnapshot (type 3) with DOM mutations - source 0 = Mutation
-    if (ev.type === 3 && ev.data?.source === 0 && ev.data?.adds) {
-      for (const add of ev.data.adds) {
-        if (add.node) walkNodes(add.node, add.parentId);
+    if (ev.type === 3 && ev.data?.source === 0) {
+      // Added nodes
+      if (ev.data.adds) {
+        for (const add of ev.data.adds) {
+          if (add.node) walkNodes(add.node, add.parentId);
+        }
+      }
+      // Text changes — update existing nodes
+      if (ev.data.texts) {
+        for (const t of ev.data.texts) {
+          const existing = nodeMap.get(t.id);
+          if (existing) existing.textContent = t.value;
+        }
+      }
+      // Attribute changes — update existing nodes
+      if (ev.data.attributes) {
+        for (const a of ev.data.attributes) {
+          const existing = nodeMap.get(a.id);
+          if (existing && existing.attributes) {
+            Object.assign(existing.attributes, a.attributes);
+          }
+        }
       }
     }
   }
+
+  console.log(`[Click Details] Node map size: ${nodeMap.size}, Events: ${events.length}`);
 
   // Extract click events with element info
   const clicks: any[] = [];
@@ -183,6 +204,9 @@ export async function getClickDetails(segmentId: string) {
     if (ev.type === 3 && ev.data?.source === 2 && ev.data?.type === 2) {
       const nodeId = ev.data.id;
       const node = nodeMap.get(nodeId);
+      if (!node) {
+        console.log(`[Click Details] Click at node ${nodeId} not found in map (map has ${nodeMap.size} nodes)`);
+      }
       const elInfo = describeNode(node, nodeMap);
       // Gather ancestor context: walk up to find meaningful parent content
       const context = getClickContext(node, nodeMap);
