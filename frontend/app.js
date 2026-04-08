@@ -192,16 +192,26 @@
   }
 
   // Force rrweb to take a new FullSnapshot, capturing current DOM including iframe content.
-  // Called after dashboard iframes render via document.write(), which rrweb's
-  // MutationObserver misses because the content is written synchronously before
-  // rrweb can attach observers to the new iframe document.
+  // Called on iframe onload after dashboard renders via srcdoc. Multiple snapshots are
+  // taken because the dashboard JS inside the iframe may fetch data asynchronously and
+  // re-render the page after the initial load.
+  var _snapshotTimers = [];
   function triggerReplaySnapshot() {
     if (!_replaySessionId) return;
     if (window.rrweb && window.rrweb.record && window.rrweb.record.takeFullSnapshot) {
-      // Short delay to let iframe content finish rendering
-      setTimeout(function() {
-        try { window.rrweb.record.takeFullSnapshot(); } catch(e) { console.warn('[XRay Replay] takeFullSnapshot failed', e); }
-      }, 500);
+      // Clear any pending snapshot timers to avoid duplicates on rapid re-renders
+      _snapshotTimers.forEach(function(t) { clearTimeout(t); });
+      _snapshotTimers = [];
+      // Take snapshots at increasing intervals to capture:
+      // - 300ms: initial iframe content (loading state)
+      // - 3s: after dashboard JS has likely fetched data and rendered
+      [300, 3000].forEach(function(delay) {
+        _snapshotTimers.push(setTimeout(function() {
+          if (_replaySessionId) {
+            try { window.rrweb.record.takeFullSnapshot(); } catch(e) {}
+          }
+        }, delay));
+      });
     }
   }
 
