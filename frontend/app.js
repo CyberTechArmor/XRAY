@@ -66,7 +66,7 @@
           _replayStopFn = window.rrweb.record({
             emit: onRrwebEvent,
             recordCanvas: false,
-            recordCrossOriginIframes: false,
+            recordCrossOriginIframes: true,
             collectFonts: false,
             sampling: {
               mousemove: true,
@@ -192,9 +192,9 @@
   }
 
   // Force rrweb to take a new FullSnapshot, capturing current DOM including iframe content.
-  // Called on iframe onload after dashboard renders via srcdoc. Multiple snapshots are
+  // Called on iframe onload after dashboard renders via blob URL. Multiple snapshots are
   // taken because the dashboard JS inside the iframe may fetch data asynchronously and
-  // re-render the page after the initial load.
+  // re-render the page multiple times after the initial load.
   var _snapshotTimers = [];
   function triggerReplaySnapshot() {
     if (!_replaySessionId) return;
