@@ -1,4 +1,4 @@
-var CACHE_NAME = 'xray-v11';
+var CACHE_NAME = 'xray-v12';
 var SHELL_ASSETS = [
   '/',
   '/index.html',

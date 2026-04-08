@@ -88,11 +88,22 @@ export async function storeEvents(segmentId: string, events: any[]) {
     }
 
     if (clickCount > 0 || pageCount > 0) {
+      // Update the segment where events are stored
       await client.query(
         `UPDATE platform.session_segments
          SET click_count = COALESCE(click_count, 0) + $2,
              page_count  = COALESCE(page_count, 0) + $3
          WHERE id = $1`,
+        [segmentId, clickCount, pageCount]
+      );
+      // Also update the latest open segment in the same session (for dashboard segments)
+      await client.query(
+        `UPDATE platform.session_segments
+         SET click_count = COALESCE(click_count, 0) + $2,
+             page_count  = COALESCE(page_count, 0) + $3
+         WHERE id != $1
+           AND session_id = (SELECT session_id FROM platform.session_segments WHERE id = $1)
+           AND ended_at IS NULL`,
         [segmentId, clickCount, pageCount]
       );
     }
@@ -583,6 +594,7 @@ export async function listSegments(filters?: {
     const result = await client.query(
       `SELECT seg.*, s.user_id, s.tenant_id, s.user_agent,
               s.is_active AS session_is_active, s.id AS session_id,
+              s.duration_seconds AS session_duration_seconds,
               u.name AS user_name, u.email AS user_email,
               d.name AS dashboard_name,
               t.name AS tenant_name
