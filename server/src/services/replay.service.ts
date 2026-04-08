@@ -705,25 +705,6 @@ export async function flagPermanent(segmentId: string, isPermanent: boolean) {
   });
 }
 
-// ── Video Render Status ────────────────────────────────────────────────────
-
-export async function updateVideoStatus(segmentId: string, status: string, videoUrl?: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-    if (videoUrl) {
-      await client.query(
-        `UPDATE platform.session_segments SET video_status = $2, video_url = $3 WHERE id = $1`,
-        [segmentId, status, videoUrl]
-      );
-    } else {
-      await client.query(
-        `UPDATE platform.session_segments SET video_status = $2 WHERE id = $1`,
-        [segmentId, status]
-      );
-    }
-  });
-}
-
 // ── Delete Segment ─────────────────────────────────────────────────────────
 
 export async function deleteSegment(segmentId: string) {
