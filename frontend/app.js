@@ -124,16 +124,18 @@
     var events = _replayEventBuffer;
     _replayEventBuffer = [];
 
-    // Always use HTTP for reliable event storage (WS drops events silently)
+    // HTTP POST for reliable storage
     api.post('/api/v1/replay/sessions/' + _replaySessionId + '/events', {
       segmentId: flushSegId,
       events: events
-    }).catch(function() {
-      // Re-add events to buffer on failure
+    }).then(function(r) {
+      if (!r.ok) console.error('[XRay Replay] Event store failed:', r);
+    }).catch(function(err) {
+      console.error('[XRay Replay] Event store error, re-buffering', err);
       _replayEventBuffer = events.concat(_replayEventBuffer);
     });
 
-    // Also send via WS for real-time shadow viewing (fire-and-forget, no storage)
+    // WS for shadow fan-out only
     if (window.__xrayWs && window.__xrayWs.readyState === WebSocket.OPEN) {
       try {
         window.__xrayWs.send(JSON.stringify({
