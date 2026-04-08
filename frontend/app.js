@@ -66,7 +66,7 @@
           _replayStopFn = window.rrweb.record({
             emit: onRrwebEvent,
             recordCanvas: false,
-            recordCrossOriginIframes: true,
+            recordCrossOriginIframes: false,
             collectFonts: false,
             sampling: {
               mousemove: true,
@@ -189,30 +189,6 @@
     if (!_replaySessionId) return;
     var seg = detectSegmentType();
     createReplaySegment(seg.type, seg.dashboardId);
-  }
-
-  // Force rrweb to take a new FullSnapshot, capturing current DOM including iframe content.
-  // Called on iframe onload after dashboard renders via blob URL. Multiple snapshots are
-  // taken because the dashboard JS inside the iframe may fetch data asynchronously and
-  // re-render the page multiple times after the initial load.
-  var _snapshotTimers = [];
-  function triggerReplaySnapshot() {
-    if (!_replaySessionId) return;
-    if (window.rrweb && window.rrweb.record && window.rrweb.record.takeFullSnapshot) {
-      // Clear any pending snapshot timers to avoid duplicates on rapid re-renders
-      _snapshotTimers.forEach(function(t) { clearTimeout(t); });
-      _snapshotTimers = [];
-      // Take snapshots at increasing intervals to capture:
-      // - 300ms: initial iframe content (loading state)
-      // - 3s: after dashboard JS has likely fetched data and rendered
-      [300, 3000].forEach(function(delay) {
-        _snapshotTimers.push(setTimeout(function() {
-          if (_replaySessionId) {
-            try { window.rrweb.record.takeFullSnapshot(); } catch(e) {}
-          }
-        }, delay));
-      });
-    }
   }
 
   function resetInactivityTimer() {
@@ -700,7 +676,6 @@
   window.logout = logout;
   window.getAccessToken = function() { return accessToken; };
   window.onReplaySegmentChange = onReplaySegmentChange;
-  window.triggerReplaySnapshot = triggerReplaySnapshot;
 
   // ── Proactive token refresh ──
   // Access tokens expire in 15min. Refresh every 12min to avoid silent expiry.
