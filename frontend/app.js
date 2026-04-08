@@ -65,6 +65,7 @@
           // Start rrweb recording AFTER segment ID is ready
           _replayStopFn = window.rrweb.record({
             emit: onRrwebEvent,
+            checkoutEveryNms: 5000,
             recordCanvas: false,
             recordCrossOriginIframes: false,
             collectFonts: false,
