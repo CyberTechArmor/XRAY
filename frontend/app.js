@@ -16,10 +16,12 @@
   var _replayStopFn = null;
   var _replayEventBuffer = [];
   var _replayFlushTimer = null;
+  var _replaySnapshotTimer = null;
   var _replayLastEventTime = 0;
   var _replayInactivityTimer = null;
   var _rrwebLoaded = false;
   var REPLAY_FLUSH_INTERVAL = 500; // flush events every 500ms for near-real-time shadow viewing
+  var REPLAY_SNAPSHOT_INTERVAL = 30000; // take a full DOM snapshot every 30 seconds
   var REPLAY_INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 1 hour
 
   function loadRrweb(cb) {
@@ -56,21 +58,13 @@
         createReplaySegment(segType.type, segType.dashboardId);
 
         // Start rrweb recording — captures initial FullSnapshot + all DOM mutations
-        _replayStopFn = window.rrweb.record({
-          emit: onRrwebEvent,
-          recordCanvas: false,
-          recordCrossOriginIframes: false,
-          collectFonts: false,
-          sampling: {
-            mousemove: true,
-            mouseInteraction: true,
-            scroll: 150,
-            input: 'last'
-          }
-        });
+        startRrwebRecording();
 
         // Start periodic flush
         _replayFlushTimer = setInterval(flushReplayEvents, REPLAY_FLUSH_INTERVAL);
+
+        // Start periodic full snapshot every 30s for reliable scrubbing
+        _replaySnapshotTimer = setInterval(takePeriodicSnapshot, REPLAY_SNAPSHOT_INTERVAL);
 
         // Start inactivity timer
         resetInactivityTimer();
@@ -78,9 +72,36 @@
     });
   }
 
+  function startRrwebRecording() {
+    if (_replayStopFn) { _replayStopFn(); _replayStopFn = null; }
+    _replayStopFn = window.rrweb.record({
+      emit: onRrwebEvent,
+      recordCanvas: false,
+      recordCrossOriginIframes: false,
+      collectFonts: false,
+      sampling: {
+        mousemove: true,
+        mouseInteraction: true,
+        scroll: 150,
+        input: 'last'
+      }
+    });
+  }
+
+  function takePeriodicSnapshot() {
+    if (!_replaySessionId || !_replayStopFn || !window.rrweb || !window.rrweb.record) return;
+    // Flush current events, then stop and restart recording.
+    // Restarting forces rrweb to take a new FullSnapshot (type 2),
+    // which makes any point in the recording seekable.
+    flushReplayEvents();
+    startRrwebRecording();
+    console.log('[XRay Replay] Periodic FullSnapshot taken');
+  }
+
   function stopReplaySession() {
     if (_replayStopFn) { _replayStopFn(); _replayStopFn = null; }
     if (_replayFlushTimer) { clearInterval(_replayFlushTimer); _replayFlushTimer = null; }
+    if (_replaySnapshotTimer) { clearInterval(_replaySnapshotTimer); _replaySnapshotTimer = null; }
     if (_replayInactivityTimer) { clearTimeout(_replayInactivityTimer); _replayInactivityTimer = null; }
 
     // Flush remaining events
@@ -553,6 +574,10 @@
       if (currentUser.is_platform_admin) { connectWebSocket(); }
       // Start session replay recording (non-platform-admins only)
       startReplaySession();
+      // Also try to start recording when user returns to the tab (covers page refresh edge cases)
+      document.addEventListener('visibilitychange', function() {
+        if (!document.hidden && currentUser && !_replaySessionId) startReplaySession();
+      });
       // Check if we were opened from a push notification with a meet-join hash
       checkMeetJoinHash();
       // Also listen for hash changes (when SW navigates an existing client to a meet-join hash)
