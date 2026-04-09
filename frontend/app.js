@@ -66,7 +66,7 @@
           _replayStopFn = window.rrweb.record({
             emit: onRrwebEvent,
             recordCanvas: true,
-            recordCrossOriginIframes: false,
+            recordCrossOriginIframes: true,
             collectFonts: false,
             sampling: {
               mousemove: true,
@@ -192,19 +192,21 @@
     createReplaySegment(seg.type, seg.dashboardId);
   }
 
-  // Take a full snapshot after dashboard iframe loads to capture dynamically
-  // added DOM elements inside the iframe. The iframe content is written via
-  // document.write(), so rrweb's initial serialization may miss elements added
-  // later by the dashboard's own JS (data fetching, chart rendering, etc.).
+  // Force rrweb to take a new FullSnapshot, capturing current DOM including iframe content.
+  // Called on iframe onload after dashboard renders via blob URL. Multiple snapshots are
+  // taken because the dashboard JS inside the iframe may fetch data asynchronously and
+  // re-render the page multiple times after the initial load.
   var _snapshotTimers = [];
   function triggerReplaySnapshot() {
     if (!_replaySessionId) return;
     if (window.rrweb && window.rrweb.record && window.rrweb.record.takeFullSnapshot) {
+      // Clear any pending snapshot timers to avoid duplicates on rapid re-renders
       _snapshotTimers.forEach(function(t) { clearTimeout(t); });
       _snapshotTimers = [];
-      // 500ms: capture initial iframe content
-      // 3s: capture after dashboard JS has fetched data and rendered charts
-      [500, 3000].forEach(function(delay) {
+      // Take snapshots at increasing intervals to capture:
+      // - 300ms: initial iframe content (loading state)
+      // - 3s: after dashboard JS has likely fetched data and rendered
+      [300, 3000].forEach(function(delay) {
         _snapshotTimers.push(setTimeout(function() {
           if (_replaySessionId) {
             try { window.rrweb.record.takeFullSnapshot(); } catch(e) {}
