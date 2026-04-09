@@ -837,8 +837,8 @@
       if (item.view === 'team' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
       // Hide connections nav for members without admin permission
       if (item.view === 'connections' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
-      // Hide session replay nav for members without replay permission
-      if (item.view === 'session_replay' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_replay) return;
+      // Hide session replay nav if tenant doesn't have replay visible, or user lacks replay permission
+      if (item.view === 'session_replay' && !isAdmin && currentUser && (!currentUser.replay_visible || (!currentUser.is_owner && !currentUser.has_replay))) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
@@ -932,8 +932,8 @@
       if (item.view === 'team' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
       // Hide connections nav for members without admin permission
       if (item.view === 'connections' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_admin) return;
-      // Hide session replay nav for members without replay permission
-      if (item.view === 'session_replay' && !isAdmin && currentUser && !currentUser.is_owner && !currentUser.has_replay) return;
+      // Hide session replay nav if tenant doesn't have replay visible, or user lacks replay permission
+      if (item.view === 'session_replay' && !isAdmin && currentUser && (!currentUser.replay_visible || (!currentUser.is_owner && !currentUser.has_replay))) return;
       var sec = item.section || 'main';
       if (!sections[sec]) sections[sec] = [];
       sections[sec].push(item);
