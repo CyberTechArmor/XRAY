@@ -92,6 +92,35 @@ router.patch('/tenants/:id/plan', async (req, res, next) => {
   }
 });
 
+// PATCH /tenants/:id/replay - toggle replay recording for a tenant
+router.patch('/tenants/:id/replay', async (req, res, next) => {
+  try {
+    const { replay_enabled } = req.body;
+    if (typeof replay_enabled !== 'boolean') {
+      return res.status(400).json({ ok: false, error: { code: 'INVALID_FIELD', message: 'replay_enabled must be a boolean' } });
+    }
+    const { withClient } = await import('../db/connection');
+    const result = await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const r = await client.query(
+        'UPDATE platform.tenants SET replay_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *',
+        [replay_enabled, req.params.id]
+      );
+      return r.rows[0];
+    });
+    if (!result) {
+      return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Tenant not found' } });
+    }
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PATCH /tenants/:id/status - archive/activate tenant
 router.patch('/tenants/:id/status', async (req, res, next) => {
   try {
