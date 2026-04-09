@@ -118,6 +118,14 @@ router.patch('/tenants/:id/replay', async (req, res, next) => {
     if (!result) {
       return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Tenant not found' } });
     }
+    // Broadcast to all users in this tenant so sidebar updates in real-time
+    try {
+      const { broadcastToTenant } = await import('../ws');
+      broadcastToTenant(req.params.id, 'tenant:replay-changed', {
+        replay_enabled: result.replay_enabled,
+        replay_visible: result.replay_visible,
+      });
+    } catch (e) { /* non-fatal */ }
     res.json({
       ok: true,
       data: result,

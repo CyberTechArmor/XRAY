@@ -1902,6 +1902,12 @@
           if (window.__xrayRefreshDashboardList) window.__xrayRefreshDashboardList();
           // Trigger a re-check of billing status for any active dashboard view
           if (window.__xrayBillingChanged) window.__xrayBillingChanged(msg.data);
+        } else if (msg.type === 'tenant:replay-changed' && msg.data) {
+          // Replay toggle changed by platform admin — update sidebar in real-time
+          if (msg.data.replay_visible !== undefined) currentUser.replay_visible = msg.data.replay_visible;
+          if (msg.data.replay_enabled !== undefined) currentUser.replay_enabled = msg.data.replay_enabled;
+          buildSidebar();
+          buildMobileNav();
         } else if (msg.type === 'user:permissions-changed' && msg.data) {
           // Permissions were updated by an admin — update currentUser and rebuild sidebar
           if (msg.data.has_admin !== undefined) currentUser.has_admin = msg.data.has_admin;
