@@ -52,7 +52,8 @@ export async function getProfile(userId: string) {
               u.created_at, u.tenant_id, ${extraCols}
               r.name as role_name, r.slug as role_slug,
               r.is_platform as is_platform_admin,
-              COALESCE(t.replay_enabled, false) as replay_enabled
+              COALESCE(t.replay_enabled, false) as replay_enabled,
+              COALESCE(t.replay_visible, false) as replay_visible
        FROM platform.users u
        JOIN platform.roles r ON r.id = u.role_id
        LEFT JOIN platform.tenants t ON t.id = u.tenant_id

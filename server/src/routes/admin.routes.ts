@@ -92,19 +92,26 @@ router.patch('/tenants/:id/plan', async (req, res, next) => {
   }
 });
 
-// PATCH /tenants/:id/replay - toggle replay recording for a tenant
+// PATCH /tenants/:id/replay - toggle replay recording and/or visibility for a tenant
 router.patch('/tenants/:id/replay', async (req, res, next) => {
   try {
-    const { replay_enabled } = req.body;
-    if (typeof replay_enabled !== 'boolean') {
-      return res.status(400).json({ ok: false, error: { code: 'INVALID_FIELD', message: 'replay_enabled must be a boolean' } });
+    const { replay_enabled, replay_visible } = req.body;
+    if (typeof replay_enabled !== 'boolean' && typeof replay_visible !== 'boolean') {
+      return res.status(400).json({ ok: false, error: { code: 'INVALID_FIELD', message: 'replay_enabled or replay_visible (boolean) required' } });
     }
     const { withClient } = await import('../db/connection');
     const result = await withClient(async (client) => {
       await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const sets: string[] = [];
+      const vals: any[] = [];
+      let idx = 1;
+      if (typeof replay_enabled === 'boolean') { sets.push(`replay_enabled = $${idx++}`); vals.push(replay_enabled); }
+      if (typeof replay_visible === 'boolean') { sets.push(`replay_visible = $${idx++}`); vals.push(replay_visible); }
+      sets.push('updated_at = now()');
+      vals.push(req.params.id);
       const r = await client.query(
-        'UPDATE platform.tenants SET replay_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *',
-        [replay_enabled, req.params.id]
+        `UPDATE platform.tenants SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
+        vals
       );
       return r.rows[0];
     });
