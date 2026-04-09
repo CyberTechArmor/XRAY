@@ -33,6 +33,7 @@
 
   function startReplaySession() {
     if (!currentUser || currentUser.is_platform_admin) return;
+    if (!currentUser.replay_enabled) return; // tenant has replay disabled
     if (_replaySessionId) return; // already recording
     console.log('[XRay Replay] Starting session for', currentUser.email);
 
