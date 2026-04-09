@@ -164,6 +164,14 @@ async function start() {
       console.error('Migration check/run failed:', migrationErr);
     }
 
+    // Auto-add missing columns for incremental migrations
+    try {
+      await pool.query(`ALTER TABLE platform.tenants ADD COLUMN IF NOT EXISTS replay_enabled BOOLEAN NOT NULL DEFAULT false`);
+      await pool.query(`ALTER TABLE platform.tenants ADD COLUMN IF NOT EXISTS replay_visible BOOLEAN NOT NULL DEFAULT false`);
+    } catch (colErr) {
+      console.error('Column migration failed:', colErr);
+    }
+
     const server = http.createServer(app);
     initWebSocketServer(server);
     server.listen(config.port, () => {
