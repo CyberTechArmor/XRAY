@@ -11,6 +11,8 @@ CREATE TABLE platform.tenants (
     owner_user_id     UUID,
     stripe_customer_id TEXT UNIQUE,
     warehouse_host    TEXT,
+    replay_enabled    BOOLEAN NOT NULL DEFAULT false,
+    replay_visible    BOOLEAN NOT NULL DEFAULT false,
     status            TEXT NOT NULL DEFAULT 'active'
                       CHECK (status IN ('active', 'suspended', 'cancelled', 'archived')),
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
