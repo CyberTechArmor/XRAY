@@ -326,7 +326,7 @@ input[type="file"]::file-selector-button:hover,input[type='file']::file-selector
 .meet-viewport-iframe iframe { width: 100%; height: 100%; border: none; }
 
 #app-body { display: flex; height: calc(100vh - var(--header-h)); }
-#sidebar { width: var(--sidebar-w); background: var(--bg2); border-right: 1px solid var(--bdr); overflow-y: auto; flex-shrink: 0; padding: 12px 0; transition: width .2s ease, padding .2s ease; position: relative; z-index: 91; }
+#sidebar { width: var(--sidebar-w); background: var(--bg2); border-right: 1px solid var(--bdr); overflow-y: auto; flex-shrink: 0; padding: 12px 0; transition: width .2s ease, padding .2s ease; position: relative; z-index: 96; }
 #sidebar.collapsed { width: 52px; overflow: hidden; }
 #sidebar.collapsed .nav-section { display: none; }
 #sidebar.collapsed .nav-item span { display: none; }
