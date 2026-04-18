@@ -10,6 +10,10 @@
   var pendingFlow = null; // 'login' | 'signup'
   window.__pendingFlow = null;
 
+  // Exposed for extensions (AI SDK, etc.) that need to make authenticated calls
+  window.__xrayGetAccessToken = function() { return accessToken; };
+  window.__xrayGetUser = function() { return currentUser; };
+
   // ── Session Replay (rrweb) ──
   var _replaySessionId = null;
   var _replaySegmentId = null;
@@ -1018,7 +1022,22 @@
   function loadBundle() {
     if (bundle) { onBundleReady(); return; }
     fetch('/bundles/general.json?v=' + Date.now()).then(function(r) { return r.json(); })
-      .then(function(d) { bundle = d; buildSidebar(); buildMobileNav(); onBundleReady(); })
+      .then(function(d) {
+        bundle = d;
+        // Merge in built-in extensions (e.g., AI admin view) before building chrome
+        if (window.__xrayExtensions && window.__xrayExtensions.length) {
+          window.__xrayExtensions.forEach(function(ext) {
+            try {
+              if (ext.view && ext.viewName) bundle.views[ext.viewName] = ext.view;
+              if (ext.nav && Array.isArray(bundle.nav)) {
+                // Only add if user has required permission (checked later in buildSidebar too)
+                bundle.nav.push(ext.nav);
+              }
+            } catch (e) { console.warn('extension merge failed', e); }
+          });
+        }
+        buildSidebar(); buildMobileNav(); onBundleReady();
+      })
       .catch(function() { toast('Failed to load UI bundle', 'error'); });
   }
 
@@ -1119,7 +1138,8 @@
       files: 'if(typeof initFiles==="function")initFiles(container,api,user);',
       session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);',
       admin_replay: 'if(typeof initAdminReplay==="function")initAdminReplay(container,api,user);',
-      admin_replay_config: 'if(typeof initReplayConfig==="function")initReplayConfig(container,api,user);'
+      admin_replay_config: 'if(typeof initReplayConfig==="function")initReplayConfig(container,api,user);',
+      admin_ai: 'if(typeof initAdminAI==="function")initAdminAI(container,api,user);'
     };
     return fnMap[viewName] || '';
   }

@@ -30,6 +30,8 @@ import meetRoutes from './routes/meet.routes';
 import shareRoutes from './routes/share.routes';
 import inboxRoutes from './routes/inbox.routes';
 import replayRoutes from './routes/replay.routes';
+import aiRoutes from './routes/ai.routes';
+import adminAiRoutes from './routes/admin.ai.routes';
 import { finalizeStaleActiveSessions } from './services/replay.service';
 // Upload routes loaded lazily to avoid crash if multer not installed
 let uploadRoutes: any;
@@ -98,6 +100,8 @@ app.use('/api/meet', meetRoutes);
 app.use('/api/share', shareRoutes);
 app.use('/api/inbox', inboxRoutes);
 app.use('/api/v1/replay', replayRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/admin/ai', adminAiRoutes);
 if (uploadRoutes) app.use('/api/uploads', uploadRoutes);
 
 // Serve frontend static files (fallback when nginx is not in front)
@@ -170,6 +174,25 @@ async function start() {
       await pool.query(`ALTER TABLE platform.tenants ADD COLUMN IF NOT EXISTS replay_visible BOOLEAN NOT NULL DEFAULT false`);
     } catch (colErr) {
       console.error('Column migration failed:', colErr);
+    }
+
+    // Apply AI integration migration (014) idempotently on boot
+    try {
+      const aiTableCheck = await pool.query(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'platform' AND table_name = 'ai_settings_versions'"
+      );
+      if (aiTableCheck.rows.length === 0) {
+        const fs = require('fs');
+        const pathMod = require('path');
+        const aiSql = fs.readFileSync(
+          pathMod.resolve(__dirname, '../../migrations/014_ai_integration.sql'),
+          'utf-8'
+        );
+        await pool.query(aiSql);
+        console.log('AI integration tables created (migration 014)');
+      }
+    } catch (aiErr) {
+      console.error('AI integration migration failed:', aiErr);
     }
 
     const server = http.createServer(app);
