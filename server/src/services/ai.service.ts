@@ -731,3 +731,603 @@ export async function listPins(
     return result.rows;
   });
 }
+
+// ─── Model catalog + pricing ────────────────────────────────────────────────
+
+export interface ModelPricing {
+  model_id: string;
+  display_name: string;
+  provider: string;
+  tier: 'flagship' | 'standard' | 'fast';
+  input_per_million: number;
+  output_per_million: number;
+  cache_read_per_million: number;
+  cache_write_per_million: number;
+  context_window: number | null;
+  description: string | null;
+  is_active: boolean;
+  updated_at: string;
+}
+
+export async function listModelPricing(): Promise<ModelPricing[]> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const r = await client.query(
+      `SELECT model_id, display_name, provider, tier,
+              input_per_million::float8 as input_per_million,
+              output_per_million::float8 as output_per_million,
+              cache_read_per_million::float8 as cache_read_per_million,
+              cache_write_per_million::float8 as cache_write_per_million,
+              context_window, description, is_active, updated_at
+       FROM platform.ai_model_pricing
+       ORDER BY is_active DESC,
+         CASE tier WHEN 'flagship' THEN 1 WHEN 'standard' THEN 2 WHEN 'fast' THEN 3 ELSE 4 END,
+         display_name`
+    );
+    return r.rows;
+  });
+}
+
+export async function getModelPricing(modelId: string): Promise<ModelPricing | null> {
+  const all = await listModelPricing();
+  // Exact match first; otherwise match by prefix (e.g. "claude-sonnet-4-6-20260101" ~ "claude-sonnet-4-6")
+  return (
+    all.find((m) => m.model_id === modelId) ||
+    all.find((m) => modelId.startsWith(m.model_id)) ||
+    null
+  );
+}
+
+export async function updateModelPricing(
+  modelId: string,
+  updates: Partial<Pick<ModelPricing, 'display_name' | 'tier' | 'input_per_million' | 'output_per_million' | 'cache_read_per_million' | 'cache_write_per_million' | 'context_window' | 'description' | 'is_active'>>,
+  userId: string
+): Promise<ModelPricing> {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  let i = 1;
+  for (const [k, v] of Object.entries(updates)) {
+    if (v === undefined) continue;
+    fields.push(`${k} = $${i}`);
+    values.push(v);
+    i++;
+  }
+  fields.push(`updated_by = $${i}`);
+  values.push(userId);
+  i++;
+  fields.push(`updated_at = now()`);
+  values.push(modelId);
+  const sql = `UPDATE platform.ai_model_pricing SET ${fields.join(', ')} WHERE model_id = $${i} RETURNING model_id`;
+  await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const r = await client.query(sql, values);
+    if (r.rows.length === 0) {
+      throw new AppError(404, 'MODEL_NOT_FOUND', 'Unknown model_id');
+    }
+  });
+  const updated = await getModelPricing(modelId);
+  if (!updated) throw new AppError(404, 'MODEL_NOT_FOUND', 'Model vanished after update');
+  return updated;
+}
+
+export async function upsertModelPricing(
+  row: Omit<ModelPricing, 'updated_at'> & { is_active?: boolean },
+  userId: string
+): Promise<ModelPricing> {
+  await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    await client.query(
+      `INSERT INTO platform.ai_model_pricing
+         (model_id, display_name, provider, tier, input_per_million, output_per_million,
+          cache_read_per_million, cache_write_per_million, context_window, description,
+          is_active, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+       ON CONFLICT (model_id) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         tier = EXCLUDED.tier,
+         input_per_million = EXCLUDED.input_per_million,
+         output_per_million = EXCLUDED.output_per_million,
+         cache_read_per_million = EXCLUDED.cache_read_per_million,
+         cache_write_per_million = EXCLUDED.cache_write_per_million,
+         context_window = EXCLUDED.context_window,
+         description = EXCLUDED.description,
+         is_active = EXCLUDED.is_active,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = now()`,
+      [
+        row.model_id,
+        row.display_name,
+        row.provider || 'anthropic',
+        row.tier,
+        row.input_per_million,
+        row.output_per_million,
+        row.cache_read_per_million || 0,
+        row.cache_write_per_million || 0,
+        row.context_window || null,
+        row.description || null,
+        row.is_active !== false,
+        userId,
+      ]
+    );
+  });
+  const updated = await getModelPricing(row.model_id);
+  if (!updated) throw new AppError(500, 'UPSERT_FAILED', 'Failed to read model after upsert');
+  return updated;
+}
+
+/**
+ * List models available for the model picker.
+ *
+ * Tries Anthropic's /v1/models live (so newly-released snapshots show up without
+ * requiring a DB update), then merges pricing from the DB catalog. Falls back to
+ * the DB catalog alone if the API is unreachable or no key is set.
+ *
+ * Returned shape: { modelId, displayName, tier, input_per_million, output_per_million,
+ *                   context_window, description, source: 'anthropic'|'db' }
+ */
+export async function listAvailableModels(): Promise<
+  Array<{
+    model_id: string;
+    display_name: string;
+    tier: string;
+    input_per_million: number;
+    output_per_million: number;
+    cache_read_per_million: number;
+    cache_write_per_million: number;
+    context_window: number | null;
+    description: string | null;
+    source: 'anthropic' | 'db';
+  }>
+> {
+  const dbCatalog = await listModelPricing();
+  const dbMap = new Map(dbCatalog.filter((m) => m.is_active).map((m) => [m.model_id, m]));
+
+  const apiKey = await getSetting('ai.anthropic_api_key');
+  if (!apiKey) {
+    return Array.from(dbMap.values()).map((m) => ({
+      model_id: m.model_id,
+      display_name: m.display_name,
+      tier: m.tier,
+      input_per_million: m.input_per_million,
+      output_per_million: m.output_per_million,
+      cache_read_per_million: m.cache_read_per_million,
+      cache_write_per_million: m.cache_write_per_million,
+      context_window: m.context_window,
+      description: m.description,
+      source: 'db' as const,
+    }));
+  }
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/models?limit=50', {
+      method: 'GET',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+      },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!resp.ok) throw new Error(`models api returned ${resp.status}`);
+    const body = (await resp.json()) as { data?: Array<{ id: string; display_name?: string; type?: string; created_at?: string }> };
+    const live = (body.data || []).filter((m) => m && m.id && m.id.startsWith('claude'));
+
+    const merged = live.map((m) => {
+      // Find best pricing match: exact, then prefix (drops date suffix)
+      const exact = dbMap.get(m.id);
+      const prefixMatch =
+        exact ||
+        Array.from(dbMap.values()).find((db) => m.id.startsWith(db.model_id));
+      const priced = prefixMatch;
+      return {
+        model_id: m.id,
+        display_name: m.display_name || priced?.display_name || m.id,
+        tier: priced?.tier || 'standard',
+        input_per_million: priced?.input_per_million ?? 0,
+        output_per_million: priced?.output_per_million ?? 0,
+        cache_read_per_million: priced?.cache_read_per_million ?? 0,
+        cache_write_per_million: priced?.cache_write_per_million ?? 0,
+        context_window: priced?.context_window ?? null,
+        description: priced?.description ?? null,
+        source: 'anthropic' as const,
+      };
+    });
+
+    // Ensure the DB catalog entries are included even if Anthropic didn't list them
+    // (e.g. aliases like "claude-sonnet-4-6" which the API returns as dated snapshots).
+    const seen = new Set(merged.map((m) => m.model_id));
+    for (const db of dbMap.values()) {
+      if (!seen.has(db.model_id)) {
+        merged.unshift({
+          model_id: db.model_id,
+          display_name: db.display_name,
+          tier: db.tier,
+          input_per_million: db.input_per_million,
+          output_per_million: db.output_per_million,
+          cache_read_per_million: db.cache_read_per_million,
+          cache_write_per_million: db.cache_write_per_million,
+          context_window: db.context_window,
+          description: db.description,
+          source: 'db',
+        });
+      }
+    }
+    return merged;
+  } catch {
+    // Fallback to DB catalog
+    return Array.from(dbMap.values()).map((m) => ({
+      model_id: m.model_id,
+      display_name: m.display_name,
+      tier: m.tier,
+      input_per_million: m.input_per_million,
+      output_per_million: m.output_per_million,
+      cache_read_per_million: m.cache_read_per_million,
+      cache_write_per_million: m.cache_write_per_million,
+      context_window: m.context_window,
+      description: m.description,
+      source: 'db',
+    }));
+  }
+}
+
+// ─── Feedback (ratings) ─────────────────────────────────────────────────────
+
+export interface MessageFeedback {
+  message_id: string;
+  rating: -1 | 1;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function setMessageFeedback(
+  messageId: string,
+  tenantId: string,
+  userId: string,
+  rating: -1 | 1,
+  note: string | null
+): Promise<MessageFeedback> {
+  if (rating !== 1 && rating !== -1) {
+    throw new AppError(400, 'INVALID_RATING', 'rating must be 1 or -1');
+  }
+  const trimmedNote = (note || '').trim().slice(0, 2000) || null;
+  return withTenantContext(tenantId, false, async (client) => {
+    // Verify user owns the thread containing this message
+    const owner = await client.query(
+      `SELECT m.thread_id
+       FROM platform.ai_messages m
+       JOIN platform.ai_threads t ON t.id = m.thread_id
+       WHERE m.id = $1 AND t.user_id = $2 AND m.role = 'assistant'`,
+      [messageId, userId]
+    );
+    if (owner.rows.length === 0) {
+      throw new AppError(404, 'MESSAGE_NOT_FOUND', 'Message not found');
+    }
+    const threadId = owner.rows[0].thread_id;
+    const r = await client.query(
+      `INSERT INTO platform.ai_message_feedback (message_id, thread_id, tenant_id, user_id, rating, note)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (message_id) DO UPDATE
+       SET rating = EXCLUDED.rating, note = EXCLUDED.note, updated_at = now()
+       RETURNING message_id, rating, note, created_at, updated_at`,
+      [messageId, threadId, tenantId, userId, rating, trimmedNote]
+    );
+    return r.rows[0];
+  });
+}
+
+export async function clearMessageFeedback(
+  messageId: string,
+  tenantId: string,
+  userId: string
+): Promise<void> {
+  await withTenantContext(tenantId, false, async (client) => {
+    await client.query(
+      `DELETE FROM platform.ai_message_feedback
+       WHERE message_id = $1 AND user_id = $2`,
+      [messageId, userId]
+    );
+  });
+}
+
+export async function getMessageFeedback(
+  messageId: string,
+  tenantId: string,
+  userId: string
+): Promise<MessageFeedback | null> {
+  return withTenantContext(tenantId, false, async (client) => {
+    const r = await client.query(
+      `SELECT message_id, rating, note, created_at, updated_at
+       FROM platform.ai_message_feedback
+       WHERE message_id = $1 AND user_id = $2`,
+      [messageId, userId]
+    );
+    return r.rows[0] || null;
+  });
+}
+
+// ─── Usage analytics (admin) ────────────────────────────────────────────────
+
+export interface UsageRollup {
+  period_start: string;
+  model_id: string | null;
+  tenant_id: string | null;
+  tenant_name?: string | null;
+  user_id: string | null;
+  user_name?: string | null;
+  user_email?: string | null;
+  message_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cost_input_usd: number;
+  cost_output_usd: number;
+  cost_cache_usd: number;
+  cost_total_usd: number;
+  thumbs_up: number;
+  thumbs_down: number;
+}
+
+/**
+ * Admin-scoped aggregate usage. Computes cost from ai_messages + pricing catalog.
+ * groupBy: 'day' | 'tenant' | 'user' | 'model'
+ */
+export async function getUsageSummary(opts: {
+  groupBy?: 'day' | 'tenant' | 'user' | 'model';
+  from?: string;        // ISO date
+  to?: string;          // ISO date
+  tenantId?: string;
+  userId?: string;
+  limit?: number;
+}): Promise<{ totals: UsageRollup; rows: UsageRollup[] }> {
+  const groupBy = opts.groupBy || 'day';
+  const limit = Math.min(Math.max(opts.limit || 90, 1), 1000);
+
+  // Build grouping + select columns
+  const selects: string[] = [];
+  const groups: string[] = [];
+  const joins: string[] = [];
+  let periodExpr = `NULL::timestamptz`;
+
+  if (groupBy === 'day') {
+    periodExpr = `date_trunc('day', m.created_at)`;
+    selects.push(`${periodExpr} as period_start`);
+    selects.push(`m.model_id`);
+    groups.push(periodExpr, 'm.model_id');
+  } else if (groupBy === 'tenant') {
+    selects.push(`m.tenant_id`);
+    selects.push(`t.name as tenant_name`);
+    joins.push(`LEFT JOIN platform.tenants t ON t.id = m.tenant_id`);
+    groups.push('m.tenant_id', 't.name');
+  } else if (groupBy === 'user') {
+    selects.push(`m.tenant_id`);
+    selects.push(`m.user_id`);
+    selects.push(`u.name as user_name`);
+    selects.push(`u.email as user_email`);
+    joins.push(`LEFT JOIN platform.users u ON u.id = m.user_id`);
+    groups.push('m.tenant_id', 'm.user_id', 'u.name', 'u.email');
+  } else if (groupBy === 'model') {
+    selects.push(`m.model_id`);
+    groups.push('m.model_id');
+  }
+
+  selects.push(`COUNT(*)::int as message_count`);
+  selects.push(`COALESCE(SUM(m.input_tokens),0)::bigint as input_tokens`);
+  selects.push(`COALESCE(SUM(m.output_tokens),0)::bigint as output_tokens`);
+  selects.push(`COALESCE(SUM(m.cache_read_tokens),0)::bigint as cache_read_tokens`);
+  selects.push(`COALESCE(SUM(m.cache_write_tokens),0)::bigint as cache_write_tokens`);
+  // Cost computed inline against pricing catalog via LATERAL match on model prefix
+  selects.push(`COALESCE(SUM(m.input_tokens * COALESCE(p.input_per_million, 0)) / 1000000.0, 0)::float8 as cost_input_usd`);
+  selects.push(`COALESCE(SUM(m.output_tokens * COALESCE(p.output_per_million, 0)) / 1000000.0, 0)::float8 as cost_output_usd`);
+  selects.push(
+    `COALESCE(
+       SUM(m.cache_read_tokens * COALESCE(p.cache_read_per_million, 0)
+         + m.cache_write_tokens * COALESCE(p.cache_write_per_million, 0)) / 1000000.0, 0)::float8 as cost_cache_usd`
+  );
+  selects.push(
+    `COALESCE(
+       SUM(m.input_tokens * COALESCE(p.input_per_million, 0)
+         + m.output_tokens * COALESCE(p.output_per_million, 0)
+         + m.cache_read_tokens * COALESCE(p.cache_read_per_million, 0)
+         + m.cache_write_tokens * COALESCE(p.cache_write_per_million, 0)) / 1000000.0, 0)::float8 as cost_total_usd`
+  );
+  selects.push(`COUNT(*) FILTER (WHERE f.rating = 1)::int as thumbs_up`);
+  selects.push(`COUNT(*) FILTER (WHERE f.rating = -1)::int as thumbs_down`);
+
+  const where: string[] = [`m.role = 'assistant'`];
+  const values: unknown[] = [];
+  if (opts.from) { values.push(opts.from); where.push(`m.created_at >= $${values.length}`); }
+  if (opts.to)   { values.push(opts.to);   where.push(`m.created_at <  $${values.length}`); }
+  if (opts.tenantId) { values.push(opts.tenantId); where.push(`m.tenant_id = $${values.length}`); }
+  if (opts.userId)   { values.push(opts.userId);   where.push(`m.user_id = $${values.length}`); }
+
+  // Build pricing join: prefer exact model_id, else prefix match
+  const pricingJoin = `LEFT JOIN LATERAL (
+    SELECT input_per_million, output_per_million, cache_read_per_million, cache_write_per_million
+    FROM platform.ai_model_pricing
+    WHERE m.model_id = model_id
+       OR (m.model_id IS NOT NULL AND m.model_id LIKE model_id || '%')
+    ORDER BY (m.model_id = model_id) DESC, length(model_id) DESC
+    LIMIT 1
+  ) p ON true`;
+
+  const sql = `
+    SELECT ${selects.join(', ')}
+    FROM platform.ai_messages m
+    ${pricingJoin}
+    LEFT JOIN platform.ai_message_feedback f ON f.message_id = m.id
+    ${joins.join('\n')}
+    WHERE ${where.join(' AND ')}
+    ${groups.length ? 'GROUP BY ' + groups.join(', ') : ''}
+    ORDER BY ${groupBy === 'day' ? 'period_start DESC' : 'cost_total_usd DESC'}
+    LIMIT ${limit}
+  `;
+
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const rowsRes = await client.query(sql, values);
+    // Totals: same query without group by
+    const totalsSql = `
+      SELECT
+        COUNT(*)::int as message_count,
+        COALESCE(SUM(m.input_tokens),0)::bigint as input_tokens,
+        COALESCE(SUM(m.output_tokens),0)::bigint as output_tokens,
+        COALESCE(SUM(m.cache_read_tokens),0)::bigint as cache_read_tokens,
+        COALESCE(SUM(m.cache_write_tokens),0)::bigint as cache_write_tokens,
+        COALESCE(SUM(m.input_tokens * COALESCE(p.input_per_million,0))/1000000.0, 0)::float8 as cost_input_usd,
+        COALESCE(SUM(m.output_tokens * COALESCE(p.output_per_million,0))/1000000.0, 0)::float8 as cost_output_usd,
+        COALESCE(SUM(m.cache_read_tokens * COALESCE(p.cache_read_per_million,0)
+               + m.cache_write_tokens * COALESCE(p.cache_write_per_million,0))/1000000.0, 0)::float8 as cost_cache_usd,
+        COALESCE(SUM(m.input_tokens * COALESCE(p.input_per_million,0)
+               + m.output_tokens * COALESCE(p.output_per_million,0)
+               + m.cache_read_tokens * COALESCE(p.cache_read_per_million,0)
+               + m.cache_write_tokens * COALESCE(p.cache_write_per_million,0))/1000000.0, 0)::float8 as cost_total_usd,
+        COUNT(*) FILTER (WHERE f.rating = 1)::int as thumbs_up,
+        COUNT(*) FILTER (WHERE f.rating = -1)::int as thumbs_down
+      FROM platform.ai_messages m
+      ${pricingJoin}
+      LEFT JOIN platform.ai_message_feedback f ON f.message_id = m.id
+      WHERE ${where.join(' AND ')}
+    `;
+    const totalsRes = await client.query(totalsSql, values);
+    return { totals: totalsRes.rows[0], rows: rowsRes.rows };
+  });
+}
+
+/**
+ * Paginated Q&A log for admin analysis. Returns user question + assistant reply pairs
+ * with the assistant message's tokens/cost/rating, ordered by recency.
+ */
+export async function listConversations(opts: {
+  from?: string;
+  to?: string;
+  tenantId?: string;
+  userId?: string;
+  rating?: -1 | 1 | 0;        // 0 = only unrated
+  search?: string;             // ILIKE against question + answer
+  limit?: number;
+  offset?: number;
+}): Promise<{
+  rows: Array<{
+    thread_id: string;
+    assistant_message_id: string;
+    tenant_id: string;
+    tenant_name: string | null;
+    user_id: string;
+    user_name: string | null;
+    user_email: string | null;
+    dashboard_id: string;
+    dashboard_name: string | null;
+    model_id: string | null;
+    question: string;
+    answer: string;
+    input_tokens: number;
+    output_tokens: number;
+    cost_total_usd: number;
+    rating: number | null;
+    rating_note: string | null;
+    created_at: string;
+  }>;
+  total: number;
+}> {
+  const limit = Math.min(Math.max(opts.limit || 50, 1), 500);
+  const offset = Math.max(opts.offset || 0, 0);
+
+  const where: string[] = [`a.role = 'assistant'`];
+  const countWhere: string[] = [`a.role = 'assistant'`];  // mirrors `where` but without q.content reference
+  const values: unknown[] = [];
+  if (opts.from) {
+    values.push(opts.from);
+    where.push(`a.created_at >= $${values.length}`);
+    countWhere.push(`a.created_at >= $${values.length}`);
+  }
+  if (opts.to) {
+    values.push(opts.to);
+    where.push(`a.created_at <  $${values.length}`);
+    countWhere.push(`a.created_at <  $${values.length}`);
+  }
+  if (opts.tenantId) {
+    values.push(opts.tenantId);
+    where.push(`a.tenant_id = $${values.length}`);
+    countWhere.push(`a.tenant_id = $${values.length}`);
+  }
+  if (opts.userId) {
+    values.push(opts.userId);
+    where.push(`a.user_id = $${values.length}`);
+    countWhere.push(`a.user_id = $${values.length}`);
+  }
+  if (opts.rating === 1 || opts.rating === -1) {
+    values.push(opts.rating);
+    where.push(`f.rating = $${values.length}`);
+    countWhere.push(`f.rating = $${values.length}`);
+  } else if (opts.rating === 0) {
+    where.push(`f.rating IS NULL`);
+    countWhere.push(`f.rating IS NULL`);
+  }
+  if (opts.search && opts.search.trim()) {
+    values.push('%' + opts.search.trim() + '%');
+    const p = values.length;
+    where.push(`(a.content ILIKE $${p} OR q.content ILIKE $${p})`);
+    countWhere.push(`a.content ILIKE $${p}`);
+  }
+
+  const pricingJoin = `LEFT JOIN LATERAL (
+    SELECT input_per_million, output_per_million, cache_read_per_million, cache_write_per_million
+    FROM platform.ai_model_pricing
+    WHERE a.model_id = model_id OR (a.model_id IS NOT NULL AND a.model_id LIKE model_id || '%')
+    ORDER BY (a.model_id = model_id) DESC, length(model_id) DESC
+    LIMIT 1
+  ) p ON true`;
+
+  // For each assistant message, pull the most recent user message in the same thread
+  // that came *before* it (i.e. the question).
+  const questionJoin = `LEFT JOIN LATERAL (
+    SELECT content
+    FROM platform.ai_messages
+    WHERE thread_id = a.thread_id AND role = 'user' AND created_at < a.created_at
+    ORDER BY created_at DESC LIMIT 1
+  ) q ON true`;
+
+  const sql = `
+    SELECT a.thread_id, a.id as assistant_message_id,
+           a.tenant_id, tn.name as tenant_name,
+           a.user_id, u.name as user_name, u.email as user_email,
+           th.dashboard_id, d.name as dashboard_name,
+           a.model_id,
+           COALESCE(q.content, '') as question,
+           a.content as answer,
+           a.input_tokens, a.output_tokens,
+           COALESCE(
+             (a.input_tokens * COALESCE(p.input_per_million,0)
+            + a.output_tokens * COALESCE(p.output_per_million,0)
+            + a.cache_read_tokens * COALESCE(p.cache_read_per_million,0)
+            + a.cache_write_tokens * COALESCE(p.cache_write_per_million,0)) / 1000000.0, 0)::float8 as cost_total_usd,
+           f.rating, f.note as rating_note,
+           a.created_at
+    FROM platform.ai_messages a
+    ${pricingJoin}
+    ${questionJoin}
+    LEFT JOIN platform.ai_message_feedback f ON f.message_id = a.id
+    LEFT JOIN platform.ai_threads th ON th.id = a.thread_id
+    LEFT JOIN platform.dashboards d ON d.id = th.dashboard_id
+    LEFT JOIN platform.tenants tn ON tn.id = a.tenant_id
+    LEFT JOIN platform.users u ON u.id = a.user_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY a.created_at DESC
+    LIMIT ${limit} OFFSET ${offset}
+  `;
+
+  const countSql = `
+    SELECT COUNT(*)::int as total
+    FROM platform.ai_messages a
+    LEFT JOIN platform.ai_message_feedback f ON f.message_id = a.id
+    WHERE ${countWhere.join(' AND ')}
+  `;
+
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const rowsRes = await client.query(sql, values);
+    const totalRes = await client.query(countSql, values);
+    return { rows: rowsRes.rows, total: totalRes.rows[0].total };
+  });
+}

@@ -165,6 +165,47 @@ router.delete('/pins/:id', authenticateJWT, async (req, res, next) => {
   }
 });
 
+// POST /api/ai/messages/:id/feedback — rate an assistant message (+1 / -1)
+router.post('/messages/:id/feedback', authenticateJWT, async (req, res, next) => {
+  try {
+    const { rating, note } = req.body || {};
+    const r = Number(rating);
+    if (r !== 1 && r !== -1) {
+      return res.status(400).json({ ok: false, error: { code: 'INVALID_RATING', message: 'rating must be 1 or -1' } });
+    }
+    const result = await aiService.setMessageFeedback(
+      req.params.id,
+      req.user!.tid,
+      req.user!.sub,
+      r as 1 | -1,
+      typeof note === 'string' ? note : null
+    );
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/ai/messages/:id/feedback — clear rating
+router.delete('/messages/:id/feedback', authenticateJWT, async (req, res, next) => {
+  try {
+    await aiService.clearMessageFeedback(req.params.id, req.user!.tid, req.user!.sub);
+    res.json({ ok: true, data: { message: 'Cleared' } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/ai/messages/:id/feedback — fetch own rating
+router.get('/messages/:id/feedback', authenticateJWT, async (req, res, next) => {
+  try {
+    const result = await aiService.getMessageFeedback(req.params.id, req.user!.tid, req.user!.sub);
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/ai/user-prefs/:dashboardId — current user's on/off pref for this dashboard
 router.get('/user-prefs/:dashboardId', authenticateJWT, async (req, res, next) => {
   try {

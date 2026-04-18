@@ -195,6 +195,25 @@ async function start() {
       console.error('AI integration migration failed:', aiErr);
     }
 
+    // Apply AI pricing + feedback migration (015) idempotently on boot
+    try {
+      const pricingTableCheck = await pool.query(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'platform' AND table_name = 'ai_model_pricing'"
+      );
+      if (pricingTableCheck.rows.length === 0) {
+        const fs = require('fs');
+        const pathMod = require('path');
+        const pricingSql = fs.readFileSync(
+          pathMod.resolve(__dirname, '../../migrations/015_ai_pricing_feedback.sql'),
+          'utf-8'
+        );
+        await pool.query(pricingSql);
+        console.log('AI pricing + feedback tables created (migration 015)');
+      }
+    } catch (pricingErr) {
+      console.error('AI pricing migration failed:', pricingErr);
+    }
+
     const server = http.createServer(app);
     initWebSocketServer(server);
     server.listen(config.port, () => {

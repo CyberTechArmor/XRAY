@@ -87,4 +87,126 @@ router.patch('/dashboards/:id', async (req, res, next) => {
   }
 });
 
+// GET /api/admin/ai/models — merged list (Anthropic /v1/models + DB catalog)
+router.get('/models', async (_req, res, next) => {
+  try {
+    const result = await aiService.listAvailableModels();
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/ai/pricing — DB pricing catalog (editable)
+router.get('/pricing', async (_req, res, next) => {
+  try {
+    const result = await aiService.listModelPricing();
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /api/admin/ai/pricing/:modelId — update price/metadata for a model
+router.patch('/pricing/:modelId', async (req, res, next) => {
+  try {
+    const allowed = [
+      'display_name', 'tier',
+      'input_per_million', 'output_per_million',
+      'cache_read_per_million', 'cache_write_per_million',
+      'context_window', 'description', 'is_active',
+    ] as const;
+    const updates: Record<string, unknown> = {};
+    for (const k of allowed) {
+      if (req.body && Object.prototype.hasOwnProperty.call(req.body, k)) updates[k] = req.body[k];
+    }
+    const result = await aiService.updateModelPricing(req.params.modelId, updates, req.user!.sub);
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/ai/pricing — add a new model to the catalog
+router.post('/pricing', async (req, res, next) => {
+  try {
+    const {
+      model_id, display_name, provider, tier,
+      input_per_million, output_per_million,
+      cache_read_per_million, cache_write_per_million,
+      context_window, description, is_active,
+    } = req.body || {};
+    if (!model_id || !display_name || tier === undefined) {
+      return res.status(400).json({ ok: false, error: { code: 'INVALID_INPUT', message: 'model_id, display_name, tier required' } });
+    }
+    const result = await aiService.upsertModelPricing(
+      {
+        model_id,
+        display_name,
+        provider: provider || 'anthropic',
+        tier,
+        input_per_million: Number(input_per_million) || 0,
+        output_per_million: Number(output_per_million) || 0,
+        cache_read_per_million: Number(cache_read_per_million) || 0,
+        cache_write_per_million: Number(cache_write_per_million) || 0,
+        context_window: context_window ? Number(context_window) : null,
+        description: description || null,
+        is_active: is_active !== false,
+      },
+      req.user!.sub
+    );
+    res.status(201).json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/ai/usage — aggregated usage + cost
+// Query params: groupBy=day|tenant|user|model, from, to, tenantId, userId, limit
+router.get('/usage', async (req, res, next) => {
+  try {
+    const groupBy = (req.query.groupBy as 'day'|'tenant'|'user'|'model') || 'day';
+    if (!['day','tenant','user','model'].includes(groupBy)) {
+      return res.status(400).json({ ok: false, error: { code: 'INVALID_GROUP', message: 'groupBy must be day, tenant, user, or model' } });
+    }
+    const result = await aiService.getUsageSummary({
+      groupBy,
+      from: req.query.from as string | undefined,
+      to: req.query.to as string | undefined,
+      tenantId: req.query.tenantId as string | undefined,
+      userId: req.query.userId as string | undefined,
+      limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+    });
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/ai/conversations — paginated Q&A log with ratings, for analysis
+// Query: from, to, tenantId, userId, rating=-1|1|0 (0 = unrated), search, limit, offset
+router.get('/conversations', async (req, res, next) => {
+  try {
+    const ratingRaw = req.query.rating;
+    let rating: -1 | 0 | 1 | undefined;
+    if (ratingRaw !== undefined) {
+      const r = Number(ratingRaw);
+      if (r === -1 || r === 0 || r === 1) rating = r as -1 | 0 | 1;
+    }
+    const result = await aiService.listConversations({
+      from: req.query.from as string | undefined,
+      to: req.query.to as string | undefined,
+      tenantId: req.query.tenantId as string | undefined,
+      userId: req.query.userId as string | undefined,
+      rating,
+      search: req.query.search as string | undefined,
+      limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+      offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
+    });
+    res.json({ ok: true, data: result.rows, meta: { total: result.total } });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

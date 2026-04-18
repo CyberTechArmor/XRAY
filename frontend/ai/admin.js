@@ -43,8 +43,13 @@
           '</div>' +
         '</div>' +
         '<div class="form-grid-1">' +
-          '<div class="fg"><label>Model ID</label>' +
-            '<input type="text" id="ai-model" placeholder="claude-sonnet-4-6 or claude-sonnet-4-6-YYYYMMDD">' +
+          '<div class="fg"><label>Model</label>' +
+            '<select id="ai-model-picker" class="ai-model-picker"><option value="">Loading models…</option></select>' +
+            '<div id="ai-model-pricing" class="ai-model-pricing"></div>' +
+          '</div>' +
+          '<div class="fg" id="ai-model-custom-row" style="display:none"><label>Custom model ID (pin a snapshot)</label>' +
+            '<input type="text" id="ai-model" placeholder="claude-sonnet-4-6-YYYYMMDD">' +
+            '<div class="ai-model-help">Paste an exact Anthropic model snapshot ID. Pricing shown above is based on the best matching entry in the catalog.</div>' +
           '</div>' +
           '<div class="fg"><label>System prompt</label>' +
             '<textarea id="ai-sys" rows="5" placeholder="Role, tone, behavior…"></textarea>' +
@@ -106,21 +111,111 @@
     '.admin-ai-view .ai-version-row .v-note{color:var(--t1);font-style:italic;margin-top:4px}' +
     '.admin-ai-view .ai-loading{font-size:13px;color:var(--t3);padding:8px}' +
     '.admin-ai-view .ai-restore{font-size:11px;padding:4px 8px;background:transparent;border:1px solid var(--bdr);color:var(--t2);border-radius:4px;cursor:pointer}' +
-    '.admin-ai-view .ai-restore:hover{border-color:var(--acc);color:var(--acc)}';
+    '.admin-ai-view .ai-restore:hover{border-color:var(--acc);color:var(--acc)}' +
+    '.admin-ai-view .ai-model-picker{width:100%;padding:9px 11px;font-size:13px;background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;color:var(--t1);font-family:inherit;outline:none}' +
+    '.admin-ai-view .ai-model-picker:focus{border-color:var(--acc)}' +
+    '.admin-ai-view .ai-model-pricing{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--t3);min-height:20px}' +
+    '.admin-ai-view .ai-price-chip{padding:3px 8px;background:var(--bg3);border:1px solid var(--bdr);border-radius:10px;display:inline-flex;align-items:center;gap:4px}' +
+    '.admin-ai-view .ai-price-chip.tier{border-color:var(--acc);color:var(--acc);background:var(--acc-dim,rgba(62,232,181,0.08))}' +
+    '.admin-ai-view .ai-price-chip b{color:var(--t1);font-weight:500}' +
+    '.admin-ai-view .ai-price-desc{font-size:12px;color:var(--t2);margin-top:6px;font-style:italic;line-height:1.4}' +
+    '.admin-ai-view .ai-model-help{font-size:11px;color:var(--t3);margin-top:4px;line-height:1.4}';
 
   var viewJs =
     'function initAdminAI(container, api, user) {' +
       'function $(s) { return container.querySelector(s); }' +
       'function setStatus(el, text, kind) { el = typeof el === "string" ? $(el) : el; if (!el) return; el.textContent = text || ""; el.style.color = kind === "error" ? "var(--danger)" : kind === "success" ? "var(--acc)" : "var(--t2)"; }' +
 
+      'var modelsCatalog = [];' +
+      'var pendingModelId = null;' +
+
+      // Resolve catalog entry for an arbitrary model id (exact match, then prefix)
+      'function findModel(id) {' +
+        'if (!id) return null;' +
+        'var exact = modelsCatalog.filter(function(m){return m.model_id===id;})[0];' +
+        'if (exact) return exact;' +
+        'var prefix = modelsCatalog.filter(function(m){return id.indexOf(m.model_id)===0;}).sort(function(a,b){return b.model_id.length-a.model_id.length;})[0];' +
+        'return prefix || null;' +
+      '}' +
+
+      // Render pricing chips below the dropdown
+      'function renderPricing(id) {' +
+        'var m = findModel(id);' +
+        'var el = $("#ai-model-pricing"); if (!el) return;' +
+        'if (!m) { el.innerHTML = "<span class=\\"ai-price-chip\\">No catalog entry for <b>" + escapeHtml(id || "—") + "</b> — cost tracking disabled.</span>"; return; }' +
+        'function fmt(n){ return n != null ? "$" + Number(n).toFixed(n < 1 ? 2 : 2) : "—"; }' +
+        'var tierLabel = m.tier ? m.tier.charAt(0).toUpperCase() + m.tier.slice(1) : "";' +
+        'var chips = "";' +
+        'if (tierLabel) chips += "<span class=\\"ai-price-chip tier\\">" + escapeHtml(tierLabel) + "</span>";' +
+        'chips += "<span class=\\"ai-price-chip\\">Input <b>" + fmt(m.input_per_million) + "</b>/MTok</span>";' +
+        'chips += "<span class=\\"ai-price-chip\\">Output <b>" + fmt(m.output_per_million) + "</b>/MTok</span>";' +
+        'if (m.cache_read_per_million) chips += "<span class=\\"ai-price-chip\\">Cache read <b>" + fmt(m.cache_read_per_million) + "</b>/MTok</span>";' +
+        'if (m.cache_write_per_million) chips += "<span class=\\"ai-price-chip\\">Cache write <b>" + fmt(m.cache_write_per_million) + "</b>/MTok</span>";' +
+        'if (m.context_window) chips += "<span class=\\"ai-price-chip\\">Context <b>" + (m.context_window / 1000) + "K</b></span>";' +
+        'if (m.description) chips += "<div class=\\"ai-price-desc\\" style=\\"flex-basis:100%;margin-top:4px\\">" + escapeHtml(m.description) + "</div>";' +
+        'el.innerHTML = chips;' +
+      '}' +
+
+      // Rebuild the dropdown from modelsCatalog, grouped by tier. Selection defaults to
+      // pendingModelId if set, else to the most recently-saved current model.
+      'function populatePicker() {' +
+        'var sel = $("#ai-model-picker"); if (!sel) return;' +
+        'var tiers = { flagship: [], standard: [], fast: [] };' +
+        'modelsCatalog.forEach(function(m) {' +
+          'var t = tiers[m.tier] ? m.tier : "standard";' +
+          'tiers[t].push(m);' +
+        '});' +
+        'function fmt(n){ return "$" + Number(n).toFixed(2); }' +
+        'function optLabel(m) { return m.display_name + " — in " + fmt(m.input_per_million) + " / out " + fmt(m.output_per_million); }' +
+        'var html = "";' +
+        '["flagship","standard","fast"].forEach(function(t) {' +
+          'if (!tiers[t].length) return;' +
+          'html += "<optgroup label=\\"" + escapeHtml(t.charAt(0).toUpperCase() + t.slice(1)) + "\\">";' +
+          'tiers[t].forEach(function(m){ html += "<option value=\\"" + escapeHtml(m.model_id) + "\\">" + escapeHtml(optLabel(m)) + "</option>"; });' +
+          'html += "</optgroup>";' +
+        '});' +
+        'html += "<option value=\\"__custom\\">Custom — pin a specific snapshot ID…</option>";' +
+        'sel.innerHTML = html;' +
+
+        // Apply pending selection
+        'if (pendingModelId) applyModelSelection(pendingModelId);' +
+      '}' +
+
+      'function applyModelSelection(modelId) {' +
+        'var sel = $("#ai-model-picker"); var custom = $("#ai-model-custom-row"); var input = $("#ai-model");' +
+        'if (!sel) { pendingModelId = modelId; return; }' +
+        'var hasOption = Array.prototype.some.call(sel.options, function(o){ return o.value === modelId; });' +
+        'if (hasOption) {' +
+          'sel.value = modelId; custom.style.display = "none"; input.value = ""; renderPricing(modelId);' +
+        '} else if (modelId) {' +
+          'sel.value = "__custom"; custom.style.display = ""; input.value = modelId; renderPricing(modelId);' +
+        '} else {' +
+          'sel.selectedIndex = 0; custom.style.display = "none"; input.value = ""; renderPricing(sel.value);' +
+        '}' +
+        'pendingModelId = null;' +
+      '}' +
+
+      'function loadModels() {' +
+        'return api.get("/api/admin/ai/models").then(function(r) {' +
+          'if (!r.ok) { modelsCatalog = []; } else { modelsCatalog = r.data || []; }' +
+          'populatePicker();' +
+        '}).catch(function() { modelsCatalog = []; populatePicker(); });' +
+      '}' +
+
+      'function selectedModelId() {' +
+        'var sel = $("#ai-model-picker"); if (!sel) return "";' +
+        'if (sel.value === "__custom") return ($("#ai-model").value || "").trim();' +
+        'return sel.value;' +
+      '}' +
+
       // Load current settings
       'function loadSettings() {' +
-        'api.get("/api/admin/ai/settings").then(function(r) {' +
+        'return api.get("/api/admin/ai/settings").then(function(r) {' +
           'if (!r.ok) { setStatus("#ai-save-status", (r.error && r.error.message) || "Failed to load", "error"); return; }' +
           'var s = r.data.current;' +
           '$("#ai-enabled").checked = !!s.enabled;' +
           '$("#ai-cap").value = s.per_user_daily_cap;' +
-          '$("#ai-model").value = s.model_id || "";' +
+          'applyModelSelection(s.model_id || "");' +
           '$("#ai-sys").value = s.system_prompt || "";' +
           '$("#ai-guard").value = s.guardrails || "";' +
           '$("#ai-note").value = "";' +
@@ -201,12 +296,12 @@
         'var payload = {' +
           'enabled: $("#ai-enabled").checked,' +
           'per_user_daily_cap: parseInt($("#ai-cap").value, 10) || 0,' +
-          'model_id: ($("#ai-model").value || "").trim(),' +
+          'model_id: selectedModelId(),' +
           'system_prompt: $("#ai-sys").value || "",' +
           'guardrails: $("#ai-guard").value || "",' +
           'note: ($("#ai-note").value || "").trim() || null' +
         '};' +
-        'if (!payload.model_id) { setStatus("#ai-save-status", "Model ID is required", "error"); return; }' +
+        'if (!payload.model_id) { setStatus("#ai-save-status", "Pick a model (or paste a snapshot ID)", "error"); return; }' +
         'this.disabled = true;' +
         'api.post("/api/admin/ai/settings", payload).then(function(r) {' +
           '$("#btn-ai-save").disabled = false;' +
@@ -216,7 +311,16 @@
         '});' +
       '};' +
 
-      'loadSettings();' +
+      // Model picker events
+      '$("#ai-model-picker").addEventListener("change", function() {' +
+        'var sel = this; var custom = $("#ai-model-custom-row"); var input = $("#ai-model");' +
+        'if (sel.value === "__custom") { custom.style.display = ""; renderPricing(input.value); input.focus(); }' +
+        'else { custom.style.display = "none"; input.value = ""; renderPricing(sel.value); }' +
+      '});' +
+      '$("#ai-model").addEventListener("input", function() { renderPricing(this.value); });' +
+
+      // Initial load: models first (picker needs to be populated), then settings fill it in
+      'loadModels().then(loadSettings);' +
       'loadDashboards();' +
       'loadVersions();' +
     '}';
