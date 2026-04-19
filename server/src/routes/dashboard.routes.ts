@@ -7,28 +7,47 @@ import * as aiService from '../services/ai.service';
 import { getSetting } from '../services/settings.service';
 import { config } from '../config';
 
-// Builds the AI bootstrap metadata + HTML snippet to append to the dashboard payload
-// when AI is enabled for (user, dashboard). The inline <script> is important: the
-// bundle's dashboard render loop re-creates <script> tags via document.createElement
-// and only copies src or textContent — NOT data-* attributes. Passing the dashboard
-// id via an inline script's textContent (rather than a data attribute on the external
-// script) survives that round trip and lets the SDK always find the current id.
+// Builds the AI bootstrap for a dashboard render response. Returns BOTH a
+// prefix (runs before any dashboard markup) and a suffix (loads the SDK
+// after). The prefix installs a stub window.XRayAI whose register() call
+// just queues configs; the real SDK drains that queue on load. This
+// guarantees the dashboard's own <script>window.XRayAI.register(...)</script>
+// call works no matter whether it runs before or after the SDK loads.
+//
+// Why this exists: the bundle's dashboard render inserts the whole HTML blob
+// then re-creates every <script> via document.createElement in DOM order.
+// The dashboard's register script usually appears before our appended SDK
+// script, so at the moment it runs window.XRayAI would otherwise be
+// undefined — the registration would silently drop (the documented snippet
+// bails with `if (!window.XRayAI) return;`).
 async function buildAiBootstrap(
   dashboardId: string,
   userId: string
-): Promise<{ ai: Record<string, unknown>; htmlSuffix: string } | null> {
+): Promise<{ ai: Record<string, unknown>; htmlPrefix: string; htmlSuffix: string } | null> {
   try {
     const avail = await aiService.isAiAvailableForUser(userId, dashboardId);
     if (!avail.available) {
-      return { ai: { available: false, reason: avail.reason || null }, htmlSuffix: '' };
+      return { ai: { available: false, reason: avail.reason || null }, htmlPrefix: '', htmlSuffix: '' };
     }
-    // Escape the id defensively; dashboard ids are UUIDs but be safe.
+    // Dashboard ids are UUIDs but sanitize for defense in depth.
     const safeId = String(dashboardId).replace(/[^a-zA-Z0-9_-]/g, '');
+    const htmlPrefix =
+      `\n<script>` +
+      `window.__xrayCurrentDashboardId=${JSON.stringify(safeId)};` +
+      // Stub: register(cfg) queues onto _pending until the real SDK loads
+      // and drains it. If the real SDK is already loaded (e.g. user navigates
+      // between two dashboards), leave it alone.
+      `if(!window.XRayAI||!window.XRayAI._booted){` +
+      `window.XRayAI=window.XRayAI||{};` +
+      `window.XRayAI._pending=window.XRayAI._pending||[];` +
+      `if(typeof window.XRayAI.register!=='function'){` +
+      `window.XRayAI.register=function(c){window.XRayAI._pending.push(c);};` +
+      `}}` +
+      `</script>`;
     const htmlSuffix =
       `\n<link rel="stylesheet" href="/ai/sdk.css">` +
-      `\n<script>window.__xrayCurrentDashboardId=${JSON.stringify(safeId)};</script>` +
       `\n<script src="/ai/sdk.js" defer></script>`;
-    return { ai: { available: true, dashboardId }, htmlSuffix };
+    return { ai: { available: true, dashboardId }, htmlPrefix, htmlSuffix };
   } catch {
     return null;
   }
@@ -154,7 +173,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       return res.json({
         ok: true,
         data: {
-          html: (dashboard.view_html || '') + (boot?.htmlSuffix || ''),
+          html: (boot?.htmlPrefix || '') + (dashboard.view_html || '') + (boot?.htmlSuffix || ''),
           css: dashboard.view_css || '',
           js: dashboard.view_js || '',
           ai: boot?.ai || { available: false },
@@ -233,7 +252,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
         const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
         const augmented = {
           ...data,
-          html: (data.html || '') + (boot?.htmlSuffix || ''),
+          html: (boot?.htmlPrefix || '') + (data.html || '') + (boot?.htmlSuffix || ''),
           ai: boot?.ai || { available: false },
         };
         return res.json({ ok: true, data: augmented });
@@ -252,7 +271,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       return res.json({
         ok: true,
         data: {
-          html: dashboard.view_html + (boot?.htmlSuffix || ''),
+          html: (boot?.htmlPrefix || '') + dashboard.view_html + (boot?.htmlSuffix || ''),
           css: dashboard.view_css || '',
           js: dashboard.view_js || '',
           ai: boot?.ai || { available: false },

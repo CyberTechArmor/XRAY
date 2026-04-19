@@ -854,6 +854,14 @@
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
+  // Capture anything the stub queued BEFORE we overwrite window.XRayAI with
+  // the real API. The stub was installed by the server-injected prefix
+  // script so dashboards could safely call XRayAI.register({...}) without
+  // caring whether the SDK was loaded yet.
+  var pendingRegistrations = (window.XRayAI && Array.isArray(window.XRayAI._pending))
+    ? window.XRayAI._pending.slice()
+    : [];
+
   window.XRayAI = {
     _booted: true,
     register: register,
@@ -867,6 +875,12 @@
     resetView: function() { dispatchTool('resetView'); clearAnnotations(); },
     undo: undo,
   };
+
+  // Replay any queued register() calls so the dashboard's intent lands even
+  // if its <script> ran before the SDK loaded.
+  pendingRegistrations.forEach(function(cfg) {
+    try { register(cfg); } catch (e) { console.warn('[XRayAI] replay register failed', e); }
+  });
 
   // Mount as soon as DOM is ready
   if (document.readyState === 'loading') {
