@@ -27,10 +27,17 @@
 (function() {
   'use strict';
 
-  // Determine the dashboard id for this script load. When a user navigates
-  // between two AI-enabled dashboards, the server re-injects this same script
-  // with a new data-dashboard-id. We always want the freshest value.
+  // Determine the dashboard id for this script load. The server injects the
+  // id as an inline <script>window.__xrayCurrentDashboardId='X'</script> right
+  // before loading this file, because the bundle's dashboard render loop
+  // strips data-* attributes when re-creating <script> elements — passing the
+  // id through an inline global is the only way it survives.
   function readDashboardIdFromDom() {
+    if (typeof window.__xrayCurrentDashboardId === 'string' && window.__xrayCurrentDashboardId) {
+      return window.__xrayCurrentDashboardId;
+    }
+    // Legacy fallback: if anything still ships a data-dashboard-id attribute,
+    // honor it. Also picks up the last match in case multiple coexist.
     if (document.currentScript && document.currentScript.getAttribute('data-dashboard-id')) {
       return document.currentScript.getAttribute('data-dashboard-id');
     }

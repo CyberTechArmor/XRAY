@@ -8,8 +8,11 @@ import { getSetting } from '../services/settings.service';
 import { config } from '../config';
 
 // Builds the AI bootstrap metadata + HTML snippet to append to the dashboard payload
-// when AI is enabled for (user, dashboard). The SDK auto-initializes from the data-*
-// attributes on the appended <script> tag.
+// when AI is enabled for (user, dashboard). The inline <script> is important: the
+// bundle's dashboard render loop re-creates <script> tags via document.createElement
+// and only copies src or textContent — NOT data-* attributes. Passing the dashboard
+// id via an inline script's textContent (rather than a data attribute on the external
+// script) survives that round trip and lets the SDK always find the current id.
 async function buildAiBootstrap(
   dashboardId: string,
   userId: string
@@ -19,9 +22,12 @@ async function buildAiBootstrap(
     if (!avail.available) {
       return { ai: { available: false, reason: avail.reason || null }, htmlSuffix: '' };
     }
+    // Escape the id defensively; dashboard ids are UUIDs but be safe.
+    const safeId = String(dashboardId).replace(/[^a-zA-Z0-9_-]/g, '');
     const htmlSuffix =
-      `\n<link rel="stylesheet" href="/ai/sdk.css" data-xray-ai="1">` +
-      `\n<script src="/ai/sdk.js" defer data-xray-ai="1" data-dashboard-id="${dashboardId}"></script>`;
+      `\n<link rel="stylesheet" href="/ai/sdk.css">` +
+      `\n<script>window.__xrayCurrentDashboardId=${JSON.stringify(safeId)};</script>` +
+      `\n<script src="/ai/sdk.js" defer></script>`;
     return { ai: { available: true, dashboardId }, htmlSuffix };
   } catch {
     return null;

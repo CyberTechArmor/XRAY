@@ -36,8 +36,97 @@
 .xrai-rail.xrai-contracted { width: 48px; }
 .xrai-rail.xrai-expanded   { width: 420px; }
 
+/* ── Tablet: full width when expanded ────────────────────────────────────── */
 @media (max-width: 900px) {
   .xrai-rail.xrai-expanded { width: 100vw; }
+}
+
+/* ── Mobile: contracted rail becomes a floating action button;            ── */
+/* ──         expanded becomes a fullscreen sheet with larger touch targets ─ */
+@media (max-width: 640px) {
+  .xrai-rail.xrai-contracted {
+    /* Circular FAB in the bottom-right corner, not a full-height rail */
+    top: auto;
+    left: auto;
+    right: calc(16px + env(safe-area-inset-right, 0px));
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    height: 56px;
+    width: 56px;
+    border-radius: 50%;
+    border: 1px solid var(--xrai-acc);
+    background: var(--xrai-bg2);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+    padding: 0;
+    overflow: hidden;
+  }
+  .xrai-rail.xrai-contracted .xrai-c-handle { display: none; }
+  .xrai-rail.xrai-contracted .xrai-c-stack {
+    padding: 0;
+    gap: 0;
+    height: 100%;
+    justify-content: center;
+  }
+  /* Hide the quick-ask + pins icons in the FAB — only the AI icon is shown */
+  .xrai-rail.xrai-contracted .xrai-c-btn { display: none; }
+  .xrai-rail.xrai-contracted .xrai-c-ai {
+    display: inline-flex;
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+    border: none;
+    background: transparent;
+  }
+  .xrai-rail.xrai-contracted .xrai-c-ai svg { width: 24px; height: 24px; }
+  .xrai-rail.xrai-contracted .xrai-badge-count {
+    top: 6px; right: 6px;
+  }
+
+  .xrai-rail.xrai-expanded {
+    /* Fullscreen sheet: anchors to all four edges, ignores left:auto/right:0 */
+    top: 0; right: 0; bottom: 0; left: 0;
+    width: 100vw !important;
+    height: 100vh;
+    height: 100dvh;
+    border-left: none;
+    box-shadow: none;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  /* Larger header touch targets on mobile */
+  .xrai-hdr { padding: 14px 14px; }
+  .xrai-collapse, .xrai-menu {
+    width: 40px; height: 40px; border-radius: 8px;
+  }
+  .xrai-collapse svg, .xrai-menu svg { width: 20px; height: 20px; }
+  .xrai-hdr-name { font-size: 16px; }
+
+  /* Composer: 16px font stops iOS from zooming the viewport on focus */
+  .xrai-composer textarea {
+    font-size: 16px;
+    padding: 10px 12px;
+  }
+  .xrai-send {
+    padding: 10px 18px;
+    font-size: 14px;
+  }
+
+  /* Larger quick-prompt chips, thread rows, pins rows on touch */
+  .xrai-quick-btn { font-size: 13px; padding: 8px 12px; }
+  .xrai-thread-row { padding: 10px 10px; font-size: 14px; }
+  .xrai-thread-x { opacity: 1; visibility: visible; font-size: 20px; padding: 4px 8px; }
+  .xrai-pin-row { padding: 10px 10px; font-size: 13px; }
+  .xrai-msg { font-size: 14px; line-height: 1.5; padding: 10px 12px; }
+  .xrai-msg-tools { opacity: 1; }
+  .xrai-msg-tools button { width: 32px; height: 32px; }
+
+  .xrai-body { padding-bottom: 8px; }
+  .xrai-messages { max-height: 50vh; }
+}
+
+/* Small-phone tweaks (very narrow screens) */
+@media (max-width: 380px) {
+  .xrai-sec { padding: 10px 10px; }
 }
 
 /* ── Contracted rail ────────────────────────────────────────────────────── */
