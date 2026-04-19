@@ -213,6 +213,34 @@ async function start() {
     await applyMigration('014_ai_integration.sql', 'ai_settings_versions', '014');
     await applyMigration('015_ai_pricing_feedback.sql', 'ai_model_pricing', '015');
 
+    // Migration 016 swaps tenant_isolation for user_scope on AI tables. No new
+    // table is added, so the usual "check if table exists" gate doesn't apply.
+    // Detect via pg_policies: if user_scope isn't on ai_threads yet, run it.
+    try {
+      const hasUserScope = await pool.query(
+        `SELECT 1 FROM pg_policies WHERE schemaname = 'platform' AND tablename = 'ai_threads' AND policyname = 'user_scope'`
+      );
+      if (hasUserScope.rows.length === 0) {
+        const fs = require('fs');
+        const pathMod = require('path');
+        const candidates = [
+          pathMod.resolve(__dirname, '../migrations/016_ai_user_rls.sql'),
+          pathMod.resolve(__dirname, '../../migrations/016_ai_user_rls.sql'),
+          pathMod.resolve(process.cwd(), 'migrations/016_ai_user_rls.sql'),
+          pathMod.resolve(process.cwd(), '../migrations/016_ai_user_rls.sql'),
+        ];
+        const found = candidates.find((p: string) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
+        if (found) {
+          await pool.query(fs.readFileSync(found, 'utf-8'));
+          console.log('[migration 016] applied user-scope RLS');
+        } else {
+          console.warn('[migration 016] file not found in any candidate path');
+        }
+      }
+    } catch (err) {
+      console.error('[migration 016] failed:', err);
+    }
+
     const server = http.createServer(app);
     initWebSocketServer(server);
     server.listen(config.port, () => {

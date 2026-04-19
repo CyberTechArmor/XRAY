@@ -26,16 +26,36 @@
  */
 (function() {
   'use strict';
-  if (window.XRayAI && window.XRayAI._booted) return;
 
-  // ── Locate bootstrap data on the script tag ────────────────────────────────
-  var scriptTag = document.currentScript ||
-    document.querySelector('script[data-xray-ai][data-dashboard-id]');
-  var dashboardId = scriptTag ? scriptTag.getAttribute('data-dashboard-id') : null;
-  if (!dashboardId) {
+  // Determine the dashboard id for this script load. When a user navigates
+  // between two AI-enabled dashboards, the server re-injects this same script
+  // with a new data-dashboard-id. We always want the freshest value.
+  function readDashboardIdFromDom() {
+    if (document.currentScript && document.currentScript.getAttribute('data-dashboard-id')) {
+      return document.currentScript.getAttribute('data-dashboard-id');
+    }
+    var all = document.querySelectorAll('script[data-xray-ai][data-dashboard-id]');
+    if (!all.length) return null;
+    return all[all.length - 1].getAttribute('data-dashboard-id');
+  }
+
+  var newDashboardId = readDashboardIdFromDom();
+  if (!newDashboardId) {
     console.warn('[XRayAI] no data-dashboard-id on bootstrap script');
     return;
   }
+
+  // If the SDK is already booted (user navigated to a different dashboard),
+  // just hand the new id to the existing instance and exit. The second load
+  // of sdk.js is a no-op for everything else.
+  if (window.XRayAI && window.XRayAI._booted) {
+    if (typeof window.XRayAI.setDashboard === 'function') {
+      window.XRayAI.setDashboard(newDashboardId);
+    }
+    return;
+  }
+
+  var dashboardId = newDashboardId;
 
   // ── Auth helper: reuse access token from parent (host app sets it on window) ─
   function getToken() {
@@ -752,13 +772,52 @@
     }
   }
 
+  // Remove rail + overlay from the DOM and clear all per-dashboard state so
+  // the SDK can be remounted against a different dashboard without leaking
+  // UI or mixing conversation history.
+  function teardown() {
+    try { if (rail && rail.parentNode) rail.parentNode.removeChild(rail); } catch (e) {}
+    try { if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay); } catch (e) {}
+    rail = null;
+    overlay = null;
+    mounted = false;
+    registered = null;
+    undoStack = [];
+    annotations = [];
+    currentThreadId = null;
+    threads = [];
+    messages = [];
+    pins = [];
+    usage = null;
+    currentContext = null;
+  }
+
+  // Swap to a new dashboard: tear down the existing rail and re-mount against
+  // the new dashboardId. If the id hasn't changed, no-op.
+  function setDashboard(id) {
+    if (!id || id === dashboardId) return;
+    teardown();
+    dashboardId = id;
+    mount();
+  }
+
+  // Full dispose: tears the rail down AND releases the booted flag so the
+  // next dashboard load re-runs the IIFE body cleanly (not just a setDashboard
+  // swap). Called by app.js when the user navigates away from a dashboard.
+  function dispose() {
+    teardown();
+    try { if (window.XRayAI) window.XRayAI._booted = false; } catch (e) {}
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────────
   window.XRayAI = {
     _booted: true,
     register: register,
+    setDashboard: setDashboard,
+    dispose: dispose,
     // Direct programmatic access (for dashboards that want to drive the rail)
-    open: function() { if (mounted && rail.classList.contains('xrai-contracted')) expand(); },
-    close: function() { if (mounted && rail.classList.contains('xrai-expanded')) collapse(); },
+    open: function() { if (mounted && rail && rail.classList.contains('xrai-contracted')) expand(); },
+    close: function() { if (mounted && rail && rail.classList.contains('xrai-expanded')) collapse(); },
     highlight: highlight,
     clearAnnotations: clearAnnotations,
     resetView: function() { dispatchTool('resetView'); clearAnnotations(); },

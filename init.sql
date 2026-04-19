@@ -652,11 +652,12 @@ ALTER TABLE platform.ai_pins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.ai_usage_daily ENABLE ROW LEVEL SECURITY;
 ALTER TABLE platform.ai_user_dashboard_prefs ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant_isolation ON platform.ai_threads USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY tenant_isolation ON platform.ai_messages USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY tenant_isolation ON platform.ai_pins USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY tenant_isolation ON platform.ai_usage_daily USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
-CREATE POLICY tenant_isolation ON platform.ai_user_dashboard_prefs USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
+-- RLS (migration 016): user-scoped — each row must match BOTH current tenant AND current user.
+CREATE POLICY user_scope ON platform.ai_threads USING (tenant_id = current_setting('app.current_tenant', true)::uuid AND user_id = current_setting('app.current_user_id', true)::uuid);
+CREATE POLICY user_scope ON platform.ai_messages USING (tenant_id = current_setting('app.current_tenant', true)::uuid AND user_id = current_setting('app.current_user_id', true)::uuid);
+CREATE POLICY user_scope ON platform.ai_pins USING (tenant_id = current_setting('app.current_tenant', true)::uuid AND user_id = current_setting('app.current_user_id', true)::uuid);
+CREATE POLICY user_scope ON platform.ai_usage_daily USING (tenant_id = current_setting('app.current_tenant', true)::uuid AND user_id = current_setting('app.current_user_id', true)::uuid);
+CREATE POLICY user_scope ON platform.ai_user_dashboard_prefs USING (tenant_id = current_setting('app.current_tenant', true)::uuid AND user_id = current_setting('app.current_user_id', true)::uuid);
 
 CREATE POLICY platform_admin_bypass ON platform.ai_threads USING (current_setting('app.is_platform_admin', true)::boolean = true);
 CREATE POLICY platform_admin_bypass ON platform.ai_messages USING (current_setting('app.is_platform_admin', true)::boolean = true);
@@ -725,7 +726,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_feedback_rating
 
 ALTER TABLE platform.ai_message_feedback ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant_isolation ON platform.ai_message_feedback USING (tenant_id = current_setting('app.current_tenant', true)::uuid);
+CREATE POLICY user_scope ON platform.ai_message_feedback USING (tenant_id = current_setting('app.current_tenant', true)::uuid AND user_id = current_setting('app.current_user_id', true)::uuid);
 CREATE POLICY platform_admin_bypass ON platform.ai_message_feedback USING (current_setting('app.is_platform_admin', true)::boolean = true);
 
 INSERT INTO platform.ai_model_pricing
