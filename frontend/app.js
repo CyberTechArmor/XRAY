@@ -26,7 +26,12 @@
     var viewHtml =
       '<div class="admin-ai-view">' +
         '<div class="sec-head"><div class="sec-title">AI Integration</div><div class="sec-desc">Platform-wide AI settings. Changes are versioned — every save creates a new immutable version with an optional note.</div></div>' +
-  
+
+        '<div id="ai-health-banner" class="ai-health-banner ai-health-loading">' +
+          '<div class="ai-health-title">Checking AI backend…</div>' +
+          '<div class="ai-health-detail">Running /api/admin/ai/_health</div>' +
+        '</div>' +
+
         '<div class="card">' +
           '<div class="card-title">Anthropic API key</div>' +
           '<div class="card-desc">Stored encrypted at rest. Used for all AI calls across the platform.</div>' +
@@ -195,6 +200,22 @@
       '.admin-ai-view .ai-usage-table td.up-count{color:var(--acc)}' +
       '.admin-ai-view .ai-usage-table td.down-count{color:var(--danger)}' +
       '.admin-ai-view .ai-usage-empty{padding:24px;text-align:center;color:var(--t3);font-size:12px}' +
+      /* ── Health banner ── */
+      '.admin-ai-view .ai-health-banner{margin-bottom:16px;padding:12px 16px;border-radius:8px;border:1px solid var(--bdr);background:var(--bg2);font-size:13px}' +
+      '.admin-ai-view .ai-health-banner.ai-health-loading{border-color:var(--bdr);color:var(--t2)}' +
+      '.admin-ai-view .ai-health-banner.ai-health-ok{border-color:var(--acc);background:rgba(62,232,181,0.04);color:var(--t1)}' +
+      '.admin-ai-view .ai-health-banner.ai-health-warn{border-color:#e8845a;background:rgba(232,132,90,0.08);color:var(--t1)}' +
+      '.admin-ai-view .ai-health-banner.ai-health-bad{border-color:var(--danger);background:rgba(239,68,68,0.08);color:var(--t1)}' +
+      '.admin-ai-view .ai-health-title{font-weight:600;font-size:14px;margin-bottom:4px;display:flex;align-items:center;gap:8px}' +
+      '.admin-ai-view .ai-health-title .tag{font-size:10px;padding:2px 6px;background:var(--bg3);border:1px solid var(--bdr);border-radius:4px;font-family:var(--mono,monospace);color:var(--t3);letter-spacing:.04em}' +
+      '.admin-ai-view .ai-health-detail{font-size:12px;color:var(--t2);line-height:1.5;font-family:var(--mono,monospace)}' +
+      '.admin-ai-view .ai-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;margin-top:8px}' +
+      '.admin-ai-view .ai-health-chip{padding:4px 8px;background:var(--bg3);border:1px solid var(--bdr);border-radius:4px;font-size:11px;font-family:var(--mono,monospace);display:flex;justify-content:space-between;align-items:center;gap:6px}' +
+      '.admin-ai-view .ai-health-chip.yes{border-color:var(--acc);color:var(--acc)}' +
+      '.admin-ai-view .ai-health-chip.no{border-color:var(--danger);color:var(--danger)}' +
+      '.admin-ai-view .ai-health-actions{margin-top:8px}' +
+      '.admin-ai-view .ai-health-actions button{font-size:11px;padding:5px 10px;background:var(--bg3);border:1px solid var(--bdr);color:var(--t2);border-radius:4px;cursor:pointer;margin-right:6px}' +
+      '.admin-ai-view .ai-health-actions button:hover{color:var(--t1);border-color:var(--bdr2)}' +
       /* ── Conversations card ── */
       '.admin-ai-view .ai-convo-controls{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}' +
       '.admin-ai-view .ai-convo-ratings{display:inline-flex;background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;padding:2px}' +
@@ -235,7 +256,43 @@
         // Format an error response richly: includes HTTP status + error code +
         // message so the admin sees a real signal instead of a bare "Failed".
         // Also dumps full response to the console for DevTools inspection.
-        'function aiErr(r, fallback) { try { console.error("[XRayAI admin]", r); } catch(e) {} if (!r) return fallback || "Network error"; if (r.error) { var parts=[]; if (r.error.code) parts.push(r.error.code); if (r.error.message) parts.push(r.error.message); if (parts.length) return parts.join(": "); } if (r.status) return "HTTP " + r.status; return fallback || "Request failed"; }' +
+        'function aiErr(r, fallback) { try { console.error("[XRayAI admin] bad response:", r); } catch(e) {} if (!r) return fallback || "Network error"; if (r.error) { var parts=[]; if (r.error.code) parts.push(r.error.code); if (r.error.message) parts.push(r.error.message); if (parts.length) return parts.join(": "); } if (r.status) return "HTTP " + r.status; if (r.ok === false) return (fallback || "Request failed") + " (server returned no error JSON \u2014 check Network tab)"; return fallback || "Request failed"; }' +
+        // ── Health banner: runs /_health on init, displays status clearly ─────
+        'function renderHealth(r) {' +
+          'var el = $("#ai-health-banner"); if (!el) return;' +
+          'el.classList.remove("ai-health-loading","ai-health-ok","ai-health-warn","ai-health-bad");' +
+          'if (!r || !r.ok) {' +
+            'el.classList.add("ai-health-bad");' +
+            'el.innerHTML = "<div class=\\"ai-health-title\\">Backend unreachable <span class=\\"tag\\">/api/admin/ai/_health</span></div>" +' +
+              '"<div class=\\"ai-health-detail\\">" + escapeHtml(aiErr(r, "No response. Check that the server container is running the latest build.")) + "</div>";' +
+            'return;' +
+          '}' +
+          'var d = r.data || {};' +
+          'var missingTables = [];' +
+          'if (d.tables) { Object.keys(d.tables).forEach(function(k){ if (!d.tables[k]) missingTables.push(k); }); }' +
+          'var problems = [];' +
+          'if (missingTables.length) problems.push(missingTables.length + " missing tables (run update.sh migrations): " + missingTables.join(", "));' +
+          'if (!d.api_key_configured) problems.push("No Anthropic API key set yet");' +
+          'if (!d.model_catalog_count) problems.push("Model catalog empty (migration 015 may not have run)");' +
+          'el.classList.add(problems.length === 0 ? "ai-health-ok" : (missingTables.length ? "ai-health-bad" : "ai-health-warn"));' +
+          'var chips = "";' +
+          'chips += "<span class=\\"ai-health-chip " + (d.api_key_configured ? "yes" : "no") + "\\">API key <span>" + (d.api_key_configured ? "✓ set" : "not set") + "</span></span>";' +
+          'chips += "<span class=\\"ai-health-chip " + (d.model_catalog_count ? "yes" : "no") + "\\">Model catalog <span>" + d.model_catalog_count + " entries</span></span>";' +
+          'chips += "<span class=\\"ai-health-chip " + (d.settings_versions_count ? "yes" : "no") + "\\">Settings versions <span>" + d.settings_versions_count + "</span></span>";' +
+          'chips += "<span class=\\"ai-health-chip\\">Current model <span>" + escapeHtml(d.current_model_id || "(none)") + "</span></span>";' +
+          'if (missingTables.length) chips += "<span class=\\"ai-health-chip no\\">Missing tables <span>" + missingTables.length + "</span></span>";' +
+          'el.innerHTML = "<div class=\\"ai-health-title\\">AI backend status " +' +
+            '(problems.length === 0 ? "<span style=\\"color:var(--acc)\\">✓ healthy</span>" : "<span style=\\"color:var(--danger)\\">" + problems.length + " issue(s)</span>") +' +
+            '" <span class=\\"tag\\">" + escapeHtml(d.version || "?") + "</span></div>" +' +
+            '(problems.length ? "<div class=\\"ai-health-detail\\">" + problems.map(escapeHtml).join("<br>") + "</div>" : "") +' +
+            '"<div class=\\"ai-health-grid\\">" + chips + "</div>" +' +
+            '"<div class=\\"ai-health-actions\\"><button id=\\"ai-health-refresh\\">Re-check</button></div>";' +
+          'var rb = $("#ai-health-refresh"); if (rb) rb.onclick = function() { loadHealth(); };' +
+        '}' +
+        'function loadHealth() {' +
+          'var el = $("#ai-health-banner"); if (el) { el.className = "ai-health-banner ai-health-loading"; el.innerHTML = "<div class=\\"ai-health-title\\">Checking AI backend…</div><div class=\\"ai-health-detail\\">Running /api/admin/ai/_health</div>"; }' +
+          'return api.get("/api/admin/ai/_health").then(renderHealth).catch(function(){ renderHealth(null); });' +
+        '}' +
   
         'var modelsCatalog = [];' +
         'var pendingModelId = null;' +
@@ -583,6 +640,7 @@
         '$("#ai-convo-more").onclick = function() { loadConversations(true); };' +
   
         // Initial load: models first (picker needs to be populated), then settings fill it in
+        'loadHealth();' +
         'loadModels().then(loadSettings);' +
         'loadDashboards();' +
         'loadVersions();' +
