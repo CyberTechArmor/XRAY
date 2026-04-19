@@ -142,14 +142,30 @@ if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
   done
 
   MIGRATION_COUNT=0
+  MIGRATION_FAILED=0
   for migration in "$SCRIPT_DIR"/migrations/*.sql; do
     [ -f "$migration" ] || continue
     MNAME=$(basename "$migration")
     docker cp "$migration" "$PG_CONTAINER:/tmp/$MNAME"
-    if docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$MNAME" >/dev/null 2>&1; then
+    # Run on ON_ERROR_STOP so partial application is detected. Capture stderr
+    # so the user can see what broke instead of the old silent-fail behavior.
+    OUT=$(docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$MNAME" 2>&1) && {
       MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
-    fi
+    } || {
+      # Benign "already exists" errors are expected when re-applying. Surface
+      # anything else so broken migrations don't get swallowed.
+      if echo "$OUT" | grep -qiE "(ERROR|FATAL)" | grep -viE "already exists|duplicate"; then
+        MIGRATION_FAILED=$((MIGRATION_FAILED + 1))
+        warn "migration $MNAME: $(echo "$OUT" | grep -iE 'ERROR|FATAL' | head -3)"
+      else
+        # Idempotent re-apply — treat as success
+        MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
+      fi
+    }
   done
+  if [ "$MIGRATION_FAILED" -gt 0 ]; then
+    warn "$MIGRATION_FAILED migration(s) had errors — review output above"
+  fi
   ok "$MIGRATION_COUNT migration(s) applied"
 else
   warn "Skipping migrations (no postgres container or migrations/ dir)"

@@ -2,7 +2,11 @@ version: '3.8'
 
 services:
   server:
-    build: ./server
+    build:
+      # Build context is the repo root so the Dockerfile can COPY both server/
+      # and migrations/ (migrations are read at startup for self-healing).
+      context: .
+      dockerfile: server/Dockerfile
     ports:
       - "127.0.0.1:${APP_PORT:-3000}:3000"
     environment:
