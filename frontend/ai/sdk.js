@@ -107,16 +107,56 @@
 
   // ── Mount point ────────────────────────────────────────────────────────────
   var mounted = false;
-  var rail, overlay, body, threadsList, messagesEl, pinsEl, composer, actionsLog;
+  var rail, overlay, headerBtn, mobNavBtn;
+
+  // Entry points for opening the AI rail live in the host app chrome: a
+  // header button on desktop (left of MEET) and a mobile-nav button
+  // (left of MEET). The rail itself starts hidden and only appears when
+  // one of those is clicked. Replaces the old contracted-rail icon stack.
+  function injectEntryButtons() {
+    // Desktop header: .user-menu contains #btn-meet-header
+    var meetBtn = document.getElementById('btn-meet-header');
+    if (meetBtn && meetBtn.parentNode && !document.getElementById('xrai-header-btn')) {
+      headerBtn = document.createElement('button');
+      headerBtn.id = 'xrai-header-btn';
+      headerBtn.className = 'xrai-header-btn';
+      headerBtn.title = 'Open AI';
+      headerBtn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2z"/></svg>' +
+        '<span>AI</span>';
+      headerBtn.onclick = open;
+      meetBtn.parentNode.insertBefore(headerBtn, meetBtn);
+    }
+    // Mobile bottom nav
+    var mobMeet = document.getElementById('mob-meet');
+    if (mobMeet && mobMeet.parentNode && !document.getElementById('xrai-mob-btn')) {
+      mobNavBtn = document.createElement('button');
+      mobNavBtn.id = 'xrai-mob-btn';
+      mobNavBtn.className = 'mob-nav-btn xrai-mob-btn';
+      mobNavBtn.title = 'AI';
+      mobNavBtn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2z"/></svg>' +
+        '<span>AI</span>';
+      mobNavBtn.onclick = open;
+      mobMeet.parentNode.insertBefore(mobNavBtn, mobMeet);
+    }
+  }
+
+  function removeEntryButtons() {
+    try { if (headerBtn && headerBtn.parentNode) headerBtn.parentNode.removeChild(headerBtn); } catch (e) {}
+    try { if (mobNavBtn && mobNavBtn.parentNode) mobNavBtn.parentNode.removeChild(mobNavBtn); } catch (e) {}
+    headerBtn = null;
+    mobNavBtn = null;
+  }
 
   function mount() {
     if (mounted) return;
     mounted = true;
 
-    // Rail container
+    // Rail container (created hidden — user opens it via the header/nav button)
     rail = document.createElement('div');
-    rail.className = 'xrai-rail xrai-contracted';
-    rail.innerHTML = contractedHtml();
+    rail.className = 'xrai-rail xrai-hidden';
+    rail.innerHTML = expandedHtml();
     document.body.appendChild(rail);
 
     // SVG overlay for annotations (fixed so it tracks viewport)
@@ -125,17 +165,17 @@
     overlay.setAttribute('aria-hidden', 'true');
     document.body.appendChild(overlay);
 
-    wireContractedEvents();
+    // Wire expanded-rail events now; rail stays hidden until open() is called.
+    wireExpandedEvents();
 
-    // Re-check context availability + load threads lazily
+    // Re-check context availability + inject the entry buttons only if AI is on
     loadContext().then(function() {
       if (!currentContext || !currentContext.available) {
-        // AI not available for this user/dashboard — hide rail entirely
         rail.style.display = 'none';
         overlay.style.display = 'none';
         return;
       }
-      rail.style.display = '';
+      injectEntryButtons();
     });
 
     // Keep annotation positions in sync on scroll/resize
@@ -165,25 +205,6 @@
   }
 
   // ── Contracted rail markup ─────────────────────────────────────────────────
-  function contractedHtml() {
-    return (
-      '<button class="xrai-c-handle" title="Open AI"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="15 6 9 12 15 18"/></svg></button>' +
-      '<div class="xrai-c-stack">' +
-        '<button class="xrai-c-btn xrai-c-ai" title="Open AI" data-act="open">' +
-          '<span class="xrai-badge-dot"></span>' +
-          '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2z"/></svg>' +
-        '</button>' +
-        '<button class="xrai-c-btn" title="Quick ask" data-act="open">' +
-          '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 12a8 8 0 1 1-3-6.2L21 3v6h-6"/></svg>' +
-        '</button>' +
-        '<button class="xrai-c-btn" title="Pins" data-act="open-pins">' +
-          '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2v6l-4 4h8l-4-4M12 22v-8"/></svg>' +
-          '<span class="xrai-badge-count" data-count="pins">0</span>' +
-        '</button>' +
-      '</div>'
-    );
-  }
-
   function expandedHtml() {
     return (
       '<div class="xrai-hdr">' +
@@ -226,37 +247,22 @@
     );
   }
 
-  // ── Contracted events ──────────────────────────────────────────────────────
-  function wireContractedEvents() {
-    rail.addEventListener('click', function(e) {
-      var btn = e.target.closest('[data-act]');
-      if (!btn) return;
-      var act = btn.getAttribute('data-act');
-      if (act === 'open' || act === 'open-pins') {
-        expand();
-      }
-    });
-    var handle = rail.querySelector('.xrai-c-handle');
-    if (handle) handle.onclick = expand;
-  }
-
-  function expand() {
-    rail.classList.remove('xrai-contracted');
+  // Show the rail (called when the user clicks the header / nav AI button).
+  function open() {
+    if (!rail) return;
+    rail.classList.remove('xrai-hidden');
     rail.classList.add('xrai-expanded');
-    rail.innerHTML = expandedHtml();
-    wireExpandedEvents();
     renderContext();
     loadThreads();
     loadPins();
     if (!currentThreadId) createThreadIfNeeded();
   }
 
+  // Hide the rail. Entry buttons stay in place so the user can reopen it.
   function collapse() {
+    if (!rail) return;
     rail.classList.remove('xrai-expanded');
-    rail.classList.add('xrai-contracted');
-    rail.innerHTML = contractedHtml();
-    wireContractedEvents();
-    updatePinBadge();
+    rail.classList.add('xrai-hidden');
   }
 
   function wireExpandedEvents() {
@@ -294,9 +300,18 @@
     } else {
       ctxEl.textContent = 'Dashboard has not registered with XRayAI yet.';
     }
-    // Quick prompts
+    // Quick prompts — dashboard-provided, or sensible defaults so the user
+    // always has a one-click starting point (even if the dashboard hasn't
+    // registered yet or didn't supply any suggestedPrompts).
     quick.innerHTML = '';
     var sp = (registered && registered.suggestedPrompts) || [];
+    if (!sp.length) {
+      sp = [
+        'What is on this dashboard?',
+        'Summarize the top rows',
+        'What should I pay attention to?'
+      ];
+    }
     sp.slice(0, 4).forEach(function(p) {
       var b = document.createElement('button');
       b.className = 'xrai-quick-btn';
@@ -346,7 +361,11 @@
     threads.forEach(function(t) {
       var row = document.createElement('div');
       row.className = 'xrai-thread-row' + (t.id === currentThreadId ? ' active' : '');
-      row.innerHTML = '<span>' + escapeHtml(t.title) + '</span>' +
+      row.innerHTML =
+        '<span class="xrai-thread-title">' + escapeHtml(t.title) + '</span>' +
+        '<span class="xrai-thread-date" title="' + escapeHtml(new Date(t.created_at).toLocaleString()) + '">' +
+          escapeHtml(relativeTime(t.created_at)) +
+        '</span>' +
         '<button class="xrai-thread-x" title="Archive">×</button>';
       row.onclick = function(e) {
         if (e.target.classList.contains('xrai-thread-x')) {
@@ -756,6 +775,23 @@
   }
 
   // ── Utilities ──────────────────────────────────────────────────────────────
+  // Compact relative time: "just now", "5m", "2h", "3d", then a short date.
+  function relativeTime(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d)) return '';
+    var diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+    if (diffSec < 45) return 'just now';
+    if (diffSec < 60 * 60) return Math.floor(diffSec / 60) + 'm';
+    if (diffSec < 60 * 60 * 24) return Math.floor(diffSec / 3600) + 'h';
+    if (diffSec < 60 * 60 * 24 * 7) return Math.floor(diffSec / 86400) + 'd';
+    try {
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    } catch (e) {
+      return d.toISOString().slice(0, 10);
+    }
+  }
+
   function escapeHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;')
@@ -785,6 +821,7 @@
   function teardown() {
     try { if (rail && rail.parentNode) rail.parentNode.removeChild(rail); } catch (e) {}
     try { if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay); } catch (e) {}
+    removeEntryButtons();
     rail = null;
     overlay = null;
     mounted = false;
@@ -823,8 +860,8 @@
     setDashboard: setDashboard,
     dispose: dispose,
     // Direct programmatic access (for dashboards that want to drive the rail)
-    open: function() { if (mounted && rail && rail.classList.contains('xrai-contracted')) expand(); },
-    close: function() { if (mounted && rail && rail.classList.contains('xrai-expanded')) collapse(); },
+    open: function() { open(); },
+    close: function() { collapse(); },
     highlight: highlight,
     clearAnnotations: clearAnnotations,
     resetView: function() { dispatchTool('resetView'); clearAnnotations(); },
