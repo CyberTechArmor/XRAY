@@ -107,17 +107,13 @@
     font-size: 14px;
   }
 
-  /* Larger quick-prompt chips, thread rows, pins rows on touch */
+  /* Larger quick-prompt chips and thread rows on touch */
   .xrai-quick-btn { font-size: 13px; padding: 8px 12px; }
   .xrai-thread-row { padding: 10px 10px; font-size: 14px; }
   .xrai-thread-x { opacity: 1; visibility: visible; font-size: 20px; padding: 4px 8px; }
-  .xrai-pin-row { padding: 10px 10px; font-size: 13px; }
   .xrai-msg { font-size: 14px; line-height: 1.5; padding: 10px 12px; }
   .xrai-msg-tools { opacity: 1; }
   .xrai-msg-tools button { width: 32px; height: 32px; }
-
-  .xrai-body { padding-bottom: 8px; }
-  .xrai-messages { max-height: 50vh; }
 }
 
 /* Small-phone tweaks (very narrow screens) */
@@ -146,19 +142,25 @@
 
 .xrai-body {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex; flex-direction: column;
-  padding: 0;
-  min-height: 0; /* allow chat to scroll */
+  gap: 8px;
+  padding: 10px 10px 10px;
+  min-height: 0;
 }
 
+/* Generic section card — uses a raised surface + subtle border so each block
+   reads as its own area rather than a run-on list. */
 .xrai-sec {
   padding: 10px 12px;
-  border-bottom: 1px solid var(--xrai-bdr);
+  background: var(--xrai-bg2);
+  border: 1px solid var(--xrai-bdr);
+  border-radius: 10px;
+  flex-shrink: 0;
 }
 .xrai-sec-hd {
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   color: var(--xrai-t3);
   font-weight: 700;
   text-transform: uppercase;
@@ -166,7 +168,8 @@
   display: flex; align-items: center; justify-content: space-between;
 }
 
-/* NOW */
+/* NOW — compact "what the AI sees right now" area */
+.xrai-now { border-left: 2px solid var(--xrai-acc); }
 .xrai-now-context { color: var(--xrai-t1); font-size: 13px; line-height: 1.5; }
 .xrai-now-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .xrai-quick-btn {
@@ -246,33 +249,39 @@
 .xrai-thread-x:hover { color: var(--xrai-danger); }
 .xrai-empty { font-size: 12px; color: var(--xrai-t3); padding: 6px 0; font-style: italic; }
 
-/* PINS */
-.xrai-pins-list { display: flex; flex-direction: column; gap: 6px; max-height: 160px; overflow-y: auto; }
-.xrai-pin-row {
-  display: flex; align-items: flex-start; gap: 6px;
-  padding: 6px 8px;
-  font-size: 12px; color: var(--xrai-t2);
-  background: var(--xrai-bg2);
-  border: 1px solid var(--xrai-bdr);
-  border-radius: 6px;
+/* CHAT — pronounced: accent top edge, fills remaining height, composer pinned */
+.xrai-chat {
+  flex: 1;
+  display: flex; flex-direction: column;
+  min-height: 0;           /* allow inner scroll */
+  padding: 12px 12px 10px;
+  background: var(--xrai-bg);
+  border: 1px solid var(--xrai-acc-dim);
+  border-radius: 12px;
+  box-shadow:
+    inset 0 1px 0 rgba(62,232,181,0.18),
+    0 2px 10px rgba(0,0,0,0.25);
+  position: relative;
+  overflow: hidden;
 }
-.xrai-pin-text { flex: 1; line-height: 1.4; }
-.xrai-pin-x {
-  background: transparent; border: none; color: var(--xrai-t3);
-  cursor: pointer; font-size: 14px;
+.xrai-chat::before {
+  content: '';
+  position: absolute; left: 0; right: 0; top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--xrai-acc), transparent);
+  opacity: 0.6;
 }
-.xrai-pin-x:hover { color: var(--xrai-danger); }
-
-/* CHAT */
-.xrai-chat { flex: 1; display: flex; flex-direction: column; min-height: 260px; }
+.xrai-chat .xrai-sec-hd {
+  color: var(--xrai-acc);
+  letter-spacing: 0.16em;
+}
 .xrai-messages {
   flex: 1;
   overflow-y: auto;
   display: flex; flex-direction: column;
-  gap: 8px;
-  padding: 4px 0;
-  min-height: 120px;
-  max-height: 40vh;
+  gap: 10px;
+  padding: 4px 2px 6px;
+  min-height: 0;
 }
 .xrai-msg {
   padding: 8px 10px;
@@ -389,20 +398,29 @@
 /* When a rating is active, keep the row visible so the user sees their feedback */
 .xrai-msg-tools:has(.active) { opacity: 1; }
 
-.xrai-composer { padding-top: 8px; border-top: 1px solid var(--xrai-bdr); margin-top: 8px; }
+.xrai-composer {
+  padding-top: 10px;
+  border-top: 1px solid var(--xrai-bdr);
+  margin-top: 8px;
+  flex-shrink: 0;
+}
 .xrai-composer textarea {
   width: 100%;
   resize: vertical;
-  padding: 8px 10px;
+  padding: 9px 11px;
   font-size: 13px;
   line-height: 1.45;
   background: var(--xrai-bg2);
-  border: 1px solid var(--xrai-bdr);
+  border: 1px solid var(--xrai-bdr2);
   border-radius: 8px;
   color: var(--xrai-t1);
   outline: none;
+  transition: border-color .15s, box-shadow .15s;
 }
-.xrai-composer textarea:focus { border-color: var(--xrai-acc); }
+.xrai-composer textarea:focus {
+  border-color: var(--xrai-acc);
+  box-shadow: 0 0 0 3px var(--xrai-acc-dim);
+}
 .xrai-composer-row {
   display: flex; align-items: center; justify-content: space-between;
   margin-top: 6px;

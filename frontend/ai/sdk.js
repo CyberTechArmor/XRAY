@@ -90,7 +90,6 @@
   var currentThreadId = null;
   var threads = [];
   var messages = [];
-  var pins = [];
   var usage = null;           // { count, cap, remaining }
 
   function register(config) {
@@ -219,7 +218,6 @@
 
   function refreshAll() {
     loadThreads();
-    loadPins();
   }
 
   // ── Contracted rail markup ─────────────────────────────────────────────────
@@ -253,10 +251,6 @@
           '</div>' +
           '<div class="xrai-threads-list" id="xrai-threads"></div>' +
         '</section>' +
-        '<section class="xrai-sec xrai-pins">' +
-          '<div class="xrai-sec-hd">PINS</div>' +
-          '<div class="xrai-pins-list" id="xrai-pins"></div>' +
-        '</section>' +
         '<section class="xrai-sec xrai-chat" id="xrai-chat">' +
           '<div class="xrai-sec-hd">CONVERSATION</div>' +
           '<div class="xrai-messages" id="xrai-messages"></div>' +
@@ -282,7 +276,6 @@
     rail.classList.add('xrai-expanded');
     renderContext();
     loadThreads();
-    loadPins();
   }
 
   // Hide the rail. Entry buttons stay in place so the user can reopen it.
@@ -515,9 +508,6 @@
         '<button class="xrai-msg-rate' + (isDown ? ' active down' : '') + '" data-rate="-1" data-msg="' + (m.id || '') + '" title="Not helpful"' + d + '>' +
           '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M17 13V4h4v9zM17 13l-4 8a2 2 0 0 1-3.6-1.2L11 13H5a2 2 0 0 1-2-2.3l1.3-6a2 2 0 0 1 2-1.7H17"/></svg>' +
         '</button>' +
-        '<button class="xrai-msg-pin" data-pin="' + (m.id || '') + '" title="Pin"' + d + '>' +
-          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 2l2 6h6l-5 4 2 6-5-4-5 4 2-6-5-4h6z"/></svg>' +
-        '</button>' +
       '</div>';
   }
 
@@ -539,18 +529,6 @@
         } else {
           submitFeedback(msgId, desired);
         }
-        return;
-      }
-      var pinBtn = e.target.closest('.xrai-msg-pin');
-      if (pinBtn && !pinBtn.disabled) {
-        var pinMsgId = pinBtn.getAttribute('data-pin');
-        if (!pinMsgId) return;
-        apiFetch('/api/ai/pins', {
-          method: 'POST',
-          body: JSON.stringify({ messageId: pinMsgId })
-        }).then(function(r) {
-          if (r.ok) loadPins();
-        });
         return;
       }
     });
@@ -687,12 +665,44 @@
       var s = window.getComputedStyle(el);
       return s.visibility !== 'hidden' && s.display !== 'none';
     }
+    function isNoise(el) {
+      // Tags whose text content is code/markup, not dashboard content.
+      if (!el || !el.tagName) return false;
+      var t = el.tagName;
+      return t === 'SCRIPT' || t === 'STYLE' || t === 'NOSCRIPT' || t === 'TEMPLATE' || t === 'SVG' || t === 'PATH';
+    }
     function text(el) {
-      return ((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+      // Gather only human-readable text — skip <script>, <style>, etc. whose
+      // textContent would otherwise dump CSS/JS source into the AI context.
+      if (!el) return '';
+      if (!el.ownerDocument || !el.ownerDocument.createTreeWalker) {
+        return String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      }
+      var parts = [];
+      var walker = el.ownerDocument.createTreeWalker(
+        el,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode: function(n) {
+            var p = n.parentNode;
+            while (p && p !== el) {
+              if (isNoise(p)) return NodeFilter.FILTER_REJECT;
+              p = p.parentNode;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        },
+        false
+      );
+      var n;
+      while ((n = walker.nextNode())) parts.push(n.nodeValue);
+      return parts.join(' ').replace(/\s+/g, ' ').trim();
     }
     function skip(el) {
-      // Don't scrape the AI rail itself.
-      return el && el.closest && (el.closest('.xrai-rail') || el.closest('.xrai-overlay'));
+      // Don't scrape the AI rail itself, and never descend into script/style.
+      if (!el) return false;
+      if (isNoise(el)) return true;
+      return el.closest && (el.closest('.xrai-rail') || el.closest('.xrai-overlay'));
     }
 
     // Pick the most-specific visible container that represents the dashboard
@@ -882,48 +892,6 @@
       }
       return pump();
     }).catch(function() { onEnd(); });
-  }
-
-  // ── Pins ───────────────────────────────────────────────────────────────────
-  function loadPins() {
-    if (!currentContext || !currentContext.available) return;
-    return apiFetch('/api/ai/pins?dashboardId=' + encodeURIComponent(dashboardId))
-      .then(function(r) {
-        if (!r.ok) return;
-        pins = r.data || [];
-        renderPins();
-        updatePinBadge();
-      });
-  }
-
-  function renderPins() {
-    var el = rail.querySelector && rail.querySelector('#xrai-pins');
-    if (!el) return;
-    el.innerHTML = '';
-    if (pins.length === 0) {
-      el.innerHTML = '<div class="xrai-empty">No pins yet.</div>';
-      return;
-    }
-    pins.forEach(function(p) {
-      var row = document.createElement('div');
-      row.className = 'xrai-pin-row';
-      row.innerHTML = '<div class="xrai-pin-text">' + escapeHtml((p.content || '').slice(0, 140)) + '</div>' +
-        '<button data-unpin="' + p.pin_id + '" class="xrai-pin-x" title="Unpin">×</button>';
-      el.appendChild(row);
-    });
-    el.onclick = function(e) {
-      var un = e.target.closest('[data-unpin]');
-      if (un) {
-        apiFetch('/api/ai/pins/' + un.getAttribute('data-unpin'), { method: 'DELETE' }).then(loadPins);
-      }
-    };
-  }
-
-  function updatePinBadge() {
-    var b = rail.querySelector && rail.querySelector('[data-count="pins"]');
-    if (!b) return;
-    b.textContent = String(pins.length);
-    b.style.display = pins.length > 0 ? '' : 'none';
   }
 
   // ── Action dispatcher: xray-actions emitted by the assistant ───────────────
@@ -1210,7 +1178,6 @@
     currentThreadId = null;
     threads = [];
     messages = [];
-    pins = [];
     usage = null;
     currentContext = null;
   }
