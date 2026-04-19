@@ -274,6 +274,7 @@
           'if (missingTables.length) problems.push(missingTables.length + " missing tables (run update.sh migrations): " + missingTables.join(", "));' +
           'if (!d.api_key_configured) problems.push("No Anthropic API key set yet");' +
           'if (!d.model_catalog_count) problems.push("Model catalog empty (migration 015 may not have run)");' +
+          'if (d.errors && d.errors.length) { d.errors.forEach(function(e){ problems.push("Server probe: " + e); }); }' +
           'el.classList.add(problems.length === 0 ? "ai-health-ok" : (missingTables.length ? "ai-health-bad" : "ai-health-warn"));' +
           'var chips = "";' +
           'chips += "<span class=\\"ai-health-chip " + (d.api_key_configured ? "yes" : "no") + "\\">API key <span>" + (d.api_key_configured ? "✓ set" : "not set") + "</span></span>";' +

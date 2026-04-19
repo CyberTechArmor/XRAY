@@ -14,67 +14,111 @@ const AI_BACKEND_VERSION = 'ai-2026-04-19-02';
 // All routes here require platform admin (the ai.admin permission is granted only to platform_admin)
 router.use(authenticateJWT, requirePermission('platform.admin'));
 
-// GET /api/admin/ai/_health — diagnostic probe. Returns what the server sees,
-// independent of any AI feature tables existing. Used by the admin UI banner
-// to show missing tables / empty catalog clearly instead of bare "Failed".
-router.get('/_health', async (_req, res, next) => {
+// GET /api/admin/ai/_health — diagnostic probe. Always returns ok:true so the
+// admin UI always has something concrete to render. Each probe is wrapped in
+// its own try/catch; whichever one throws leaves its field null and its error
+// message in the errors[] array. This stops one bad query from breaking the
+// whole endpoint behind a generic INTERNAL_ERROR.
+router.get('/_health', async (_req, res) => {
+  const tablesWanted = [
+    'ai_settings_versions',
+    'ai_dashboard_settings',
+    'ai_user_dashboard_prefs',
+    'ai_threads',
+    'ai_messages',
+    'ai_pins',
+    'ai_usage_daily',
+    'ai_model_pricing',
+    'ai_message_feedback',
+  ];
+
+  const errors: string[] = [];
+  const probe = async <T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const msg = `${label}: ${err?.code || ''} ${err?.message || String(err)}`.trim();
+      console.error('[ai/_health]', msg);
+      errors.push(msg);
+      return fallback;
+    }
+  };
+
+  let tables: Record<string, boolean> = {};
+  let catalog = 0;
+  let settingsCount = 0;
+  let currentModel: string | null = null;
+  let apiKeyConfigured = false;
+
   try {
     const { withClient } = await import('../db/connection');
-    const { getSetting } = await import('../services/settings.service');
 
-    const tablesWanted = [
-      'ai_settings_versions',
-      'ai_dashboard_settings',
-      'ai_user_dashboard_prefs',
-      'ai_threads',
-      'ai_messages',
-      'ai_pins',
-      'ai_usage_daily',
-      'ai_model_pricing',
-      'ai_message_feedback',
-    ];
+    tables = await probe('tables-present', async () => {
+      return await withClient(async (client) => {
+        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        const tbl = await client.query(
+          `SELECT table_name FROM information_schema.tables
+           WHERE table_schema = 'platform' AND table_name = ANY($1::text[])`,
+          [tablesWanted]
+        );
+        const present = new Set(tbl.rows.map((r: { table_name: string }) => r.table_name));
+        const out: Record<string, boolean> = {};
+        for (const t of tablesWanted) out[t] = present.has(t);
+        return out;
+      });
+    }, Object.fromEntries(tablesWanted.map((t) => [t, false])));
 
-    const report = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-      const tbl = await client.query(
-        `SELECT table_name FROM information_schema.tables
-         WHERE table_schema = 'platform' AND table_name = ANY($1::text[])`,
-        [tablesWanted]
-      );
-      const present = new Set(tbl.rows.map((r: { table_name: string }) => r.table_name));
-      const tables: Record<string, boolean> = {};
-      for (const t of tablesWanted) tables[t] = present.has(t);
+    if (tables['ai_model_pricing']) {
+      catalog = await probe('model-catalog-count', async () => {
+        return await withClient(async (client) => {
+          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+          const r = await client.query(`SELECT COUNT(*)::int as c FROM platform.ai_model_pricing WHERE is_active`);
+          return r.rows[0]?.c ?? 0;
+        });
+      }, 0);
+    }
 
-      const catalog = present.has('ai_model_pricing')
-        ? (await client.query(`SELECT COUNT(*)::int as c FROM platform.ai_model_pricing WHERE is_active`)).rows[0].c
-        : 0;
-      const settingsCount = present.has('ai_settings_versions')
-        ? (await client.query(`SELECT COUNT(*)::int as c FROM platform.ai_settings_versions`)).rows[0].c
-        : 0;
-      const currentModel = present.has('ai_settings_versions')
-        ? (await client.query(`SELECT model_id FROM platform.ai_settings_versions ORDER BY effective_at DESC LIMIT 1`)).rows[0]?.model_id || null
-        : null;
+    if (tables['ai_settings_versions']) {
+      settingsCount = await probe('settings-versions-count', async () => {
+        return await withClient(async (client) => {
+          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+          const r = await client.query(`SELECT COUNT(*)::int as c FROM platform.ai_settings_versions`);
+          return r.rows[0]?.c ?? 0;
+        });
+      }, 0);
 
-      return { tables, catalog, settingsCount, currentModel };
-    });
+      currentModel = await probe('current-model-id', async () => {
+        return await withClient(async (client) => {
+          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+          const r = await client.query(
+            `SELECT model_id FROM platform.ai_settings_versions ORDER BY effective_at DESC LIMIT 1`
+          );
+          return r.rows[0]?.model_id ?? null;
+        });
+      }, null);
+    }
 
-    const apiKey = await getSetting('ai.anthropic_api_key');
-
-    res.json({
-      ok: true,
-      data: {
-        version: AI_BACKEND_VERSION,
-        tables: report.tables,
-        all_tables_present: Object.values(report.tables).every(Boolean),
-        model_catalog_count: report.catalog,
-        settings_versions_count: report.settingsCount,
-        current_model_id: report.currentModel,
-        api_key_configured: !!apiKey,
-      },
-    });
-  } catch (err) {
-    next(err);
+    apiKeyConfigured = await probe('api-key-setting', async () => {
+      const { getSetting } = await import('../services/settings.service');
+      return !!(await getSetting('ai.anthropic_api_key'));
+    }, false);
+  } catch (err: any) {
+    errors.push(`outer: ${err?.code || ''} ${err?.message || String(err)}`.trim());
   }
+
+  res.json({
+    ok: true,
+    data: {
+      version: AI_BACKEND_VERSION,
+      tables,
+      all_tables_present: Object.values(tables).every(Boolean),
+      model_catalog_count: catalog,
+      settings_versions_count: settingsCount,
+      current_model_id: currentModel,
+      api_key_configured: apiKeyConfigured,
+      errors,
+    },
+  });
 });
 
 // GET /api/admin/ai/settings — current settings + version history head
