@@ -3,8 +3,30 @@ import { authenticateJWT } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
 import { validateBody, dashboardAccessSchema, embedCreateSchema } from '../lib/validation';
 import * as dashboardService from '../services/dashboard.service';
+import * as aiService from '../services/ai.service';
 import { getSetting } from '../services/settings.service';
 import { config } from '../config';
+
+// Builds the AI bootstrap metadata + HTML snippet to append to the dashboard payload
+// when AI is enabled for (user, dashboard). The SDK auto-initializes from the data-*
+// attributes on the appended <script> tag.
+async function buildAiBootstrap(
+  dashboardId: string,
+  userId: string
+): Promise<{ ai: Record<string, unknown>; htmlSuffix: string } | null> {
+  try {
+    const avail = await aiService.isAiAvailableForUser(userId, dashboardId);
+    if (!avail.available) {
+      return { ai: { available: false, reason: avail.reason || null }, htmlSuffix: '' };
+    }
+    const htmlSuffix =
+      `\n<link rel="stylesheet" href="/ai/sdk.css" data-xray-ai="1">` +
+      `\n<script src="/ai/sdk.js" defer data-xray-ai="1" data-dashboard-id="${dashboardId}"></script>`;
+    return { ai: { available: true, dashboardId }, htmlSuffix };
+  } catch {
+    return null;
+  }
+}
 
 const router = Router();
 
@@ -122,9 +144,15 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
 
     // If dashboard has no fetch_url, return static content directly
     if (!dashboard.fetch_url) {
+      const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
       return res.json({
         ok: true,
-        data: { html: dashboard.view_html || '', css: dashboard.view_css || '', js: dashboard.view_js || '' },
+        data: {
+          html: (dashboard.view_html || '') + (boot?.htmlSuffix || ''),
+          css: dashboard.view_css || '',
+          js: dashboard.view_js || '',
+          ai: boot?.ai || { available: false },
+        },
       });
     }
 
@@ -195,7 +223,14 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           }).catch(() => {}); // fire-and-forget cache write
         }
 
-        return res.json({ ok: true, data });
+        // Inject AI SDK bootstrap if AI is enabled for (user, dashboard)
+        const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+        const augmented = {
+          ...data,
+          html: (data.html || '') + (boot?.htmlSuffix || ''),
+          ai: boot?.ai || { available: false },
+        };
+        return res.json({ ok: true, data: augmented });
       } catch (fetchErr) {
         lastError = 'Connection unreachable';
         if (attempt < MAX_ATTEMPTS) {
@@ -207,9 +242,15 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
 
     // All attempts failed — fall back to cached static content if available
     if (dashboard.view_html) {
+      const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
       return res.json({
         ok: true,
-        data: { html: dashboard.view_html, css: dashboard.view_css || '', js: dashboard.view_js || '' },
+        data: {
+          html: dashboard.view_html + (boot?.htmlSuffix || ''),
+          css: dashboard.view_css || '',
+          js: dashboard.view_js || '',
+          ai: boot?.ai || { available: false },
+        },
         meta: { fallback: true },
       });
     }
