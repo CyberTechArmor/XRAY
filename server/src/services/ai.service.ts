@@ -529,11 +529,12 @@ export async function streamReply(
       settings.guardrails,
       [
         'Reading the dashboard context:',
-        '- <current_view> is a JSON snapshot of what is rendered on the page right now. It contains some of: title, filters, kpis (label/value pairs), tables (headers + rows), and visibleText (a line-per-block snapshot of the dashboard).',
+        '- <current_view> is a JSON snapshot of what is rendered on the page right now. It may contain: title, filters, kpis (label/value pairs), tables (headers + rows), visibleText (a line-per-block snapshot), and sometimes a `posted` field pushed by the dashboard via postMessage.',
+        '- If `posted` is present, trust it as the dashboard\'s own canonical description — it is more reliable than any DOM-scraped data.',
         '- If kpis or tables contain real numbers and labels, the dashboard has loaded. Answer using them. Do not describe the dashboard as loading in that case.',
-        '- visibleText may include decorative loader strings like "Initializing", "Loading Metrics", "Connecting API", "Streaming Data", "Building Layout", or animated HUD copy even after real data has arrived — those are cosmetic and should be ignored if any structured data (kpis/tables) or any numeric values are present elsewhere in visibleText.',
-        '- Only say the data is unavailable when kpis AND tables are empty AND visibleText contains no numeric values — and even then, ask a clarifying question rather than assume the dashboard is broken.',
-        '- Prefer the structured kpis/tables fields when they match the question. Fall back to visibleText for chart labels, captions, and grid-based leaderboards that weren\'t captured as tables.',
+        '- visibleText may include decorative loader strings like "Initializing", "Loading Metrics", "Connecting API", "Streaming Data", "Building Layout", or animated HUD copy even after real data has arrived — those are cosmetic and should be ignored if any structured data (kpis/tables/posted) or any numeric values are present elsewhere in visibleText.',
+        '- Only say the data is unavailable when kpis AND tables AND posted are empty AND visibleText contains no numeric values — and even then, ask a clarifying question rather than assume the dashboard is broken.',
+        '- Prefer structured kpis/tables/posted fields when they match the question. Fall back to visibleText for chart labels, captions, and grid-based leaderboards that weren\'t captured as tables.',
         '- Never invent numbers — cite specific values from the context.',
       ].join('\n'),
       [

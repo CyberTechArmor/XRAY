@@ -104,6 +104,29 @@
     if (mounted) refreshAll();
   }
 
+  // Context pushed in by a cross-origin iframe dashboard via postMessage.
+  // Merged into safeGetContext() as the canonical context when present — the
+  // iframe knows its own state far better than our DOM scrape can.
+  var postedContext = null;
+  window.addEventListener('message', function(e) {
+    var data = e && e.data;
+    if (!data || typeof data !== 'object') return;
+    // Accept either {type:'xray-ai:context', payload:{...}} or a bare
+    // {xrayAiContext:{...}} shape so dashboards have an easy format.
+    var payload = null;
+    if (data.type === 'xray-ai:context' && data.payload) payload = data.payload;
+    else if (data.xrayAiContext) payload = data.xrayAiContext;
+    if (!payload) return;
+    postedContext = {
+      postedAt: Date.now(),
+      origin: e.origin || '',
+      payload: payload
+    };
+    if (rail && !rail.classList.contains('xrai-hidden')) {
+      try { renderContext(); } catch (err) {}
+    }
+  });
+
   // ── Mount point ────────────────────────────────────────────────────────────
   var mounted = false;
   var rail, overlay, headerBtn, mobNavBtn;
@@ -649,6 +672,16 @@
         out.context = Object.assign({}, scraped, out.context || {});
       }
     } catch (e) { /* scraping is best-effort */ }
+    // postMessage bridge wins over DOM scrape when present — the dashboard
+    // pushed its own interpretation of the data and knows best.
+    if (postedContext && postedContext.payload) {
+      out.context = Object.assign({}, out.context || {}, {
+        posted: postedContext.payload,
+        postedAt: postedContext.postedAt,
+        postedFromOrigin: postedContext.origin
+      });
+      if (!out.title && postedContext.payload.title) out.title = postedContext.payload.title;
+    }
     return out;
   }
 
@@ -767,18 +800,57 @@
       var el = document.querySelector(candidates[ci][1]);
       if (el) { root = el; rootSource = candidates[ci][0]; }
     }
-    // Share-page iframe: scrape its document if same-origin.
-    if (!root) {
-      var iframe = document.querySelector('#share-content iframe');
-      if (iframe) {
-        try {
-          var idoc = iframe.contentDocument;
-          if (idoc && idoc.body) { root = idoc.body; rootSource = 'share-iframe'; }
-        } catch (e) { /* cross-origin: skip */ }
-      }
-    }
     if (!root) root = document.querySelector('main') || document.body;
     if (!root) return null;
+
+    // Many real dashboards render their actual content inside an iframe —
+    // e.g. <iframe id="response-frame"> fed by an n8n webhook — while the
+    // outer document just shows a loading splash. Pivot to the iframe's
+    // document when we can reach it (same-origin); fall back to the outer
+    // root otherwise so we still get something.
+    //
+    // Priority: a specifically-named #response-frame or [data-xray-frame]
+    // first, then any iframe with meaningful body content.
+    var iframeRoots = [];
+    function collectIframeRoots(scope) {
+      if (!scope || !scope.querySelectorAll) return;
+      var frames = scope.querySelectorAll('iframe');
+      for (var fi = 0; fi < frames.length; fi++) {
+        var f = frames[fi];
+        if (skip(f)) continue;
+        var idoc = null;
+        try { idoc = f.contentDocument; } catch (e) { idoc = null; }
+        if (!idoc || !idoc.body) continue; // cross-origin or not loaded
+        // Ignore empty iframes (still fetching)
+        var bodyLen = (idoc.body.textContent || '').trim().length;
+        if (bodyLen < 4) continue;
+        var priority = 0;
+        if (f.id === 'response-frame')      priority = 3;
+        else if (f.hasAttribute('data-xray-frame')) priority = 3;
+        else if (/response|data|report|frame/i.test(f.id || f.className || '')) priority = 2;
+        else                                 priority = 1;
+        iframeRoots.push({ body: idoc.body, frame: f, priority: priority, bodyLen: bodyLen });
+      }
+    }
+    collectIframeRoots(root);
+    // Some dashboards put the iframe OUTSIDE the render root — also check
+    // the active fullview and the whole document once.
+    var activeView = document.querySelector('.dash-fullview.active');
+    if (activeView && activeView !== root) collectIframeRoots(activeView);
+    if (!iframeRoots.length) collectIframeRoots(document);
+    iframeRoots.sort(function(a, b) { return b.priority - a.priority || b.bodyLen - a.bodyLen; });
+
+    if (iframeRoots.length) {
+      // If an iframe has substantially more content than the outer root, or
+      // the outer root looks loader-dominated, switch to the iframe body.
+      var outerLen = 0;
+      try { outerLen = (root.textContent || '').length; } catch (e) {}
+      var pick = iframeRoots[0];
+      if (pick.priority >= 2 || pick.bodyLen > outerLen * 0.5) {
+        root = pick.body;
+        rootSource = 'iframe:' + (pick.frame.id || pick.frame.className || 'unnamed');
+      }
+    }
 
     // Title: prefer a visible top-level heading, fall back to document.title.
     var title = '';
