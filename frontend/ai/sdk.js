@@ -728,22 +728,24 @@
       return s.replace(/\s+/g, ' ').trim();
     }
 
-    // Pick the most-specific visible container that represents the dashboard
-    // the user is looking at. Fall back to <main>/body only when no dashboard
-    // viewer is active. Order matters: prefer the active dash-fullview, then
-    // any dedicated render root, then an iframe (share mode).
+    // Pick the most-specific container that represents the dashboard the user
+    // is looking at. We DO NOT apply the bounding-rect `visible()` gate to the
+    // selector itself — a `.dash-render-root` with `contain: layout paint` or
+    // an `overflow:auto` viewport can report odd metrics on some browsers,
+    // and filtering it out would force us to fall back to <body> and scrape
+    // the whole app chrome instead of the dashboard.
     var root = null;
+    var rootSource = 'body-fallback';
     var candidates = [
-      '.dash-fullview.active .dash-render-root',
-      '.dash-fullview.active',
-      '#dashboard-viewer.dash-fullview.active',
-      '.dash-render-root',
-      '[data-xray-dashboard-root]',
-      'main.dashboard-main'
+      ['dash-render-root-in-active', '.dash-fullview.active .dash-render-root'],
+      ['dash-fullview-active',       '.dash-fullview.active'],
+      ['dash-render-root',           '.dash-render-root'],
+      ['xray-dashboard-root',        '[data-xray-dashboard-root]'],
+      ['main-dashboard',             'main.dashboard-main']
     ];
     for (var ci = 0; ci < candidates.length && !root; ci++) {
-      var el = document.querySelector(candidates[ci]);
-      if (el && visible(el)) root = el;
+      var el = document.querySelector(candidates[ci][1]);
+      if (el) { root = el; rootSource = candidates[ci][0]; }
     }
     // Share-page iframe: scrape its document if same-origin.
     if (!root) {
@@ -751,7 +753,7 @@
       if (iframe) {
         try {
           var idoc = iframe.contentDocument;
-          if (idoc && idoc.body) root = idoc.body;
+          if (idoc && idoc.body) { root = idoc.body; rootSource = 'share-iframe'; }
         } catch (e) { /* cross-origin: skip */ }
       }
     }
@@ -807,8 +809,13 @@
     var allEls = root.querySelectorAll('*');
     for (var k = 0; k < allEls.length && kpis.length < MAX_KPIS; k++) {
       var el = allEls[k];
-      if (skip(el) || isNoise(el) || !visible(el)) continue;
+      if (skip(el) || isNoise(el)) continue;
       if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE') continue;
+      // Use display/visibility rather than bounding-rect visibility so nested
+      // scroll containers don't accidentally drop their descendants.
+      var kps;
+      try { kps = window.getComputedStyle(el); } catch (e) { kps = null; }
+      if (kps && (kps.display === 'none' || kps.visibility === 'hidden')) continue;
       var t = ownText(el) || text(el);
       if (!t || t.length > 32) continue;
       if (!bigNumRe.test(t)) continue;
@@ -880,33 +887,40 @@
     // visible text on their own line. This preserves enough structure for the
     // AI to read grid/flex leaderboards that don't use <table>, KPI cards,
     // headings, etc. — far more useful than a flattened textContent blob.
+    //
+    // We rely on `display`/`visibility` (via getComputedStyle) for filtering
+    // instead of bounding-box visibility — a scroll container can clip its
+    // children offscreen but we still want their content.
+    function isDisplayed(el) {
+      if (!el || el.nodeType !== 1) return true;
+      var s;
+      try { s = window.getComputedStyle(el); } catch (e) { return true; }
+      if (!s) return true;
+      if (s.display === 'none' || s.visibility === 'hidden') return false;
+      return true;
+    }
     function blockText(r) {
       var out = [];
-      var BLOCK = /^(DIV|SECTION|ARTICLE|HEADER|FOOTER|ASIDE|MAIN|LI|UL|OL|P|H1|H2|H3|H4|H5|H6|TR|TD|TH|TABLE|THEAD|TBODY|DL|DT|DD|PRE|BLOCKQUOTE|FIGURE|FIGCAPTION|NAV|FORM|FIELDSET|LEGEND|LABEL|BUTTON|SUMMARY|DETAILS)$/;
+      var BLOCK = /^(DIV|SECTION|ARTICLE|HEADER|FOOTER|ASIDE|MAIN|LI|UL|OL|P|H1|H2|H3|H4|H5|H6|TR|TD|TH|TABLE|THEAD|TBODY|TFOOT|DL|DT|DD|PRE|BLOCKQUOTE|FIGURE|FIGCAPTION|NAV|FORM|FIELDSET|LEGEND|LABEL|BUTTON|SUMMARY|DETAILS)$/;
       var seen = 0;
       (function walk(el) {
-        if (!el || seen > 2000) return;
+        if (!el || seen > 60000) return;
         if (isNoise(el) || skip(el)) return;
-        if (el.nodeType === 1 && !visible(el)) return;
+        if (!isDisplayed(el)) return;
         seen++;
-        var tag = el.tagName;
-        if (el.nodeType === 1 && BLOCK.test(tag)) {
-          // Descend first so nested blocks become their own lines; but also
-          // capture direct-child text so the "own" label of a container is
-          // preserved.
+        var isElement = el.nodeType === 1;
+        if (isElement && BLOCK.test(el.tagName)) {
           var own = ownText(el);
           if (own) out.push(own);
         }
         for (var c = el.firstChild; c; c = c.nextSibling) {
           if (c.nodeType === 1) walk(c);
-          else if (c.nodeType === 3 && el.nodeType === 1 && !BLOCK.test(el.tagName)) {
+          else if (c.nodeType === 3 && isElement && !BLOCK.test(el.tagName)) {
             var v = String(c.nodeValue || '').replace(/\s+/g, ' ').trim();
             if (v) out.push(v);
           }
         }
       })(r);
-      // Deduplicate consecutive duplicates and flatten tiny fragments onto
-      // nearby lines for readability.
       var lines = [];
       for (var li = 0; li < out.length; li++) {
         var s = out[li].replace(/\s+/g, ' ').trim();
@@ -914,13 +928,24 @@
         if (lines.length && lines[lines.length - 1] === s) continue;
         lines.push(s);
       }
-      return lines.join('\n');
+      return { text: lines.join('\n'), walked: seen };
     }
-    var snapshot = blockText(root);
+    var blk = blockText(root);
+    var snapshot = blk.text;
+    // Last-resort safety net: if the structured walk somehow came back empty
+    // (unusual inner containment / shadow / etc.), fall back to a flat
+    // innerText grab on the root so the AI at least has SOMETHING.
+    if (!snapshot) {
+      try {
+        var it = (root.innerText || root.textContent || '').replace(/\s+/g, ' ').trim();
+        if (it) snapshot = it;
+      } catch (e) {}
+    }
     if (snapshot.length > MAX_SNAPSHOT) snapshot = snapshot.slice(0, MAX_SNAPSHOT) + '…';
 
     var result = {
       source: 'dom-scrape',
+      rootSource: rootSource,
       title: title,
       url: location.pathname + location.search,
       filters: filters,
@@ -930,16 +955,21 @@
     };
 
     // Surface what we captured for debugging — dashboards vary a lot and this
-    // makes mismatches obvious without the user having to guess.
+    // makes mismatches obvious without the user having to guess. Expose the
+    // last scrape on window so it's easy to inspect from the console.
     try {
+      window.__xrayAiLastScrape = result;
       if (window.__xrayAiDebug !== false) {
         console.log('[XRayAI] scrape', {
+          rootSource: rootSource,
           rootTag: root.tagName,
-          rootClass: root.className,
+          rootClass: root.className && String(root.className).slice(0, 80),
+          walked: blk.walked,
           kpis: kpis.length,
           tables: tables.length,
           filters: filters.length,
-          snapshotChars: snapshot.length
+          snapshotChars: snapshot.length,
+          snapshotPreview: snapshot.slice(0, 200)
         });
       }
     } catch (e) {}
