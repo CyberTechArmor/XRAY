@@ -1727,6 +1727,9 @@
     // Also explicitly remove active class from dashboard viewer
     var dashViewer = document.querySelector('.dash-fullview.active');
     if (dashViewer) { dashViewer.classList.remove('active'); dashViewer.innerHTML = ''; delete dashViewer.dataset.dashboardId; }
+    // Tear down the AI rail if the user is leaving a dashboard (rail is mounted
+    // on document.body by /ai/sdk.js and would otherwise linger on other pages).
+    try { if (window.XRayAI && typeof window.XRayAI.dispose === 'function') window.XRayAI.dispose(); } catch (e) {}
 
     // Notify replay of segment change (AFTER dashboard viewer is cleared)
     onReplaySegmentChange();
