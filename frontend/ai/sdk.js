@@ -183,7 +183,25 @@
     function redraw() { clearTimeout(rr); rr = setTimeout(renderAnnotations, 16); }
     window.addEventListener('resize', redraw);
     window.addEventListener('scroll', redraw, { passive: true, capture: true });
+
+    // The dashboard renders progressively (server fetch → HTML → scripts hydrate
+    // data). Observe the active dashboard container so the NOW banner refreshes
+    // once real content lands, and so later filter/data changes surface too.
+    try {
+      if (window.MutationObserver) {
+        var mo = new MutationObserver(function() {
+          if (!rail || rail.classList.contains('xrai-hidden')) return;
+          clearTimeout(renderContextTimer);
+          renderContextTimer = setTimeout(function() {
+            try { renderContext(); } catch (e) {}
+          }, 250);
+        });
+        mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+      }
+    } catch (e) { /* observers are best-effort */ }
   }
+
+  var renderContextTimer = null;
 
   var currentContext = null;
   function loadContext() {
@@ -224,8 +242,15 @@
           '<div class="xrai-now-quick" id="xrai-now-quick"></div>' +
           '<div class="xrai-ann-toolbar" id="xrai-ann-toolbar" style="display:none"><button data-act="clear-ann">Clear annotations</button><button data-act="reset-view">Reset view</button><button data-act="undo">Undo</button></div>' +
         '</section>' +
-        '<section class="xrai-sec xrai-threads">' +
-          '<div class="xrai-sec-hd">THREADS <button class="xrai-new-thread" title="New thread">+</button></div>' +
+        '<section class="xrai-sec xrai-threads xrai-threads-collapsed" id="xrai-threads-sec">' +
+          '<div class="xrai-sec-hd">' +
+            '<button class="xrai-threads-toggle" id="xrai-threads-toggle" title="Show all threads" aria-expanded="false">' +
+              '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 6 15 12 9 18"/></svg>' +
+              '<span>THREADS</span>' +
+              '<span class="xrai-threads-count" id="xrai-threads-count"></span>' +
+            '</button>' +
+            '<button class="xrai-new-thread" title="New thread">+</button>' +
+          '</div>' +
           '<div class="xrai-threads-list" id="xrai-threads"></div>' +
         '</section>' +
         '<section class="xrai-sec xrai-pins">' +
@@ -248,6 +273,9 @@
   }
 
   // Show the rail (called when the user clicks the header / nav AI button).
+  // We intentionally do NOT create a thread here — a new thread is only
+  // persisted server-side when the user actually sends their first message.
+  // Until then the composer shows an in-memory draft.
   function open() {
     if (!rail) return;
     rail.classList.remove('xrai-hidden');
@@ -255,7 +283,6 @@
     renderContext();
     loadThreads();
     loadPins();
-    if (!currentThreadId) createThreadIfNeeded();
   }
 
   // Hide the rail. Entry buttons stay in place so the user can reopen it.
@@ -265,9 +292,29 @@
     rail.classList.add('xrai-hidden');
   }
 
+  var threadsExpanded = false;
+
   function wireExpandedEvents() {
     rail.querySelector('.xrai-collapse').onclick = collapse;
-    rail.querySelector('.xrai-new-thread').onclick = function() { createThread(); };
+    rail.querySelector('.xrai-new-thread').onclick = function(e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      // "New thread" just resets the composer — nothing is created server-side
+      // until the user actually sends. Mirrors how chat apps treat a blank tab.
+      currentThreadId = null;
+      messages = [];
+      renderMessages();
+      renderThreads();
+    };
+    var toggleBtn = rail.querySelector('#xrai-threads-toggle');
+    if (toggleBtn) {
+      toggleBtn.onclick = function() {
+        threadsExpanded = !threadsExpanded;
+        var sec = rail.querySelector('#xrai-threads-sec');
+        if (sec) sec.classList.toggle('xrai-threads-collapsed', !threadsExpanded);
+        toggleBtn.setAttribute('aria-expanded', String(threadsExpanded));
+        renderThreads();
+      };
+    }
     rail.querySelector('#xrai-send').onclick = sendMessage;
     rail.querySelector('#xrai-input').addEventListener('keydown', function(e) {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendMessage(); }
@@ -366,12 +413,28 @@
   function renderThreads() {
     var el = rail.querySelector && rail.querySelector('#xrai-threads');
     if (!el) return;
+    var countEl = rail.querySelector('#xrai-threads-count');
+    if (countEl) countEl.textContent = threads.length ? '· ' + threads.length : '';
     el.innerHTML = '';
     if (threads.length === 0) {
-      el.innerHTML = '<div class="xrai-empty">No threads yet. Ask a question to start one.</div>';
+      // Hide the empty-state in collapsed mode — the "+" button is enough of a hint.
+      if (threadsExpanded) {
+        el.innerHTML = '<div class="xrai-empty">No threads yet. Ask a question to start one.</div>';
+      }
       return;
     }
-    threads.forEach(function(t) {
+    // Collapsed: show the most-recent one (or the active one if pinned by the user).
+    var visibleThreads = threads;
+    if (!threadsExpanded) {
+      var pick = threads[0];
+      if (currentThreadId) {
+        for (var ti = 0; ti < threads.length; ti++) {
+          if (threads[ti].id === currentThreadId) { pick = threads[ti]; break; }
+        }
+      }
+      visibleThreads = [pick];
+    }
+    visibleThreads.forEach(function(t) {
       var row = document.createElement('div');
       row.className = 'xrai-thread-row' + (t.id === currentThreadId ? ' active' : '');
       row.innerHTML =
@@ -404,11 +467,6 @@
       renderMessages();
       return loadThreads();
     });
-  }
-
-  function createThreadIfNeeded() {
-    if (threads.length > 0) return switchToThread(threads[0].id);
-    return createThread();
   }
 
   function switchToThread(id) {
@@ -637,7 +695,34 @@
       return el && el.closest && (el.closest('.xrai-rail') || el.closest('.xrai-overlay'));
     }
 
-    var root = document.querySelector('main') || document.body;
+    // Pick the most-specific visible container that represents the dashboard
+    // the user is looking at. Fall back to <main>/body only when no dashboard
+    // viewer is active. Order matters: prefer the active dash-fullview, then
+    // any dedicated render root, then an iframe (share mode).
+    var root = null;
+    var candidates = [
+      '.dash-fullview.active .dash-render-root',
+      '.dash-fullview.active',
+      '#dashboard-viewer.dash-fullview.active',
+      '.dash-render-root',
+      '[data-xray-dashboard-root]',
+      'main.dashboard-main'
+    ];
+    for (var ci = 0; ci < candidates.length && !root; ci++) {
+      var el = document.querySelector(candidates[ci]);
+      if (el && visible(el)) root = el;
+    }
+    // Share-page iframe: scrape its document if same-origin.
+    if (!root) {
+      var iframe = document.querySelector('#share-content iframe');
+      if (iframe) {
+        try {
+          var idoc = iframe.contentDocument;
+          if (idoc && idoc.body) root = idoc.body;
+        } catch (e) { /* cross-origin: skip */ }
+      }
+    }
+    if (!root) root = document.querySelector('main') || document.body;
     if (!root) return null;
 
     // Title: prefer a visible top-level heading, fall back to document.title.
@@ -968,9 +1053,135 @@
       .replace(/"/g, '&quot;');
   }
 
+  // Minimal markdown renderer: headings, bold/italic, inline + fenced code,
+  // links, bullet and numbered lists, blockquotes, paragraphs. No external
+  // deps; escapes HTML first so assistant output can't inject markup.
   function mdEscape(s) {
-    // Minimal: escape then convert newlines to <br>
-    return escapeHtml(s).replace(/\n/g, '<br>');
+    var src = String(s == null ? '' : s);
+
+    // Pull fenced code blocks out first so their contents aren't touched by
+    // inline rules. Placeholders get swapped back at the end.
+    var codeBlocks = [];
+    src = src.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, function(_, lang, body) {
+      var idx = codeBlocks.length;
+      codeBlocks.push({ lang: lang || '', body: body.replace(/\n$/, '') });
+      return '\u0000CB' + idx + '\u0000';
+    });
+
+    src = escapeHtml(src);
+
+    // Inline code — do this before other inline rules so `*literal*` stays literal.
+    var inlineCodes = [];
+    src = src.replace(/`([^`\n]+)`/g, function(_, c) {
+      var idx = inlineCodes.length;
+      inlineCodes.push(c);
+      return '\u0000IC' + idx + '\u0000';
+    });
+
+    // Build block-level output line by line.
+    var lines = src.split('\n');
+    var out = [];
+    var i = 0;
+    function isBlank(l) { return !l || /^\s*$/.test(l); }
+    while (i < lines.length) {
+      var line = lines[i];
+
+      // Heading
+      var h = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (h) {
+        var level = h[1].length;
+        out.push('<h' + level + ' class="xrai-md-h' + level + '">' + inline(h[2]) + '</h' + level + '>');
+        i++; continue;
+      }
+
+      // Blockquote (fold consecutive > lines)
+      if (/^\s*>/.test(line)) {
+        var bq = [];
+        while (i < lines.length && /^\s*>/.test(lines[i])) {
+          bq.push(lines[i].replace(/^\s*>\s?/, ''));
+          i++;
+        }
+        out.push('<blockquote class="xrai-md-bq">' + inline(bq.join(' ')) + '</blockquote>');
+        continue;
+      }
+
+      // Unordered list
+      if (/^\s*[-*+]\s+/.test(line)) {
+        var items = [];
+        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+          items.push(lines[i].replace(/^\s*[-*+]\s+/, ''));
+          i++;
+        }
+        out.push('<ul class="xrai-md-ul">' + items.map(function(it) {
+          return '<li>' + inline(it) + '</li>';
+        }).join('') + '</ul>');
+        continue;
+      }
+
+      // Ordered list
+      if (/^\s*\d+\.\s+/.test(line)) {
+        var nitems = [];
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+          nitems.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
+          i++;
+        }
+        out.push('<ol class="xrai-md-ol">' + nitems.map(function(it) {
+          return '<li>' + inline(it) + '</li>';
+        }).join('') + '</ol>');
+        continue;
+      }
+
+      // Blank: skip
+      if (isBlank(line)) { i++; continue; }
+
+      // Paragraph: collect consecutive non-blank non-special lines
+      var para = [line];
+      i++;
+      while (i < lines.length && !isBlank(lines[i]) &&
+             !/^(#{1,6})\s+/.test(lines[i]) &&
+             !/^\s*>/.test(lines[i]) &&
+             !/^\s*[-*+]\s+/.test(lines[i]) &&
+             !/^\s*\d+\.\s+/.test(lines[i]) &&
+             lines[i].indexOf('\u0000CB') !== 0) {
+        para.push(lines[i]);
+        i++;
+      }
+      out.push('<p class="xrai-md-p">' + inline(para.join(' ')) + '</p>');
+    }
+
+    var html = out.join('');
+
+    // Restore inline code
+    html = html.replace(/\u0000IC(\d+)\u0000/g, function(_, n) {
+      return '<code class="xrai-md-code">' + escapeHtml(inlineCodes[+n]) + '</code>';
+    });
+    // Restore fenced code blocks
+    html = html.replace(/\u0000CB(\d+)\u0000/g, function(_, n) {
+      var blk = codeBlocks[+n];
+      var langCls = blk.lang ? ' data-lang="' + escapeHtml(blk.lang) + '"' : '';
+      return '<pre class="xrai-md-pre"' + langCls + '><code>' + escapeHtml(blk.body) + '</code></pre>';
+    });
+
+    return html;
+
+    // Inline rules: bold (** / __), italic (* / _), links, autolink, strike.
+    // Applied to pre-escaped text.
+    function inline(s) {
+      // Links: [text](url) — sanitize the URL to avoid javascript: scheme.
+      s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function(_, t, u) {
+        if (!/^(https?:|mailto:|\/|\.?\.\/)/i.test(u)) u = '#';
+        return '<a class="xrai-md-a" href="' + u + '" target="_blank" rel="noopener noreferrer">' + t + '</a>';
+      });
+      // Bold: **x** or __x__
+      s = s.replace(/(\*\*|__)([^\s*_][\s\S]*?[^\s*_]|[^\s*_])\1/g, '<strong>$2</strong>');
+      // Italic: *x* or _x_ (kept simple; avoids eating list markers because
+      // list lines were already consumed above)
+      s = s.replace(/(^|[^\w*])\*([^\s*][^\n*]*?)\*(?!\w)/g, '$1<em>$2</em>');
+      s = s.replace(/(^|[^\w_])_([^\s_][^\n_]*?)_(?!\w)/g, '$1<em>$2</em>');
+      // Strikethrough
+      s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+      return s;
+    }
   }
 
   function logAction(label) {
