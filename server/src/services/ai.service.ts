@@ -419,27 +419,27 @@ export async function streamReply(
     const settings = await getCurrentSettings();
     if (!settings.enabled) {
       sseWrite(res, { type: 'error', code: 'AI_DISABLED', message: 'AI is currently disabled by the platform admin.' });
-      return res.end();
+      res.end(); return;
     }
 
     const usage = await getTodayUsage(tenantId, userId);
     if (usage.remaining <= 0) {
       sseWrite(res, { type: 'limit', cap: usage.cap, count: usage.count, remaining: 0 });
-      return res.end();
+      res.end(); return;
     }
 
     // 3. Load API key
     const apiKey = await getSetting('ai.anthropic_api_key');
     if (!apiKey) {
       sseWrite(res, { type: 'error', code: 'NO_API_KEY', message: 'AI API key is not configured.' });
-      return res.end();
+      res.end(); return;
     }
 
     // 4. Save user message
     const cleanUser = (userContent || '').trim().slice(0, 20_000);
     if (!cleanUser) {
       sseWrite(res, { type: 'error', code: 'EMPTY_MESSAGE', message: 'Message is empty.' });
-      return res.end();
+      res.end(); return;
     }
 
     const userMsgId = await withTenantContext(tenantId, false, async (client) => {
@@ -541,7 +541,7 @@ export async function streamReply(
           message: `Anthropic returned ${resp.status}`,
           detail: errBody.slice(0, 500),
         });
-        return res.end();
+        res.end(); return;
       }
 
       // Parse Anthropic SSE stream and re-emit delta events
@@ -593,10 +593,10 @@ export async function streamReply(
     } catch (err: any) {
       if (err?.name === 'AbortError') return; // client disconnected
       sseWrite(res, { type: 'error', code: 'STREAM_ERROR', message: err?.message || 'Stream failed' });
-      return res.end();
+      res.end(); return;
     }
 
-    if (streamEnded) return res.end();
+    if (streamEnded) { res.end(); return; }
 
     // 8. Extract xray-actions JSON block (if any) from fullText for server-side annotation record
     const actions = extractXrayActions(fullText);
@@ -637,7 +637,7 @@ export async function streamReply(
       outputTokens,
       actions,
     });
-    return res.end();
+    res.end(); return;
   } catch (err: any) {
     try {
       sseWrite(res, {
@@ -646,7 +646,7 @@ export async function streamReply(
         message: err?.message || 'Internal error',
       });
     } catch {}
-    return res.end();
+    res.end(); return;
   }
 }
 
@@ -918,7 +918,14 @@ export async function listAvailableModels(): Promise<
     const body = (await resp.json()) as { data?: Array<{ id: string; display_name?: string; type?: string; created_at?: string }> };
     const live = (body.data || []).filter((m) => m && m.id && m.id.startsWith('claude'));
 
-    const merged = live.map((m) => {
+    type ModelRow = {
+      model_id: string; display_name: string; tier: string;
+      input_per_million: number; output_per_million: number;
+      cache_read_per_million: number; cache_write_per_million: number;
+      context_window: number | null; description: string | null;
+      source: 'anthropic' | 'db';
+    };
+    const merged: ModelRow[] = live.map((m): ModelRow => {
       // Find best pricing match: exact, then prefix (drops date suffix)
       const exact = dbMap.get(m.id);
       const prefixMatch =
