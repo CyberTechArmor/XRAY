@@ -574,9 +574,15 @@
       'loadConversations(false);' +
     '}';
 
-  window.__xrayExtensions.push({
-    viewName: 'admin_ai',
-    view: { html: viewHtml, css: viewCss, js: viewJs },
-    nav: { section: 'platform', view: 'admin_ai', label: 'AI', icon: 'grid', permission: 'platform.admin' }
-  });
+  window.__xrayExtensions = window.__xrayExtensions || [];
+  // Guard: the same extension may already be registered by app.js's inline
+  // copy. If so, skip the duplicate push.
+  var alreadyRegistered = window.__xrayExtensions.some(function(e) { return e && e.viewName === 'admin_ai'; });
+  if (!alreadyRegistered) {
+    window.__xrayExtensions.push({
+      viewName: 'admin_ai',
+      view: { html: viewHtml, css: viewCss, js: viewJs },
+      nav: { section: 'platform', view: 'admin_ai', label: 'AI', icon: 'grid', permission: 'platform.admin' }
+    });
+  }
 })();
