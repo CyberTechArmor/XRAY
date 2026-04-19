@@ -1,4 +1,4 @@
-var CACHE_NAME = 'xray-v20';
+var CACHE_NAME = 'xray-v21';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -11,7 +11,6 @@ var SHELL_ASSETS = [
   '/icon-192.png',
   '/icon-512.png',
   '/badge-96.png',
-  '/ai/admin.js',
   '/ai/sdk.js',
   '/ai/sdk.css'
 ];
