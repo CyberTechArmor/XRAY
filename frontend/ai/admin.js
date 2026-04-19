@@ -74,6 +74,27 @@
       '</div>' +
 
       '<div class="card">' +
+        '<div class="card-title">Usage & cost</div>' +
+        '<div class="card-desc">Tokens, computed cost, and feedback ratings. Use the range selector to change the window and the grouping tabs to break down.</div>' +
+        '<div class="ai-usage-controls">' +
+          '<div class="ai-usage-range">' +
+            '<button class="ai-usage-chip" data-range="7">7d</button>' +
+            '<button class="ai-usage-chip active" data-range="30">30d</button>' +
+            '<button class="ai-usage-chip" data-range="90">90d</button>' +
+            '<button class="ai-usage-chip" data-range="365">1y</button>' +
+          '</div>' +
+          '<div class="ai-usage-tabs">' +
+            '<button class="ai-usage-tab active" data-group="day">By day</button>' +
+            '<button class="ai-usage-tab" data-group="tenant">By tenant</button>' +
+            '<button class="ai-usage-tab" data-group="user">By user</button>' +
+            '<button class="ai-usage-tab" data-group="model">By model</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="ai-usage-totals" id="ai-usage-totals"><div class="ai-loading">Loading…</div></div>' +
+        '<div class="ai-usage-table-wrap"><table class="ai-usage-table" id="ai-usage-table"><thead></thead><tbody></tbody></table></div>' +
+      '</div>' +
+
+      '<div class="card">' +
         '<div class="card-title">Version history</div>' +
         '<div class="card-desc">Every save creates a row. The most recent one is the active config.</div>' +
         '<div id="ai-versions" class="ai-versions"><div class="ai-loading">Loading…</div></div>' +
@@ -119,7 +140,33 @@
     '.admin-ai-view .ai-price-chip.tier{border-color:var(--acc);color:var(--acc);background:var(--acc-dim,rgba(62,232,181,0.08))}' +
     '.admin-ai-view .ai-price-chip b{color:var(--t1);font-weight:500}' +
     '.admin-ai-view .ai-price-desc{font-size:12px;color:var(--t2);margin-top:6px;font-style:italic;line-height:1.4}' +
-    '.admin-ai-view .ai-model-help{font-size:11px;color:var(--t3);margin-top:4px;line-height:1.4}';
+    '.admin-ai-view .ai-model-help{font-size:11px;color:var(--t3);margin-top:4px;line-height:1.4}' +
+    /* ── Usage card ── */
+    '.admin-ai-view .ai-usage-controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap}' +
+    '.admin-ai-view .ai-usage-range,.admin-ai-view .ai-usage-tabs{display:inline-flex;background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;padding:2px}' +
+    '.admin-ai-view .ai-usage-chip,.admin-ai-view .ai-usage-tab{padding:5px 10px;font-size:12px;background:transparent;border:none;color:var(--t2);border-radius:4px;cursor:pointer}' +
+    '.admin-ai-view .ai-usage-chip:hover,.admin-ai-view .ai-usage-tab:hover{color:var(--t1)}' +
+    '.admin-ai-view .ai-usage-chip.active,.admin-ai-view .ai-usage-tab.active{background:var(--acc);color:var(--acc-dk)}' +
+    '.admin-ai-view .ai-usage-totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px}' +
+    '.admin-ai-view .ai-stat{padding:12px;background:var(--bg3);border:1px solid var(--bdr);border-radius:8px}' +
+    '.admin-ai-view .ai-stat-label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--t3);font-weight:600;margin-bottom:4px}' +
+    '.admin-ai-view .ai-stat-value{font-size:18px;color:var(--t1);font-weight:600;font-family:var(--mono,monospace)}' +
+    '.admin-ai-view .ai-stat-sub{font-size:11px;color:var(--t2);margin-top:2px}' +
+    '.admin-ai-view .ai-stat-value.up{color:var(--acc)}' +
+    '.admin-ai-view .ai-stat-value.down{color:var(--danger)}' +
+    '.admin-ai-view .ai-stat-value.accent{color:var(--acc)}' +
+    '.admin-ai-view .ai-usage-table-wrap{max-height:380px;overflow:auto;border:1px solid var(--bdr);border-radius:6px}' +
+    '.admin-ai-view .ai-usage-table{width:100%;border-collapse:collapse;font-size:12px}' +
+    '.admin-ai-view .ai-usage-table th{background:var(--bg3);color:var(--t2);font-weight:500;text-align:left;padding:8px 10px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;position:sticky;top:0;border-bottom:1px solid var(--bdr)}' +
+    '.admin-ai-view .ai-usage-table td{padding:7px 10px;border-bottom:1px solid var(--bdr);color:var(--t1);font-family:var(--mono,monospace);font-size:12px}' +
+    '.admin-ai-view .ai-usage-table td.num{text-align:right}' +
+    '.admin-ai-view .ai-usage-table td.label{font-family:var(--font);color:var(--t1)}' +
+    '.admin-ai-view .ai-usage-table td.label .sub{color:var(--t3);font-size:11px;margin-left:4px}' +
+    '.admin-ai-view .ai-usage-table tr:hover td{background:var(--bg3)}' +
+    '.admin-ai-view .ai-usage-table td.cost{color:var(--acc)}' +
+    '.admin-ai-view .ai-usage-table td.up-count{color:var(--acc)}' +
+    '.admin-ai-view .ai-usage-table td.down-count{color:var(--danger)}' +
+    '.admin-ai-view .ai-usage-empty{padding:24px;text-align:center;color:var(--t3);font-size:12px}';
 
   var viewJs =
     'function initAdminAI(container, api, user) {' +
@@ -241,6 +288,70 @@
         '});' +
       '}' +
 
+      // ── Usage card ────────────────────────────────────────────────────
+      'var usageState = { groupBy: "day", rangeDays: 30 };' +
+      'function fmtMoney(n) { n = Number(n || 0); if (n === 0) return "$0.00"; if (n < 0.01) return "$" + n.toFixed(4); if (n < 10) return "$" + n.toFixed(3); return "$" + n.toFixed(2); }' +
+      'function fmtTokens(n) { n = Number(n || 0); if (n < 1000) return String(n); if (n < 1e6) return (n / 1000).toFixed(1) + "K"; return (n / 1e6).toFixed(2) + "M"; }' +
+      'function fmtDate(s) { try { return new Date(s).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); } catch(e) { return s; } }' +
+
+      'function renderTotals(t) {' +
+        'var el = $("#ai-usage-totals"); if (!el) return;' +
+        'if (!t || !t.message_count) {' +
+          'el.innerHTML = "<div class=\\"ai-usage-empty\\" style=\\"grid-column:1/-1\\">No messages in this range.</div>"; return;' +
+        '}' +
+        'el.innerHTML = ' +
+          '"<div class=\\"ai-stat\\"><div class=\\"ai-stat-label\\">Messages</div><div class=\\"ai-stat-value\\">" + t.message_count + "</div></div>" +' +
+          '"<div class=\\"ai-stat\\"><div class=\\"ai-stat-label\\">Total cost</div><div class=\\"ai-stat-value accent\\">" + fmtMoney(t.cost_total_usd) + "</div><div class=\\"ai-stat-sub\\">in " + fmtMoney(t.cost_input_usd) + " · out " + fmtMoney(t.cost_output_usd) + "</div></div>" +' +
+          '"<div class=\\"ai-stat\\"><div class=\\"ai-stat-label\\">Input tokens</div><div class=\\"ai-stat-value\\">" + fmtTokens(t.input_tokens) + "</div></div>" +' +
+          '"<div class=\\"ai-stat\\"><div class=\\"ai-stat-label\\">Output tokens</div><div class=\\"ai-stat-value\\">" + fmtTokens(t.output_tokens) + "</div></div>" +' +
+          '"<div class=\\"ai-stat\\"><div class=\\"ai-stat-label\\">Cache read / write</div><div class=\\"ai-stat-value\\">" + fmtTokens(t.cache_read_tokens) + " / " + fmtTokens(t.cache_write_tokens) + "</div></div>" +' +
+          '"<div class=\\"ai-stat\\"><div class=\\"ai-stat-label\\">Ratings</div><div class=\\"ai-stat-value\\"><span class=\\"up\\">" + (t.thumbs_up || 0) + "👍</span> <span class=\\"down\\" style=\\"margin-left:8px\\">" + (t.thumbs_down || 0) + "👎</span></div></div>";' +
+      '}' +
+
+      'function renderRows(rows, groupBy) {' +
+        'var table = $("#ai-usage-table"); if (!table) return;' +
+        'var thead = table.querySelector("thead"); var tbody = table.querySelector("tbody");' +
+        'if (!rows || rows.length === 0) {' +
+          'thead.innerHTML = ""; tbody.innerHTML = "<tr><td class=\\"ai-usage-empty\\" colspan=\\"7\\">No data.</td></tr>"; return;' +
+        '}' +
+        'var cols;' +
+        'if (groupBy === "day") cols = ["Day", "Model", "Msgs", "In tok", "Out tok", "Cost", "👍 / 👎"];' +
+        'else if (groupBy === "tenant") cols = ["Tenant", "Msgs", "In tok", "Out tok", "Cost", "👍 / 👎"];' +
+        'else if (groupBy === "user") cols = ["User", "Msgs", "In tok", "Out tok", "Cost", "👍 / 👎"];' +
+        'else cols = ["Model", "Msgs", "In tok", "Out tok", "Cost", "👍 / 👎"];' +
+        'thead.innerHTML = "<tr>" + cols.map(function(c, i) { return "<th class=\\"" + (i >= (groupBy==="day"?2:1) ? "num" : "") + "\\">" + escapeHtml(c) + "</th>"; }).join("") + "</tr>";' +
+        'tbody.innerHTML = rows.map(function(r) {' +
+          'var leftCells = "";' +
+          'if (groupBy === "day") {' +
+            'leftCells = "<td class=\\"label\\">" + (r.period_start ? escapeHtml(fmtDate(r.period_start)) : "—") + "</td>" +' +
+              '"<td class=\\"label\\"><code style=\\"font-size:11px;color:var(--t2)\\">" + escapeHtml(r.model_id || "—") + "</code></td>";' +
+          '} else if (groupBy === "tenant") {' +
+            'leftCells = "<td class=\\"label\\">" + escapeHtml(r.tenant_name || "—") + "</td>";' +
+          '} else if (groupBy === "user") {' +
+            'leftCells = "<td class=\\"label\\">" + escapeHtml(r.user_name || r.user_email || "—") + "<span class=\\"sub\\">" + escapeHtml(r.user_email || "") + "</span></td>";' +
+          '} else {' +
+            'leftCells = "<td class=\\"label\\"><code style=\\"font-size:11px;color:var(--t2)\\">" + escapeHtml(r.model_id || "—") + "</code></td>";' +
+          '}' +
+          'return "<tr>" + leftCells +' +
+            '"<td class=\\"num\\">" + r.message_count + "</td>" +' +
+            '"<td class=\\"num\\">" + fmtTokens(r.input_tokens) + "</td>" +' +
+            '"<td class=\\"num\\">" + fmtTokens(r.output_tokens) + "</td>" +' +
+            '"<td class=\\"num cost\\">" + fmtMoney(r.cost_total_usd) + "</td>" +' +
+            '"<td class=\\"num\\"><span class=\\"up-count\\">" + (r.thumbs_up || 0) + "</span> / <span class=\\"down-count\\">" + (r.thumbs_down || 0) + "</span></td>" +' +
+          '"</tr>";' +
+        '}).join("");' +
+      '}' +
+
+      'function loadUsage() {' +
+        'var from = new Date(Date.now() - usageState.rangeDays * 86400 * 1000).toISOString();' +
+        'var url = "/api/admin/ai/usage?groupBy=" + usageState.groupBy + "&from=" + encodeURIComponent(from);' +
+        'return api.get(url).then(function(r) {' +
+          'if (!r.ok) { renderTotals(null); renderRows([], usageState.groupBy); return; }' +
+          'renderTotals(r.data.totals);' +
+          'renderRows(r.data.rows, usageState.groupBy);' +
+        '});' +
+      '}' +
+
       'function loadDashboards() {' +
         'api.get("/api/admin/ai/dashboards").then(function(r) {' +
           'var el = $("#ai-dash-list"); if (!el) return;' +
@@ -319,10 +430,29 @@
       '});' +
       '$("#ai-model").addEventListener("input", function() { renderPricing(this.value); });' +
 
+      // Usage card: range + grouping toggles
+      'container.querySelectorAll(".ai-usage-chip").forEach(function(b){' +
+        'b.onclick = function() {' +
+          'container.querySelectorAll(".ai-usage-chip").forEach(function(x){x.classList.remove("active");});' +
+          'this.classList.add("active");' +
+          'usageState.rangeDays = parseInt(this.getAttribute("data-range"), 10) || 30;' +
+          'loadUsage();' +
+        '};' +
+      '});' +
+      'container.querySelectorAll(".ai-usage-tab").forEach(function(b){' +
+        'b.onclick = function() {' +
+          'container.querySelectorAll(".ai-usage-tab").forEach(function(x){x.classList.remove("active");});' +
+          'this.classList.add("active");' +
+          'usageState.groupBy = this.getAttribute("data-group") || "day";' +
+          'loadUsage();' +
+        '};' +
+      '});' +
+
       // Initial load: models first (picker needs to be populated), then settings fill it in
       'loadModels().then(loadSettings);' +
       'loadDashboards();' +
       'loadVersions();' +
+      'loadUsage();' +
     '}';
 
   window.__xrayExtensions.push({
