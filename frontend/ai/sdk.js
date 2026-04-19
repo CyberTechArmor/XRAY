@@ -286,7 +286,10 @@
     var sub = rail.querySelector('#xrai-sub');
     var ctxEl = rail.querySelector('#xrai-now-ctx');
     var quick = rail.querySelector('#xrai-now-quick');
+    var scraped = null;
+    try { scraped = scrapeDomContext(); } catch (e) { scraped = null; }
     if (registered && registered.title) sub.textContent = registered.title;
+    else if (scraped && scraped.title) sub.textContent = scraped.title;
     if (registered && typeof registered.getContext === 'function') {
       try {
         var c = registered.getContext() || {};
@@ -297,8 +300,18 @@
       } catch (e) {
         ctxEl.textContent = 'Dashboard context unavailable.';
       }
+    } else if (scraped) {
+      var sbits = [];
+      if (scraped.kpis && scraped.kpis.length) sbits.push(scraped.kpis.length + ' metrics');
+      if (scraped.tables && scraped.tables.length) {
+        var rc = scraped.tables.reduce(function(a, t) { return a + (t.rowCount || 0); }, 0);
+        if (rc) sbits.push(rc + ' rows');
+        else sbits.push(scraped.tables.length + ' table' + (scraped.tables.length === 1 ? '' : 's'));
+      }
+      if (scraped.filters && scraped.filters.length) sbits.push(scraped.filters.length + ' filters');
+      ctxEl.textContent = sbits.length ? ('Scanning ' + sbits.join(' · ')) : 'Reading the dashboard…';
     } else {
-      ctxEl.textContent = 'Dashboard has not registered with XRayAI yet.';
+      ctxEl.textContent = 'Dashboard context unavailable.';
     }
     // Quick prompts — dashboard-provided, or sensible defaults so the user
     // always has a one-click starting point (even if the dashboard hasn't
@@ -578,18 +591,173 @@
   }
 
   function safeGetContext() {
-    if (!registered) return { dashboardId: dashboardId };
     var out = {
       dashboardId: dashboardId,
-      title: registered.title || '',
-      schema: registered.schema || null,
-      elements: registered.elements || null,
-      suggestedPrompts: registered.suggestedPrompts || null
+      title: (registered && registered.title) || '',
+      schema: (registered && registered.schema) || null,
+      elements: (registered && registered.elements) || null,
+      suggestedPrompts: (registered && registered.suggestedPrompts) || null
     };
-    if (typeof registered.getContext === 'function') {
+    if (registered && typeof registered.getContext === 'function') {
       try { out.context = registered.getContext(); } catch (e) { out.context = null; }
     }
+    // Always scrape the DOM. If the dashboard registered, the scrape augments
+    // getContext(); if it didn't, the scrape is the only context the AI has.
+    try {
+      var scraped = scrapeDomContext();
+      if (scraped) {
+        if (!out.title && scraped.title) out.title = scraped.title;
+        out.context = Object.assign({}, scraped, out.context || {});
+      }
+    } catch (e) { /* scraping is best-effort */ }
     return out;
+  }
+
+  // Best-effort DOM scrape so the AI has real context even when the dashboard
+  // author never called XRayAI.register(). Pulls title, active filters, KPI
+  // cards, and the first rows of any visible table, plus a short text digest.
+  function scrapeDomContext() {
+    var MAX_KPIS = 24;
+    var MAX_TABLES = 4;
+    var MAX_ROWS = 20;
+    var MAX_TEXT = 1200;
+
+    function visible(el) {
+      if (!el || !el.getBoundingClientRect) return false;
+      var r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return false;
+      var s = window.getComputedStyle(el);
+      return s.visibility !== 'hidden' && s.display !== 'none';
+    }
+    function text(el) {
+      return ((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+    }
+    function skip(el) {
+      // Don't scrape the AI rail itself.
+      return el && el.closest && (el.closest('.xrai-rail') || el.closest('.xrai-overlay'));
+    }
+
+    var root = document.querySelector('main') || document.body;
+    if (!root) return null;
+
+    // Title: prefer a visible top-level heading, fall back to document.title.
+    var title = '';
+    var headings = root.querySelectorAll('h1, h2');
+    for (var i = 0; i < headings.length; i++) {
+      if (skip(headings[i])) continue;
+      if (visible(headings[i])) { title = text(headings[i]); break; }
+    }
+    if (!title) title = (document.title || '').trim();
+
+    // Filters: selects + visible labelled inputs.
+    var filters = [];
+    var selects = root.querySelectorAll('select');
+    for (var si = 0; si < selects.length && filters.length < 20; si++) {
+      var s = selects[si];
+      if (skip(s) || !visible(s)) continue;
+      var lbl = '';
+      if (s.id) {
+        var lab = document.querySelector('label[for="' + s.id + '"]');
+        if (lab) lbl = text(lab);
+      }
+      if (!lbl && s.getAttribute('aria-label')) lbl = s.getAttribute('aria-label');
+      if (!lbl && s.name) lbl = s.name;
+      var opt = s.options && s.options[s.selectedIndex];
+      filters.push({ label: lbl || 'filter', value: (opt && text(opt)) || s.value || '' });
+    }
+    var inputs = root.querySelectorAll('input[type="text"], input[type="search"], input[type="number"], input:not([type])');
+    for (var ii = 0; ii < inputs.length && filters.length < 30; ii++) {
+      var inEl = inputs[ii];
+      if (skip(inEl) || !visible(inEl) || !inEl.value) continue;
+      var ilab = '';
+      if (inEl.id) {
+        var ll = document.querySelector('label[for="' + inEl.id + '"]');
+        if (ll) ilab = text(ll);
+      }
+      if (!ilab && inEl.getAttribute('aria-label')) ilab = inEl.getAttribute('aria-label');
+      if (!ilab && inEl.placeholder) ilab = inEl.placeholder;
+      filters.push({ label: ilab || inEl.name || 'input', value: inEl.value });
+    }
+
+    // KPI cards: look for the common "label above a big number" pattern. We
+    // pick any element whose text starts with a number/currency and whose
+    // siblings include a short UPPERCASE label.
+    var kpis = [];
+    var bigNumRe = /^[\$€£¥]?\s*[-+]?[\d][\d,.]*\s*[%kKmMbB/hr\s]*$/;
+    var candidates = root.querySelectorAll('div, span, p, strong, b');
+    for (var k = 0; k < candidates.length && kpis.length < MAX_KPIS; k++) {
+      var el = candidates[k];
+      if (skip(el) || !visible(el)) continue;
+      // Only leaf-ish elements (no big children with their own text)
+      if (el.children.length > 2) continue;
+      var t = text(el);
+      if (!t || t.length > 24) continue;
+      if (!bigNumRe.test(t)) continue;
+      // Find a nearby label: previous sibling, aunt/uncle, or parent's first child.
+      var label = '';
+      var sib = el.previousElementSibling;
+      if (sib && !skip(sib)) label = text(sib);
+      if (!label && el.parentElement) {
+        var pc = el.parentElement.children;
+        for (var pi = 0; pi < pc.length; pi++) {
+          if (pc[pi] === el) continue;
+          var pt = text(pc[pi]);
+          if (pt && pt.length < 40 && pt !== t) { label = pt; break; }
+        }
+      }
+      if (!label) continue;
+      // De-dupe by label+value
+      var key = label + '=' + t;
+      if (kpis.some(function(x) { return x._k === key; })) continue;
+      kpis.push({ _k: key, label: label, value: t });
+    }
+    kpis.forEach(function(x) { delete x._k; });
+
+    // Tables: headers + first N rows.
+    var tables = [];
+    var tabEls = root.querySelectorAll('table');
+    for (var ti = 0; ti < tabEls.length && tables.length < MAX_TABLES; ti++) {
+      var tb = tabEls[ti];
+      if (skip(tb) || !visible(tb)) continue;
+      var headCells = tb.querySelectorAll('thead th, thead td');
+      var headers = [];
+      for (var hi = 0; hi < headCells.length; hi++) headers.push(text(headCells[hi]));
+      if (!headers.length) {
+        var firstRow = tb.querySelector('tr');
+        if (firstRow) {
+          var fc = firstRow.children;
+          for (var fi = 0; fi < fc.length; fi++) headers.push(text(fc[fi]));
+        }
+      }
+      var bodyRows = tb.querySelectorAll('tbody tr');
+      if (!bodyRows.length) bodyRows = tb.querySelectorAll('tr');
+      var rows = [];
+      for (var ri = 0; ri < bodyRows.length && rows.length < MAX_ROWS; ri++) {
+        var cells = bodyRows[ri].children;
+        if (!cells || !cells.length) continue;
+        var row = [];
+        for (var ci = 0; ci < cells.length; ci++) row.push(text(cells[ci]));
+        // Skip header-only rows we already captured
+        if (rows.length === 0 && headers.length && row.join('|') === headers.join('|')) continue;
+        if (row.some(function(v) { return v; })) rows.push(row);
+      }
+      var total = bodyRows.length;
+      tables.push({ headers: headers, rows: rows, rowCount: total });
+    }
+
+    // Short free-text digest (helps the AI see chart labels, captions, etc.)
+    var digest = text(root);
+    if (digest.length > MAX_TEXT) digest = digest.slice(0, MAX_TEXT) + '…';
+
+    return {
+      source: 'dom-scrape',
+      title: title,
+      url: location.pathname + location.search,
+      filters: filters,
+      kpis: kpis,
+      tables: tables,
+      textDigest: digest
+    };
   }
 
   // SSE POST: we need to POST a body and read an event stream back. Browsers'
