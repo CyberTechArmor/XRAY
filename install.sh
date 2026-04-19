@@ -284,6 +284,13 @@ done
 if [ -d "$SCRIPT_DIR/frontend/bundles" ]; then
   cp "$SCRIPT_DIR/frontend/bundles/"* /var/www/xray/bundles/
 fi
+# Copy extension directories (AI SDK, admin view, etc.)
+for d in ai; do
+  if [ -d "$SCRIPT_DIR/frontend/$d" ]; then
+    mkdir -p "/var/www/xray/$d"
+    cp -r "$SCRIPT_DIR/frontend/$d/"* "/var/www/xray/$d/"
+  fi
+done
 chown -R www-data:www-data /var/www/xray
 
 nginx -t && systemctl reload nginx
