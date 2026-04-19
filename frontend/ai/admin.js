@@ -95,6 +95,22 @@
       '</div>' +
 
       '<div class="card">' +
+        '<div class="card-title">Conversations</div>' +
+        '<div class="card-desc">All Q&amp;A pairs across tenants for analysis. Filter by rating, search content, or click a row to expand the full question + answer + rating note.</div>' +
+        '<div class="ai-convo-controls">' +
+          '<div class="ai-convo-ratings">' +
+            '<button class="ai-convo-chip active" data-convo-rating="">All</button>' +
+            '<button class="ai-convo-chip" data-convo-rating="1">👍 Helpful</button>' +
+            '<button class="ai-convo-chip" data-convo-rating="-1">👎 Not helpful</button>' +
+            '<button class="ai-convo-chip" data-convo-rating="0">Unrated</button>' +
+          '</div>' +
+          '<input type="search" id="ai-convo-search" placeholder="Search question or answer…">' +
+        '</div>' +
+        '<div id="ai-convo-list" class="ai-convo-list"><div class="ai-loading">Loading…</div></div>' +
+        '<div class="ai-convo-foot"><span id="ai-convo-count" class="ai-convo-count"></span><button class="btn" id="ai-convo-more" style="display:none">Load more</button></div>' +
+      '</div>' +
+
+      '<div class="card">' +
         '<div class="card-title">Version history</div>' +
         '<div class="card-desc">Every save creates a row. The most recent one is the active config.</div>' +
         '<div id="ai-versions" class="ai-versions"><div class="ai-loading">Loading…</div></div>' +
@@ -166,7 +182,39 @@
     '.admin-ai-view .ai-usage-table td.cost{color:var(--acc)}' +
     '.admin-ai-view .ai-usage-table td.up-count{color:var(--acc)}' +
     '.admin-ai-view .ai-usage-table td.down-count{color:var(--danger)}' +
-    '.admin-ai-view .ai-usage-empty{padding:24px;text-align:center;color:var(--t3);font-size:12px}';
+    '.admin-ai-view .ai-usage-empty{padding:24px;text-align:center;color:var(--t3);font-size:12px}' +
+    /* ── Conversations card ── */
+    '.admin-ai-view .ai-convo-controls{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}' +
+    '.admin-ai-view .ai-convo-ratings{display:inline-flex;background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;padding:2px}' +
+    '.admin-ai-view .ai-convo-chip{padding:5px 10px;font-size:12px;background:transparent;border:none;color:var(--t2);border-radius:4px;cursor:pointer}' +
+    '.admin-ai-view .ai-convo-chip:hover{color:var(--t1)}' +
+    '.admin-ai-view .ai-convo-chip.active{background:var(--acc);color:var(--acc-dk)}' +
+    '.admin-ai-view #ai-convo-search{min-width:240px;flex:1;max-width:360px;padding:7px 10px;font-size:13px;background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;color:var(--t1);outline:none}' +
+    '.admin-ai-view #ai-convo-search:focus{border-color:var(--acc)}' +
+    '.admin-ai-view .ai-convo-list{display:flex;flex-direction:column;gap:4px;max-height:520px;overflow-y:auto}' +
+    '.admin-ai-view .ai-convo-row{background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;padding:10px 12px;cursor:pointer;transition:border-color .12s}' +
+    '.admin-ai-view .ai-convo-row:hover{border-color:var(--bdr2)}' +
+    '.admin-ai-view .ai-convo-row.expanded{border-color:var(--acc)}' +
+    '.admin-ai-view .ai-convo-meta{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--t3);margin-bottom:4px;gap:8px;flex-wrap:wrap}' +
+    '.admin-ai-view .ai-convo-meta .who{color:var(--t1);font-weight:500;font-size:12px}' +
+    '.admin-ai-view .ai-convo-meta .who .sub{color:var(--t3);font-weight:400;margin-left:6px;font-size:11px}' +
+    '.admin-ai-view .ai-convo-meta .rating{font-size:12px}' +
+    '.admin-ai-view .ai-convo-meta .rating.up{color:var(--acc)}' +
+    '.admin-ai-view .ai-convo-meta .rating.down{color:var(--danger)}' +
+    '.admin-ai-view .ai-convo-meta .model{font-family:var(--mono,monospace);font-size:10px;color:var(--t3)}' +
+    '.admin-ai-view .ai-convo-meta .cost{color:var(--acc);font-family:var(--mono,monospace);font-size:11px}' +
+    '.admin-ai-view .ai-convo-q{color:var(--t1);font-size:13px;line-height:1.45}' +
+    '.admin-ai-view .ai-convo-row:not(.expanded) .ai-convo-q{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+    '.admin-ai-view .ai-convo-a{color:var(--t2);font-size:12px;line-height:1.45;margin-top:4px}' +
+    '.admin-ai-view .ai-convo-row:not(.expanded) .ai-convo-a{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+    '.admin-ai-view .ai-convo-full{margin-top:10px;padding-top:10px;border-top:1px solid var(--bdr);display:none}' +
+    '.admin-ai-view .ai-convo-row.expanded .ai-convo-full{display:block}' +
+    '.admin-ai-view .ai-convo-full-q,.admin-ai-view .ai-convo-full-a{white-space:pre-wrap;font-size:13px;line-height:1.55;background:var(--bg2);border:1px solid var(--bdr);border-radius:6px;padding:10px;margin-top:6px}' +
+    '.admin-ai-view .ai-convo-full-q{color:var(--t1);border-left:3px solid var(--blue,#5a9ee8)}' +
+    '.admin-ai-view .ai-convo-full-a{color:var(--t1);border-left:3px solid var(--acc)}' +
+    '.admin-ai-view .ai-convo-rating-note{margin-top:8px;font-size:12px;font-style:italic;color:var(--t2);padding:8px;background:var(--bg2);border-radius:6px}' +
+    '.admin-ai-view .ai-convo-foot{display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:10px}' +
+    '.admin-ai-view .ai-convo-count{font-size:12px;color:var(--t3)}';
 
   var viewJs =
     'function initAdminAI(container, api, user) {' +
@@ -430,6 +478,60 @@
       '});' +
       '$("#ai-model").addEventListener("input", function() { renderPricing(this.value); });' +
 
+      // ── Conversations browser ────────────────────────────────────────
+      'var convoState = { rating: "", search: "", limit: 25, offset: 0, total: 0, rows: [] };' +
+      'var convoSearchTimer = null;' +
+
+      'function renderConvoList() {' +
+        'var el = $("#ai-convo-list"); if (!el) return;' +
+        'if (convoState.rows.length === 0) { el.innerHTML = "<div class=\\"ai-usage-empty\\">No conversations match.</div>"; $("#ai-convo-count").textContent = "0 results"; $("#ai-convo-more").style.display = "none"; return; }' +
+        'el.innerHTML = convoState.rows.map(function(r, i) {' +
+          'var ratingHtml = "";' +
+          'if (r.rating === 1) ratingHtml = "<span class=\\"rating up\\">👍</span>";' +
+          'else if (r.rating === -1) ratingHtml = "<span class=\\"rating down\\">👎</span>";' +
+          'else ratingHtml = "<span class=\\"rating\\" style=\\"color:var(--t3)\\">—</span>";' +
+          'var when = new Date(r.created_at).toLocaleString();' +
+          'return "<div class=\\"ai-convo-row\\" data-idx=\\"" + i + "\\">" +' +
+            '"<div class=\\"ai-convo-meta\\">" +' +
+              '"<span class=\\"who\\">" + escapeHtml(r.user_name || r.user_email || "?") + "<span class=\\"sub\\">" + escapeHtml(r.tenant_name || "") + " · " + escapeHtml(r.dashboard_name || "") + "</span></span>" +' +
+              '"<span>" + ratingHtml + " <span class=\\"cost\\">" + fmtMoney(r.cost_total_usd) + "</span> <span class=\\"model\\">" + escapeHtml(r.model_id || "?") + "</span> <span>" + escapeHtml(when) + "</span></span>" +' +
+            '"</div>" +' +
+            '"<div class=\\"ai-convo-q\\"><b>Q:</b> " + escapeHtml(r.question || "(no question)") + "</div>" +' +
+            '"<div class=\\"ai-convo-a\\"><b>A:</b> " + escapeHtml(stripActions(r.answer || "")) + "</div>" +' +
+            '"<div class=\\"ai-convo-full\\">" +' +
+              '"<div style=\\"font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;font-weight:600\\">Question</div>" +' +
+              '"<div class=\\"ai-convo-full-q\\">" + escapeHtml(r.question || "") + "</div>" +' +
+              '"<div style=\\"font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-top:10px\\">Answer</div>" +' +
+              '"<div class=\\"ai-convo-full-a\\">" + escapeHtml(stripActions(r.answer || "")) + "</div>" +' +
+              '(r.rating_note ? "<div class=\\"ai-convo-rating-note\\"><b>Rating note:</b> " + escapeHtml(r.rating_note) + "</div>" : "") +' +
+              '"<div style=\\"font-size:11px;color:var(--t3);margin-top:8px\\">Msg ID <code>" + escapeHtml(r.assistant_message_id) + "</code> · " + r.input_tokens + " in / " + r.output_tokens + " out tok</div>" +' +
+            '"</div>" +' +
+          '"</div>";' +
+        '}).join("");' +
+        'el.querySelectorAll(".ai-convo-row").forEach(function(row) {' +
+          'row.onclick = function() { row.classList.toggle("expanded"); };' +
+        '});' +
+        '$("#ai-convo-count").textContent = "Showing " + convoState.rows.length + " of " + convoState.total;' +
+        '$("#ai-convo-more").style.display = convoState.rows.length < convoState.total ? "" : "none";' +
+      '}' +
+
+      'function stripActions(s) { return (s || "").replace(/```xray-actions[\\s\\S]*?```/g, "").trim(); }' +
+
+      'function loadConversations(append) {' +
+        'if (!append) { convoState.offset = 0; convoState.rows = []; $("#ai-convo-list").innerHTML = "<div class=\\"ai-loading\\">Loading…</div>"; }' +
+        'var params = ["limit=" + convoState.limit, "offset=" + convoState.offset];' +
+        'if (convoState.rating !== "") params.push("rating=" + encodeURIComponent(convoState.rating));' +
+        'if (convoState.search) params.push("search=" + encodeURIComponent(convoState.search));' +
+        'return api.get("/api/admin/ai/conversations?" + params.join("&")).then(function(r) {' +
+          'if (!r.ok) { $("#ai-convo-list").innerHTML = "<div class=\\"ai-usage-empty\\">Failed to load.</div>"; return; }' +
+          'var newRows = r.data || [];' +
+          'convoState.total = (r.meta && r.meta.total) || newRows.length;' +
+          'convoState.rows = append ? convoState.rows.concat(newRows) : newRows;' +
+          'convoState.offset = convoState.rows.length;' +
+          'renderConvoList();' +
+        '});' +
+      '}' +
+
       // Usage card: range + grouping toggles
       'container.querySelectorAll(".ai-usage-chip").forEach(function(b){' +
         'b.onclick = function() {' +
@@ -448,11 +550,28 @@
         '};' +
       '});' +
 
+      // Conversations: rating chips, search, load more
+      'container.querySelectorAll(".ai-convo-chip").forEach(function(b){' +
+        'b.onclick = function() {' +
+          'container.querySelectorAll(".ai-convo-chip").forEach(function(x){x.classList.remove("active");});' +
+          'this.classList.add("active");' +
+          'convoState.rating = this.getAttribute("data-convo-rating") || "";' +
+          'loadConversations(false);' +
+        '};' +
+      '});' +
+      '$("#ai-convo-search").addEventListener("input", function() {' +
+        'var q = this.value;' +
+        'clearTimeout(convoSearchTimer);' +
+        'convoSearchTimer = setTimeout(function() { convoState.search = q.trim(); loadConversations(false); }, 300);' +
+      '});' +
+      '$("#ai-convo-more").onclick = function() { loadConversations(true); };' +
+
       // Initial load: models first (picker needs to be populated), then settings fill it in
       'loadModels().then(loadSettings);' +
       'loadDashboards();' +
       'loadVersions();' +
       'loadUsage();' +
+      'loadConversations(false);' +
     '}';
 
   window.__xrayExtensions.push({
