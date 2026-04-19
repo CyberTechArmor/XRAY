@@ -501,6 +501,17 @@
   
         'function escapeHtml(s) { return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }' +
   
+        // Refresh every panel that depends on the API key (model picker pulls live
+        // from Anthropic, usage/conversations/dashboards are scoped the same way).
+        'function refreshAllPanels() {' +
+          'loadHealth();' +
+          'loadModels().then(loadSettings);' +
+          'loadDashboards();' +
+          'loadVersions();' +
+          'loadUsage();' +
+          'loadConversations(false);' +
+        '}' +
+
         '$("#btn-ai-save-key").onclick = function() {' +
           'var val = ($("#ai-api-key").value || "").trim();' +
           'if (!val) { setStatus("#ai-key-status", "Enter a key first", "error"); return; }' +
@@ -509,19 +520,19 @@
             '$("#btn-ai-save-key").disabled = false;' +
             'if (!r.ok) { setStatus("#ai-key-status", aiErr(r, "Failed"), "error"); return; }' +
             '$("#ai-api-key").value = "";' +
-            'setStatus("#ai-key-status", "Saved", "success");' +
-            'loadSettings();' +
+            'setStatus("#ai-key-status", "Saved \u2014 refreshing", "success");' +
+            'refreshAllPanels();' +
           '});' +
         '};' +
-  
+
         '$("#btn-ai-clear-key").onclick = function() {' +
           'if (!confirm("Clear the API key? AI will stop working until a new key is provided.")) return;' +
           'this.disabled = true;' +
           'api.patch("/api/admin/ai/settings/api-key", { api_key: null }).then(function(r) {' +
             '$("#btn-ai-clear-key").disabled = false;' +
             'if (!r.ok) { setStatus("#ai-key-status", aiErr(r, "Failed"), "error"); return; }' +
-            'setStatus("#ai-key-status", "Cleared", "success");' +
-            'loadSettings();' +
+            'setStatus("#ai-key-status", "Cleared \u2014 refreshing", "success");' +
+            'refreshAllPanels();' +
           '});' +
         '};' +
   
