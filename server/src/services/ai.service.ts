@@ -45,6 +45,8 @@ export interface AiMessage {
   input_tokens: number;
   output_tokens: number;
   created_at: string;
+  rating?: -1 | 1 | null;
+  rating_note?: string | null;
 }
 
 // ─── Settings (platform-wide, versioned) ────────────────────────────────────
@@ -311,10 +313,15 @@ export async function listMessages(
   await loadThreadForUser(threadId, tenantId, userId);
   return withTenantContext(tenantId, false, async (client) => {
     const result = await client.query(
-      `SELECT id, thread_id, role, content, annotations, model_id, input_tokens, output_tokens, created_at
-       FROM platform.ai_messages WHERE thread_id = $1
-       ORDER BY created_at ASC`,
-      [threadId]
+      `SELECT m.id, m.thread_id, m.role, m.content, m.annotations, m.model_id,
+              m.input_tokens, m.output_tokens, m.created_at,
+              f.rating, f.note as rating_note
+       FROM platform.ai_messages m
+       LEFT JOIN platform.ai_message_feedback f
+              ON f.message_id = m.id AND f.user_id = $2
+       WHERE m.thread_id = $1
+       ORDER BY m.created_at ASC`,
+      [threadId, userId]
     );
     return result.rows;
   });

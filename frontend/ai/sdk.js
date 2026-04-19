@@ -370,9 +370,11 @@
     messages.forEach(function(m) {
       var row = document.createElement('div');
       row.className = 'xrai-msg xrai-msg-' + m.role;
+      row.setAttribute('data-msg-id', m.id || '');
       row.innerHTML = renderMessageBody(m);
       el.appendChild(row);
     });
+    wireMessageToolClicks(el);
     el.scrollTop = el.scrollHeight;
   }
 
@@ -380,8 +382,93 @@
     // Strip any trailing ```xray-actions``` block from the visible text — the
     // user sees a clean answer; actions are already executed.
     var text = (m.content || '').replace(/```xray-actions[\s\S]*?```/g, '').trim();
-    return '<div class="xrai-msg-body">' + mdEscape(text) + '</div>' +
-      (m.role === 'assistant' ? '<div class="xrai-msg-tools"><button data-pin="' + m.id + '" class="xrai-msg-pin" title="Pin">📌</button></div>' : '');
+    var body = '<div class="xrai-msg-body">' + mdEscape(text) + '</div>';
+    if (m.role !== 'assistant') return body;
+
+    // Tools row: thumbs up, thumbs down, pin. Highlight the active rating if set.
+    var isUp   = m.rating ===  1;
+    var isDown = m.rating === -1;
+    var disabled = m.pending || !m.id || String(m.id).indexOf('tmp-') === 0;
+    var d = disabled ? ' disabled' : '';
+    return body +
+      '<div class="xrai-msg-tools">' +
+        '<button class="xrai-msg-rate' + (isUp ? ' active up' : '') + '" data-rate="1" data-msg="' + (m.id || '') + '" title="Helpful"' + d + '>' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 11v9H3v-9zM7 11l4-8a2 2 0 0 1 3.6 1.2L13 11h6a2 2 0 0 1 2 2.3l-1.3 6a2 2 0 0 1-2 1.7H7"/></svg>' +
+        '</button>' +
+        '<button class="xrai-msg-rate' + (isDown ? ' active down' : '') + '" data-rate="-1" data-msg="' + (m.id || '') + '" title="Not helpful"' + d + '>' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M17 13V4h4v9zM17 13l-4 8a2 2 0 0 1-3.6-1.2L11 13H5a2 2 0 0 1-2-2.3l1.3-6a2 2 0 0 1 2-1.7H17"/></svg>' +
+        '</button>' +
+        '<button class="xrai-msg-pin" data-pin="' + (m.id || '') + '" title="Pin"' + d + '>' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 2l2 6h6l-5 4 2 6-5-4-5 4 2-6-5-4h6z"/></svg>' +
+        '</button>' +
+      '</div>';
+  }
+
+  function wireMessageToolClicks(scope) {
+    // One delegated listener per render; the old nodes are gone on each re-render
+    // so there's no double-binding.
+    scope.addEventListener('click', function(e) {
+      var rateBtn = e.target.closest('.xrai-msg-rate');
+      if (rateBtn && !rateBtn.disabled) {
+        var msgId = rateBtn.getAttribute('data-msg');
+        var desired = parseInt(rateBtn.getAttribute('data-rate'), 10);
+        if (!msgId || (desired !== 1 && desired !== -1)) return;
+        var msg = findMessage(msgId);
+        if (!msg) return;
+        var current = msg.rating || 0;
+        if (current === desired) {
+          // Click same rating again → clear it
+          submitFeedback(msgId, null);
+        } else {
+          submitFeedback(msgId, desired);
+        }
+        return;
+      }
+      var pinBtn = e.target.closest('.xrai-msg-pin');
+      if (pinBtn && !pinBtn.disabled) {
+        var pinMsgId = pinBtn.getAttribute('data-pin');
+        if (!pinMsgId) return;
+        apiFetch('/api/ai/pins', {
+          method: 'POST',
+          body: JSON.stringify({ messageId: pinMsgId })
+        }).then(function(r) {
+          if (r.ok) loadPins();
+        });
+        return;
+      }
+    });
+  }
+
+  function findMessage(id) {
+    for (var i = 0; i < messages.length; i++) if (messages[i].id === id) return messages[i];
+    return null;
+  }
+
+  function submitFeedback(messageId, rating) {
+    var msg = findMessage(messageId);
+    if (!msg) return;
+    // Optimistic: flip local state then revert on failure
+    var previous = msg.rating || null;
+    msg.rating = rating;
+    renderMessages();
+    var promise;
+    if (rating === null) {
+      promise = apiFetch('/api/ai/messages/' + messageId + '/feedback', { method: 'DELETE' });
+    } else {
+      promise = apiFetch('/api/ai/messages/' + messageId + '/feedback', {
+        method: 'POST',
+        body: JSON.stringify({ rating: rating })
+      });
+    }
+    promise.then(function(r) {
+      if (!r.ok) {
+        msg.rating = previous;
+        renderMessages();
+      }
+    }).catch(function() {
+      msg.rating = previous;
+      renderMessages();
+    });
   }
 
   function sendMessage() {

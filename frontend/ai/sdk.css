@@ -225,13 +225,42 @@
   padding-left: 10px;
 }
 .xrai-msg-body { white-space: pre-wrap; }
-.xrai-msg-tools { margin-top: 4px; display: flex; gap: 4px; opacity: 0.4; }
-.xrai-msg-tools button {
-  background: transparent; border: none; color: var(--xrai-t2);
-  font-size: 12px; cursor: pointer;
+.xrai-msg-tools {
+  margin-top: 6px;
+  display: flex;
+  gap: 2px;
+  opacity: 0.45;
+  transition: opacity .15s;
 }
-.xrai-msg-tools button:hover { color: var(--xrai-acc); opacity: 1; }
 .xrai-msg:hover .xrai-msg-tools { opacity: 1; }
+.xrai-msg-tools button {
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--xrai-t3);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .12s;
+  padding: 0;
+}
+.xrai-msg-tools button:hover { color: var(--xrai-t1); background: var(--xrai-bg2); border-color: var(--xrai-bdr); }
+.xrai-msg-tools button:disabled { opacity: .35; cursor: not-allowed; }
+.xrai-msg-tools .xrai-msg-rate.active.up {
+  color: var(--xrai-acc);
+  background: var(--xrai-acc-dim);
+  border-color: var(--xrai-acc);
+}
+.xrai-msg-tools .xrai-msg-rate.active.down {
+  color: var(--xrai-danger);
+  background: rgba(239,68,68,0.12);
+  border-color: var(--xrai-danger);
+}
+/* When a rating is active, keep the row visible so the user sees their feedback */
+.xrai-msg-tools:has(.active) { opacity: 1; }
 
 .xrai-composer { padding-top: 8px; border-top: 1px solid var(--xrai-bdr); margin-top: 8px; }
 .xrai-composer textarea {
