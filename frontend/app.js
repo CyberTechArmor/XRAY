@@ -23,6 +23,150 @@
   
     window.__xrayExtensions = window.__xrayExtensions || [];
   
+    // Integration snippets exposed to the viewJs via window globals (avoids
+    // escaping hell inside the string-concatenated view body). Populated
+    // lazily so they're only computed once per session.
+    window.__xrayAiSnippets = window.__xrayAiSnippets || {
+      minimal: [
+        '<script>',
+        '(function () {',
+        '  // XRay AI — minimal dashboard integration.',
+        '  // Drop this into your dashboard HTML. The platform has already',
+        '  // injected the SDK if this dashboard has AI enabled.',
+        '  if (!window.XRayAI) return;',
+        '',
+        '  window.XRayAI.register({',
+        '    id:    "YOUR-DASHBOARD-ID",        // must match the platform dashboard id',
+        '    title: "Your dashboard title",',
+        '',
+        '    // What the AI always sees — describe your data once.',
+        '    schema: {',
+        '      columns: [',
+        '        { key: "name",  type: "dimension", label: "Name" },',
+        '        { key: "value", type: "metric",    label: "Value", unit: "USD" }',
+        '      ],',
+        '      glossary: { "Value": "Revenue per row" },',
+        '      period:   "YTD",',
+        '      grain:    "one row per customer"',
+        '    },',
+        '',
+        '    // Per-turn snapshot. Keep under ~2K tokens.',
+        '    getContext: function () {',
+        '      var rows = window.__rows || [];',
+        '      return {',
+        '        filters:    { from: "2026-01-01", to: "2026-12-31" },',
+        '        visible:    { count: rows.length },',
+        '        aggregates: { total: rows.reduce(function (a, r) { return a + (r.value || 0); }, 0) },',
+        '        top_rows:   rows.slice(0, 10)',
+        '      };',
+        '    }',
+        '  });',
+        '})();',
+        '</' + 'script>'
+      ].join('\n'),
+
+      full: [
+        '<script>',
+        '(function () {',
+        '  if (!window.XRayAI) return;',
+        '',
+        '  // Your dashboard already has these — wire them in.',
+        '  function applyFilter(name, value) { /* update your DOM + data */ }',
+        '  function visibleRows() { return window.__rows || []; }',
+        '',
+        '  window.XRayAI.register({',
+        '    id:    "field-operations",          // match the platform dashboard id',
+        '    title: "Field Operations",',
+        '',
+        '    // Always-in-prompt (keep under ~5K tokens).',
+        '    schema: {',
+        '      columns: [',
+        '        { key: "technician", type: "dimension", label: "Technician" },',
+        '        { key: "hours",      type: "metric",    label: "Hours",   unit: "hr" },',
+        '        { key: "revenue",    type: "metric",    label: "Revenue", unit: "USD" },',
+        '        { key: "margin",     type: "metric",    label: "Margin",  unit: "USD/hr",',
+        '          formula: "rev_per_hr - pay_rate" }',
+        '      ],',
+        '      glossary: { "Margin": "Rev/Hr - Pay Rate", "Lost": "Revenue from cancelled jobs" },',
+        '      period:   "YTD",',
+        '      grain:    "per-technician, rolled up from job records"',
+        '    },',
+        '',
+        '    // Per-turn snapshot. Keep under ~2K tokens.',
+        '    getContext: function () {',
+        '      var rows = visibleRows();',
+        '      return {',
+        '        filters:    { dateFrom: "2026-01-01", dateTo: "2026-04-18", range: "YTD" },',
+        '        visible:    { count: rows.length, of: window.__totalRows || rows.length },',
+        '        aggregates: {',
+        '          total_hours: rows.reduce(function (a, r) { return a + (r.hours || 0); }, 0),',
+        '          revenue:     rows.reduce(function (a, r) { return a + (r.revenue || 0); }, 0)',
+        '        },',
+        '        top_rows: rows.slice(0, 10)',
+        '      };',
+        '    },',
+        '',
+        '    // Semantic element names the AI references by name, not CSS.',
+        '    // {placeholders} get substituted from params in highlight()/setFilter().',
+        '    elements: {',
+        '      "revenue_card":     "#kpi-revenue",',
+        '      "leaderboard":      "#tech-table",',
+        '      "leaderboard.row":  "#tech-table tr[data-row-id=\\"{id}\\"]",',
+        '      "leaderboard.cell": "#tech-table tr[data-row-id=\\"{id}\\"] td[data-col=\\"{col}\\"]"',
+        '    },',
+        '',
+        '    // Shown in the rail\'s NOW zone as one-click prompts.',
+        '    suggestedPrompts: [',
+        '      "Explain the margin spread across techs",',
+        '      "Who is declining vs last month?",',
+        '      "Which cancellations look recoverable?"',
+        '    ],',
+        '',
+        '    // Tools the AI can invoke. highlight/clearAnnotations/resetView/undo',
+        '    // are handled by the platform (via the elements map above).',
+        '    // setFilter + getRecords are yours — implement to match your data.',
+        '    tools: {',
+        '      setFilter: function (name, value) { applyFilter(name, value); },',
+        '      getRecords: function (opts) {',
+        '        var rows = visibleRows();',
+        '        if (opts && opts.limit) rows = rows.slice(0, opts.limit);',
+        '        return rows;',
+        '      }',
+        '    }',
+        '  });',
+        '})();',
+        '</' + 'script>'
+      ].join('\n'),
+
+      actions: [
+        '// The AI emits actions as a fenced JSON block at the END of its',
+        '// answer. The platform parses it and dispatches to your dashboard.',
+        '// You do NOT implement the highlight / clearAnnotations / resetView',
+        '// / undo tools — the SDK handles those using your `elements` map.',
+        '',
+        'Example assistant reply:',
+        '',
+        '    The two biggest margin outliers are Torey Ballard and Jason Iglesias.',
+        '',
+        '    ```xray-actions',
+        '    [',
+        '      { "action": "highlight", "target": "leaderboard.row",',
+        '        "params": { "id": "3", "note": "Top margin +$268/hr" } },',
+        '      { "action": "highlight", "target": "leaderboard.row",',
+        '        "params": { "id": "5", "note": "Top revenue $72k" } }',
+        '    ]',
+        '    ```',
+        '',
+        '',
+        'Valid action types:',
+        '  • highlight         → target = semantic element name, params substituted',
+        '  • clearAnnotations  → removes all rail-drawn annotations',
+        '  • setFilter         → params: { name, value }; dispatched to your tools.setFilter',
+        '  • resetView         → clears annotations and calls your tools.resetView if defined',
+        '  • undo              → steps back through the platform\'s undo stack'
+      ].join('\n')
+    };
+
     var viewHtml =
       '<div class="admin-ai-view">' +
         '<div class="sec-head"><div class="sec-title">AI Integration</div><div class="sec-desc">Platform-wide AI settings. Changes are versioned — every save creates a new immutable version with an optional note.</div></div>' +
@@ -89,7 +233,19 @@
           '<div class="card-desc">Enable the AI rail on specific dashboards. Only platform admins can change this. Users with access to an enabled dashboard get the rail on by default.</div>' +
           '<div id="ai-dash-list" class="ai-dash-list"><div class="ai-loading">Loading…</div></div>' +
         '</div>' +
-  
+
+        '<div class="card">' +
+          '<div class="card-title">Dashboard integration convention</div>' +
+          '<div class="card-desc">Each dashboard opts in to the AI rail by calling <code>window.XRayAI.register({...})</code> once in its HTML. The platform handles the UI, streaming chat, annotations, and tool dispatch. The snippets below are always available here — copy whichever fits your dashboard and adapt the schema / elements / tools to match your data.</div>' +
+          '<div class="ai-snippet-tabs">' +
+            '<button class="ai-snippet-tab active" data-snippet="minimal">Minimal</button>' +
+            '<button class="ai-snippet-tab" data-snippet="full">Full</button>' +
+            '<button class="ai-snippet-tab" data-snippet="actions">Action types</button>' +
+          '</div>' +
+          '<div class="ai-snippet-block"><button class="ai-snippet-copy" data-copy-target="ai-snippet-body">Copy</button><pre id="ai-snippet-body" class="ai-snippet-pre"></pre></div>' +
+          '<div class="ai-snippet-notes" id="ai-snippet-notes"></div>' +
+        '</div>' +
+
         '<div class="card">' +
           '<div class="card-title">Usage & cost</div>' +
           '<div class="card-desc">Tokens, computed cost, and feedback ratings. Use the range selector to change the window and the grouping tabs to break down.</div>' +
@@ -216,6 +372,18 @@
       '.admin-ai-view .ai-health-actions{margin-top:8px}' +
       '.admin-ai-view .ai-health-actions button{font-size:11px;padding:5px 10px;background:var(--bg3);border:1px solid var(--bdr);color:var(--t2);border-radius:4px;cursor:pointer;margin-right:6px}' +
       '.admin-ai-view .ai-health-actions button:hover{color:var(--t1);border-color:var(--bdr2)}' +
+      /* ── Integration snippet ── */
+      '.admin-ai-view .ai-snippet-tabs{display:inline-flex;background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;padding:2px;margin-bottom:10px}' +
+      '.admin-ai-view .ai-snippet-tab{padding:5px 10px;font-size:12px;background:transparent;border:none;color:var(--t2);border-radius:4px;cursor:pointer}' +
+      '.admin-ai-view .ai-snippet-tab:hover{color:var(--t1)}' +
+      '.admin-ai-view .ai-snippet-tab.active{background:var(--acc);color:var(--acc-dk)}' +
+      '.admin-ai-view .ai-snippet-block{position:relative}' +
+      '.admin-ai-view .ai-snippet-pre{background:#0b0c10;border:1px solid var(--bdr);border-radius:8px;padding:14px;color:var(--t1);font-family:var(--mono,monospace);font-size:12px;line-height:1.55;overflow-x:auto;white-space:pre;margin:0;max-height:520px;overflow-y:auto}' +
+      '.admin-ai-view .ai-snippet-copy{position:absolute;top:8px;right:8px;font-size:11px;padding:5px 10px;background:var(--bg3);border:1px solid var(--bdr);color:var(--t2);border-radius:4px;cursor:pointer;z-index:1}' +
+      '.admin-ai-view .ai-snippet-copy:hover{color:var(--acc);border-color:var(--acc)}' +
+      '.admin-ai-view .ai-snippet-notes{margin-top:10px;font-size:12px;color:var(--t2);line-height:1.55}' +
+      '.admin-ai-view .ai-snippet-notes code{font-family:var(--mono,monospace);background:var(--bg3);padding:1px 6px;border-radius:4px;font-size:11px;color:var(--acc)}' +
+      '.admin-ai-view .card-desc code{font-family:var(--mono,monospace);background:var(--bg3);padding:1px 6px;border-radius:4px;font-size:11px;color:var(--acc)}' +
       /* ── Conversations card ── */
       '.admin-ai-view .ai-convo-controls{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}' +
       '.admin-ai-view .ai-convo-ratings{display:inline-flex;background:var(--bg3);border:1px solid var(--bdr);border-radius:6px;padding:2px}' +
@@ -651,6 +819,32 @@
         '});' +
         '$("#ai-convo-more").onclick = function() { loadConversations(true); };' +
   
+        // Integration snippets — tabs + copy. Snippets live on window globals
+        // (populated by the outer app.js IIFE) to dodge escape hell.
+        'function showSnippet(name) {' +
+          'var snippets = window.__xrayAiSnippets || {};' +
+          'var body = $("#ai-snippet-body"); if (!body) return;' +
+          'body.textContent = snippets[name] || "(snippet missing)";' +
+          'container.querySelectorAll(".ai-snippet-tab").forEach(function(t){ t.classList.toggle("active", t.getAttribute("data-snippet") === name); });' +
+          'var notes = $("#ai-snippet-notes"); if (!notes) return;' +
+          'if (name === "minimal") notes.innerHTML = "Paste into any dashboard HTML. Replace <code>YOUR-DASHBOARD-ID</code> with the dashboard\'s platform id (visible in the Per-dashboard AI list above). Expose <code>window.__rows</code> from your dashboard so <code>getContext</code> can read it — or swap it for whatever variable holds your data.";' +
+          'else if (name === "full") notes.innerHTML = "Production-grade setup with <code>elements</code>, <code>suggestedPrompts</code>, and custom tools. The AI can drive your filters via <code>setFilter</code> and pull more rows on demand via <code>getRecords</code>.";' +
+          'else if (name === "actions") notes.innerHTML = "This is informational — the AI writes these blocks itself. You only need to make sure your <code>elements</code> map (above) points to real selectors so the highlight circles land on the right rows.";' +
+        '}' +
+        'container.querySelectorAll(".ai-snippet-tab").forEach(function(b) {' +
+          'b.onclick = function() { showSnippet(this.getAttribute("data-snippet")); };' +
+        '});' +
+        'container.querySelectorAll(".ai-snippet-copy").forEach(function(b) {' +
+          'b.onclick = function() {' +
+            'var target = $("#" + this.getAttribute("data-copy-target"));' +
+            'if (!target) return;' +
+            'navigator.clipboard.writeText(target.textContent || "").then(function() {' +
+              'var orig = b.textContent; b.textContent = "Copied"; setTimeout(function(){ b.textContent = orig; }, 1400);' +
+            '}).catch(function() { b.textContent = "Copy failed"; });' +
+          '};' +
+        '});' +
+        'showSnippet("minimal");' +
+
         // Initial load: models first (picker needs to be populated), then settings fill it in
         'loadHealth();' +
         'loadModels().then(loadSettings);' +
