@@ -658,10 +658,16 @@
   // text snapshot that preserves layout (one logical block per line), which
   // lets the AI read grid/flex-based dashboards that don't use <table>.
   function scrapeDomContext() {
-    var MAX_KPIS = 40;
-    var MAX_TABLES = 4;
-    var MAX_ROWS = 40;
-    var MAX_SNAPSHOT = 8000;
+    var MAX_KPIS = 60;
+    var MAX_TABLES = 6;
+    var MAX_ROWS = 60;
+    var MAX_SNAPSHOT = 20000;
+    // Class/id substrings that almost always indicate a decorative loader
+    // (splash screens, skeleton shimmers, progress HUDs). When a dashboard's
+    // loader stays in the DOM alongside real content, its animated phase
+    // text ("Initializing → Loading Metrics → …") crowds the snapshot and
+    // convinces the AI the dashboard hasn't loaded. Skip those subtrees.
+    var LOADER_RE = /\b(?:loader|loading|spinner|skeleton|splash|hero-?(?:anim|scene)?|hud|intro-?anim|webgl|threejs|three-?js|progress-?bar|boot-?screen)\b/i;
 
     function visible(el) {
       if (!el || !el.getBoundingClientRect) return false;
@@ -704,10 +710,24 @@
       return parts.join(' ').replace(/\s+/g, ' ').trim();
     }
     function skip(el) {
-      // Don't scrape the AI rail itself, and never descend into script/style.
+      // Don't scrape the AI rail itself, never descend into script/style,
+      // and skip decorative loaders so their cycling labels don't dominate
+      // the snapshot.
       if (!el) return false;
       if (isNoise(el)) return true;
-      return el.closest && (el.closest('.xrai-rail') || el.closest('.xrai-overlay'));
+      if (el.closest && (el.closest('.xrai-rail') || el.closest('.xrai-overlay'))) return true;
+      if (el.nodeType === 1) {
+        var cls = String(el.className || '');
+        var id  = String(el.id || '');
+        if (cls && LOADER_RE.test(cls)) return true;
+        if (id  && LOADER_RE.test(id))  return true;
+        if (el.getAttribute) {
+          var role = el.getAttribute('role');
+          if (role === 'progressbar') return true;
+          if (el.getAttribute('aria-busy') === 'true') return true;
+        }
+      }
+      return false;
     }
     function ownText(el) {
       // Text contributed by this node's own direct text/inline children (not
@@ -805,7 +825,10 @@
     // ancestor block. Deliberately permissive — false positives are cheap, a
     // missed KPI is not.
     var kpis = [];
-    var bigNumRe = /^[\$€£¥]?\s*[-+]?[\d][\d,.]*\s*(?:[%]|[kKmMbB]|\/hr|\s*hrs?|\s*jobs?)?\s*$/;
+    // Matches a KPI value like: 1,131  |  1,424.4  |  $359,364  |  +$84  |
+    // -$1,653  |  $134/hr  |  5.9%  |  247.7  |  $33K. Leading sign goes
+    // BEFORE currency symbols so "+$84" is recognised.
+    var bigNumRe = /^[-+]?\s*[\$€£¥]?\s*[\d][\d,.]*\s*(?:[%]|[kKmMbB]|\/hr|hrs?|jobs?|pts?)?\s*$/;
     var allEls = root.querySelectorAll('*');
     for (var k = 0; k < allEls.length && kpis.length < MAX_KPIS; k++) {
       var el = allEls[k];

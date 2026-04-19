@@ -529,10 +529,11 @@ export async function streamReply(
       settings.guardrails,
       [
         'Reading the dashboard context:',
-        '- <current_view> is a JSON snapshot of what is rendered on the page right now. It contains some of: title, filters, kpis (label/value pairs), tables (headers + rows), and visibleText (a line-per-block snapshot preserving layout).',
-        '- Trust this data. If kpis or tables or visibleText contain real numbers and labels, the dashboard has loaded — answer the question using that data instead of claiming the dashboard is still loading.',
-        '- Only say the data is unavailable when every one of kpis, tables, and visibleText is empty or contains only words like "Loading" or "Spinner".',
-        '- Prefer the structured kpis/tables fields when they match the question. Fall back to visibleText for anything else (charts, captions, grid-based leaderboards, etc.).',
+        '- <current_view> is a JSON snapshot of what is rendered on the page right now. It contains some of: title, filters, kpis (label/value pairs), tables (headers + rows), and visibleText (a line-per-block snapshot of the dashboard).',
+        '- If kpis or tables contain real numbers and labels, the dashboard has loaded. Answer using them. Do not describe the dashboard as loading in that case.',
+        '- visibleText may include decorative loader strings like "Initializing", "Loading Metrics", "Connecting API", "Streaming Data", "Building Layout", or animated HUD copy even after real data has arrived — those are cosmetic and should be ignored if any structured data (kpis/tables) or any numeric values are present elsewhere in visibleText.',
+        '- Only say the data is unavailable when kpis AND tables are empty AND visibleText contains no numeric values — and even then, ask a clarifying question rather than assume the dashboard is broken.',
+        '- Prefer the structured kpis/tables fields when they match the question. Fall back to visibleText for chart labels, captions, and grid-based leaderboards that weren\'t captured as tables.',
         '- Never invent numbers — cite specific values from the context.',
       ].join('\n'),
       [
