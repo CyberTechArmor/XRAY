@@ -176,43 +176,42 @@ async function start() {
       console.error('Column migration failed:', colErr);
     }
 
-    // Apply AI integration migration (014) idempotently on boot
-    try {
-      const aiTableCheck = await pool.query(
-        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'platform' AND table_name = 'ai_settings_versions'"
-      );
-      if (aiTableCheck.rows.length === 0) {
+    // Self-healing migrations: any migration SQL we depend on is applied on boot
+    // if the feature table is missing. In the container, migrations/ lives at
+    // /app/migrations (copied by the Dockerfile from the repo root). __dirname
+    // is /app/dist, so the SQL files are one level up.
+    const applyMigration = async (sqlFile: string, tableCheck: string, label: string) => {
+      try {
+        const exists = await pool.query(
+          `SELECT 1 FROM information_schema.tables WHERE table_schema = 'platform' AND table_name = $1`,
+          [tableCheck]
+        );
+        if (exists.rows.length > 0) return;
         const fs = require('fs');
         const pathMod = require('path');
-        const aiSql = fs.readFileSync(
-          pathMod.resolve(__dirname, '../../migrations/014_ai_integration.sql'),
-          'utf-8'
-        );
-        await pool.query(aiSql);
-        console.log('AI integration tables created (migration 014)');
+        // Try the in-image path first (/app/migrations), then fall back to a
+        // host-mount path for bare-metal / tsx dev (server/src/../../migrations).
+        const candidates = [
+          pathMod.resolve(__dirname, '../migrations', sqlFile),
+          pathMod.resolve(__dirname, '../../migrations', sqlFile),
+          pathMod.resolve(process.cwd(), 'migrations', sqlFile),
+          pathMod.resolve(process.cwd(), '../migrations', sqlFile),
+        ];
+        const found = candidates.find((p: string) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
+        if (!found) {
+          console.warn(`[migration ${label}] ${sqlFile} not found in any known location:`, candidates);
+          return;
+        }
+        const sql = fs.readFileSync(found, 'utf-8');
+        await pool.query(sql);
+        console.log(`[migration ${label}] applied ${sqlFile} from ${found}`);
+      } catch (err) {
+        console.error(`[migration ${label}] failed for ${sqlFile}:`, err);
       }
-    } catch (aiErr) {
-      console.error('AI integration migration failed:', aiErr);
-    }
+    };
 
-    // Apply AI pricing + feedback migration (015) idempotently on boot
-    try {
-      const pricingTableCheck = await pool.query(
-        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'platform' AND table_name = 'ai_model_pricing'"
-      );
-      if (pricingTableCheck.rows.length === 0) {
-        const fs = require('fs');
-        const pathMod = require('path');
-        const pricingSql = fs.readFileSync(
-          pathMod.resolve(__dirname, '../../migrations/015_ai_pricing_feedback.sql'),
-          'utf-8'
-        );
-        await pool.query(pricingSql);
-        console.log('AI pricing + feedback tables created (migration 015)');
-      }
-    } catch (pricingErr) {
-      console.error('AI pricing migration failed:', pricingErr);
-    }
+    await applyMigration('014_ai_integration.sql', 'ai_settings_versions', '014');
+    await applyMigration('015_ai_pricing_feedback.sql', 'ai_model_pricing', '015');
 
     const server = http.createServer(app);
     initWebSocketServer(server);

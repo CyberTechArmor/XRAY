@@ -232,6 +232,10 @@
       'function initAdminAI(container, api, user) {' +
         'function $(s) { return container.querySelector(s); }' +
         'function setStatus(el, text, kind) { el = typeof el === "string" ? $(el) : el; if (!el) return; el.textContent = text || ""; el.style.color = kind === "error" ? "var(--danger)" : kind === "success" ? "var(--acc)" : "var(--t2)"; }' +
+        // Format an error response richly: includes HTTP status + error code +
+        // message so the admin sees a real signal instead of a bare "Failed".
+        // Also dumps full response to the console for DevTools inspection.
+        'function aiErr(r, fallback) { try { console.error("[XRayAI admin]", r); } catch(e) {} if (!r) return fallback || "Network error"; if (r.error) { var parts=[]; if (r.error.code) parts.push(r.error.code); if (r.error.message) parts.push(r.error.message); if (parts.length) return parts.join(": "); } if (r.status) return "HTTP " + r.status; return fallback || "Request failed"; }' +
   
         'var modelsCatalog = [];' +
         'var pendingModelId = null;' +
@@ -318,7 +322,7 @@
         // Load current settings
         'function loadSettings() {' +
           'return api.get("/api/admin/ai/settings").then(function(r) {' +
-            'if (!r.ok) { setStatus("#ai-save-status", (r.error && r.error.message) || "Failed to load", "error"); return; }' +
+            'if (!r.ok) { setStatus("#ai-save-status", aiErr(r, "Failed to load"), "error"); return; }' +
             'var s = r.data.current;' +
             '$("#ai-enabled").checked = !!s.enabled;' +
             '$("#ai-cap").value = s.per_user_daily_cap;' +
@@ -415,7 +419,7 @@
         'function loadDashboards() {' +
           'api.get("/api/admin/ai/dashboards").then(function(r) {' +
             'var el = $("#ai-dash-list"); if (!el) return;' +
-            'if (!r.ok || !r.data) { el.innerHTML = "<div class=\\"ai-loading\\">Failed to load dashboards.</div>"; return; }' +
+            'if (!r.ok || !r.data) { el.innerHTML = "<div class=\\"ai-loading\\" style=\\"color:var(--danger)\\">Failed to load dashboards: " + escapeHtml(aiErr(r, "unknown")) + "</div>"; return; }' +
             'if (r.data.length === 0) { el.innerHTML = "<div class=\\"ai-loading\\">No dashboards yet.</div>"; return; }' +
             'el.innerHTML = r.data.map(function(d) {' +
               'return "<div class=\\"ai-dash-row\\" data-id=\\"" + d.dashboard_id + "\\">" +' +
@@ -445,7 +449,7 @@
           'this.disabled = true;' +
           'api.patch("/api/admin/ai/settings/api-key", { api_key: val }).then(function(r) {' +
             '$("#btn-ai-save-key").disabled = false;' +
-            'if (!r.ok) { setStatus("#ai-key-status", (r.error && r.error.message) || "Failed", "error"); return; }' +
+            'if (!r.ok) { setStatus("#ai-key-status", aiErr(r, "Failed"), "error"); return; }' +
             '$("#ai-api-key").value = "";' +
             'setStatus("#ai-key-status", "Saved", "success");' +
             'loadSettings();' +
@@ -457,7 +461,7 @@
           'this.disabled = true;' +
           'api.patch("/api/admin/ai/settings/api-key", { api_key: null }).then(function(r) {' +
             '$("#btn-ai-clear-key").disabled = false;' +
-            'if (!r.ok) { setStatus("#ai-key-status", (r.error && r.error.message) || "Failed", "error"); return; }' +
+            'if (!r.ok) { setStatus("#ai-key-status", aiErr(r, "Failed"), "error"); return; }' +
             'setStatus("#ai-key-status", "Cleared", "success");' +
             'loadSettings();' +
           '});' +
@@ -476,7 +480,7 @@
           'this.disabled = true;' +
           'api.post("/api/admin/ai/settings", payload).then(function(r) {' +
             '$("#btn-ai-save").disabled = false;' +
-            'if (!r.ok) { setStatus("#ai-save-status", (r.error && r.error.message) || "Failed", "error"); return; }' +
+            'if (!r.ok) { setStatus("#ai-save-status", aiErr(r, "Failed"), "error"); return; }' +
             'setStatus("#ai-save-status", "Saved new version", "success");' +
             'loadSettings(); loadVersions();' +
           '});' +
@@ -535,7 +539,7 @@
           'if (convoState.rating !== "") params.push("rating=" + encodeURIComponent(convoState.rating));' +
           'if (convoState.search) params.push("search=" + encodeURIComponent(convoState.search));' +
           'return api.get("/api/admin/ai/conversations?" + params.join("&")).then(function(r) {' +
-            'if (!r.ok) { $("#ai-convo-list").innerHTML = "<div class=\\"ai-usage-empty\\">Failed to load.</div>"; return; }' +
+            'if (!r.ok) { $("#ai-convo-list").innerHTML = "<div class=\\"ai-usage-empty\\" style=\\"color:var(--danger)\\">Failed to load: " + escapeHtml(aiErr(r, "unknown")) + "</div>"; return; }' +
             'var newRows = r.data || [];' +
             'convoState.total = (r.meta && r.meta.total) || newRows.length;' +
             'convoState.rows = append ? convoState.rows.concat(newRows) : newRows;' +
