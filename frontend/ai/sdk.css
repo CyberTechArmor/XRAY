@@ -33,56 +33,40 @@
   transition: width .22s ease, box-shadow .22s ease;
   box-shadow: -8px 0 24px rgba(0,0,0,0.2);
 }
-.xrai-rail.xrai-contracted { width: 48px; }
+.xrai-rail.xrai-hidden     { display: none !important; }
 .xrai-rail.xrai-expanded   { width: 420px; }
+
+/* ── AI button injected into the host app's header (left of MEET) ────────── */
+.xrai-header-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(62,232,181,0.05);
+  border: 1px solid rgba(62,232,181,0.18);
+  color: var(--xrai-acc);
+  font-size: 13px; font-weight: 600; letter-spacing: .03em;
+  padding: 6px 14px; border-radius: 20px;
+  transition: all .2s; cursor: pointer;
+  font-family: 'DM Sans', -apple-system, sans-serif;
+}
+.xrai-header-btn:hover { background: rgba(62,232,181,0.12); border-color: rgba(62,232,181,0.35); }
+
+/* ── AI button injected into the host app's mobile bottom nav (left of MEET) */
+.xrai-mob-btn {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.xrai-mob-btn svg { stroke: currentColor; }
 
 /* ── Tablet: full width when expanded ────────────────────────────────────── */
 @media (max-width: 900px) {
   .xrai-rail.xrai-expanded { width: 100vw; }
 }
 
-/* ── Mobile: contracted rail becomes a floating action button;            ── */
-/* ──         expanded becomes a fullscreen sheet with larger touch targets ─ */
+/* ── Mobile: expanded rail becomes a fullscreen sheet with larger touch targets */
 @media (max-width: 640px) {
-  .xrai-rail.xrai-contracted {
-    /* Circular FAB in the bottom-right corner, not a full-height rail */
-    top: auto;
-    left: auto;
-    right: calc(16px + env(safe-area-inset-right, 0px));
-    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-    height: 56px;
-    width: 56px;
-    border-radius: 50%;
-    border: 1px solid var(--xrai-acc);
-    background: var(--xrai-bg2);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
-    padding: 0;
-    overflow: hidden;
-  }
-  .xrai-rail.xrai-contracted .xrai-c-handle { display: none; }
-  .xrai-rail.xrai-contracted .xrai-c-stack {
-    padding: 0;
-    gap: 0;
-    height: 100%;
-    justify-content: center;
-  }
-  /* Hide the quick-ask + pins icons in the FAB — only the AI icon is shown */
-  .xrai-rail.xrai-contracted .xrai-c-btn { display: none; }
-  .xrai-rail.xrai-contracted .xrai-c-ai {
-    display: inline-flex;
-    width: 100%;
-    height: 100%;
-    border-radius: 0;
-    border: none;
-    background: transparent;
-  }
-  .xrai-rail.xrai-contracted .xrai-c-ai svg { width: 24px; height: 24px; }
-  .xrai-rail.xrai-contracted .xrai-badge-count {
-    top: 6px; right: 6px;
-  }
-
+  /* Hide the desktop header AI button on mobile; the bottom-nav button takes over */
+  .xrai-header-btn { display: none; }
   .xrai-rail.xrai-expanded {
-    /* Fullscreen sheet: anchors to all four edges, ignores left:auto/right:0 */
+    /* Fullscreen sheet: anchors to all four edges */
     top: 0; right: 0; bottom: 0; left: 0;
     width: 100vw !important;
     height: 100vh;
@@ -129,51 +113,6 @@
   .xrai-sec { padding: 10px 10px; }
 }
 
-/* ── Contracted rail ────────────────────────────────────────────────────── */
-.xrai-c-handle {
-  width: 100%; height: 40px;
-  background: transparent; border: none;
-  color: var(--xrai-t2);
-  border-bottom: 1px solid var(--xrai-bdr);
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-}
-.xrai-c-handle:hover { color: var(--xrai-t1); background: var(--xrai-bg2); }
-
-.xrai-c-stack {
-  display: flex; flex-direction: column;
-  align-items: center;
-  padding-top: 8px;
-  gap: 6px;
-}
-.xrai-c-btn {
-  position: relative;
-  width: 36px; height: 36px;
-  border: 1px solid transparent;
-  background: var(--xrai-bg2);
-  border-radius: 8px;
-  color: var(--xrai-t2);
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all .15s;
-}
-.xrai-c-btn:hover { color: var(--xrai-t1); border-color: var(--xrai-bdr2); background: var(--xrai-bg3); }
-.xrai-c-ai .xrai-badge-dot {
-  position: absolute; top: 4px; right: 4px;
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--xrai-acc);
-  box-shadow: 0 0 8px var(--xrai-acc-glow);
-}
-.xrai-badge-count {
-  position: absolute; top: -4px; right: -4px;
-  min-width: 16px; height: 16px;
-  background: var(--xrai-acc);
-  color: #0b0c10;
-  font-size: 10px; font-weight: 700;
-  border-radius: 8px;
-  padding: 0 4px;
-  display: inline-flex; align-items: center; justify-content: center;
-}
 
 /* ── Expanded rail ──────────────────────────────────────────────────────── */
 .xrai-hdr {
@@ -247,14 +186,17 @@
 .xrai-new-thread:hover { color: var(--xrai-acc); border-color: var(--xrai-acc); }
 .xrai-threads-list { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow-y: auto; }
 .xrai-thread-row {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center;
+  gap: 8px;
   padding: 6px 8px;
   font-size: 13px; color: var(--xrai-t2);
   border-radius: 6px; cursor: pointer;
 }
 .xrai-thread-row:hover { background: var(--xrai-bg2); color: var(--xrai-t1); }
 .xrai-thread-row.active { background: var(--xrai-acc-dim); color: var(--xrai-acc); }
-.xrai-thread-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.xrai-thread-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xrai-thread-date { flex-shrink: 0; font-size: 11px; color: var(--xrai-t3); font-variant-numeric: tabular-nums; }
+.xrai-thread-row.active .xrai-thread-date { color: var(--xrai-acc); opacity: 0.75; }
 .xrai-thread-x {
   opacity: 0; visibility: hidden;
   background: transparent; border: none; color: var(--xrai-t3);

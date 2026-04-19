@@ -471,7 +471,19 @@ export async function streamReply(
          VALUES ($1, $2, $3, 'user', $4) RETURNING id`,
         [threadId, tenantId, userId, cleanUser]
       );
-      await client.query(`UPDATE platform.ai_threads SET updated_at = now() WHERE id = $1`, [threadId]);
+      // Auto-name the thread on the first user message if it still has the
+      // default "New thread" title. Takes the first ~60 chars of the message
+      // and trims trailing punctuation / whitespace.
+      await client.query(
+        `UPDATE platform.ai_threads
+         SET title = CASE
+           WHEN title = 'New thread'
+             THEN trim(both ' .?!,;:' from substring($2 for 60))
+           ELSE title END,
+             updated_at = now()
+         WHERE id = $1`,
+        [threadId, cleanUser]
+      );
       return r.rows[0].id as string;
     });
 
