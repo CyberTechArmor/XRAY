@@ -349,6 +349,9 @@
         else sbits.push(scraped.tables.length + ' table' + (scraped.tables.length === 1 ? '' : 's'));
       }
       if (scraped.filters && scraped.filters.length) sbits.push(scraped.filters.length + ' filters');
+      if (!sbits.length && scraped.visibleText) {
+        sbits.push(Math.round(scraped.visibleText.length / 100) * 100 + '+ chars of text');
+      }
       ctxEl.textContent = sbits.length ? ('Scanning ' + sbits.join(' · ')) : 'Reading the dashboard…';
     } else {
       ctxEl.textContent = 'Dashboard context unavailable.';
@@ -651,12 +654,14 @@
 
   // Best-effort DOM scrape so the AI has real context even when the dashboard
   // author never called XRayAI.register(). Pulls title, active filters, KPI
-  // cards, and the first rows of any visible table, plus a short text digest.
+  // cards, and the first rows of any visible table. Also emits a block-level
+  // text snapshot that preserves layout (one logical block per line), which
+  // lets the AI read grid/flex-based dashboards that don't use <table>.
   function scrapeDomContext() {
-    var MAX_KPIS = 24;
+    var MAX_KPIS = 40;
     var MAX_TABLES = 4;
-    var MAX_ROWS = 20;
-    var MAX_TEXT = 1200;
+    var MAX_ROWS = 40;
+    var MAX_SNAPSHOT = 8000;
 
     function visible(el) {
       if (!el || !el.getBoundingClientRect) return false;
@@ -703,6 +708,24 @@
       if (!el) return false;
       if (isNoise(el)) return true;
       return el.closest && (el.closest('.xrai-rail') || el.closest('.xrai-overlay'));
+    }
+    function ownText(el) {
+      // Text contributed by this node's own direct text/inline children (not
+      // block descendants). Captures "$359,364" even when wrapped in styling
+      // spans without swallowing unrelated descendant text.
+      if (!el) return '';
+      var s = '';
+      for (var c = el.firstChild; c; c = c.nextSibling) {
+        if (c.nodeType === 3) s += c.nodeValue;
+        else if (c.nodeType === 1 && (
+          c.tagName === 'SPAN' || c.tagName === 'B' || c.tagName === 'STRONG' ||
+          c.tagName === 'EM'   || c.tagName === 'I' || c.tagName === 'SMALL' ||
+          c.tagName === 'A'    || c.tagName === 'CODE'
+        )) {
+          s += c.textContent || '';
+        }
+      }
+      return s.replace(/\s+/g, ' ').trim();
     }
 
     // Pick the most-specific visible container that represents the dashboard
@@ -774,34 +797,47 @@
       filters.push({ label: ilab || inEl.name || 'input', value: inEl.value });
     }
 
-    // KPI cards: look for the common "label above a big number" pattern. We
-    // pick any element whose text starts with a number/currency and whose
-    // siblings include a short UPPERCASE label.
+    // KPI cards: look for the common "label + big number" pattern. We walk
+    // every visible element and accept any whose own text (no descendant
+    // chatter) looks like a number/currency AND has a short label sibling or
+    // ancestor block. Deliberately permissive — false positives are cheap, a
+    // missed KPI is not.
     var kpis = [];
-    var bigNumRe = /^[\$€£¥]?\s*[-+]?[\d][\d,.]*\s*[%kKmMbB/hr\s]*$/;
-    var candidates = root.querySelectorAll('div, span, p, strong, b');
-    for (var k = 0; k < candidates.length && kpis.length < MAX_KPIS; k++) {
-      var el = candidates[k];
-      if (skip(el) || !visible(el)) continue;
-      // Only leaf-ish elements (no big children with their own text)
-      if (el.children.length > 2) continue;
-      var t = text(el);
-      if (!t || t.length > 24) continue;
+    var bigNumRe = /^[\$€£¥]?\s*[-+]?[\d][\d,.]*\s*(?:[%]|[kKmMbB]|\/hr|\s*hrs?|\s*jobs?)?\s*$/;
+    var allEls = root.querySelectorAll('*');
+    for (var k = 0; k < allEls.length && kpis.length < MAX_KPIS; k++) {
+      var el = allEls[k];
+      if (skip(el) || isNoise(el) || !visible(el)) continue;
+      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE') continue;
+      var t = ownText(el) || text(el);
+      if (!t || t.length > 32) continue;
       if (!bigNumRe.test(t)) continue;
-      // Find a nearby label: previous sibling, aunt/uncle, or parent's first child.
+      // Find the nearest short label: previous sibling text, then walk up
+      // parent siblings for a short label-like string.
       var label = '';
       var sib = el.previousElementSibling;
-      if (sib && !skip(sib)) label = text(sib);
+      if (sib && !skip(sib)) {
+        var st = text(sib);
+        if (st && st.length < 48) label = st;
+      }
       if (!label && el.parentElement) {
         var pc = el.parentElement.children;
         for (var pi = 0; pi < pc.length; pi++) {
           if (pc[pi] === el) continue;
           var pt = text(pc[pi]);
-          if (pt && pt.length < 40 && pt !== t) { label = pt; break; }
+          if (pt && pt.length < 48 && pt !== t) { label = pt; break; }
+        }
+      }
+      if (!label && el.parentElement && el.parentElement.parentElement) {
+        var gp = el.parentElement.parentElement;
+        var gpc = gp.children;
+        for (var gi = 0; gi < gpc.length; gi++) {
+          if (gpc[gi] === el.parentElement) continue;
+          var gt = text(gpc[gi]);
+          if (gt && gt.length < 48 && gt !== t) { label = gt; break; }
         }
       }
       if (!label) continue;
-      // De-dupe by label+value
       var key = label + '=' + t;
       if (kpis.some(function(x) { return x._k === key; })) continue;
       kpis.push({ _k: key, label: label, value: t });
@@ -840,19 +876,75 @@
       tables.push({ headers: headers, rows: rows, rowCount: total });
     }
 
-    // Short free-text digest (helps the AI see chart labels, captions, etc.)
-    var digest = text(root);
-    if (digest.length > MAX_TEXT) digest = digest.slice(0, MAX_TEXT) + '…';
+    // Block-level text snapshot: walk block-ish elements and emit their own
+    // visible text on their own line. This preserves enough structure for the
+    // AI to read grid/flex leaderboards that don't use <table>, KPI cards,
+    // headings, etc. — far more useful than a flattened textContent blob.
+    function blockText(r) {
+      var out = [];
+      var BLOCK = /^(DIV|SECTION|ARTICLE|HEADER|FOOTER|ASIDE|MAIN|LI|UL|OL|P|H1|H2|H3|H4|H5|H6|TR|TD|TH|TABLE|THEAD|TBODY|DL|DT|DD|PRE|BLOCKQUOTE|FIGURE|FIGCAPTION|NAV|FORM|FIELDSET|LEGEND|LABEL|BUTTON|SUMMARY|DETAILS)$/;
+      var seen = 0;
+      (function walk(el) {
+        if (!el || seen > 2000) return;
+        if (isNoise(el) || skip(el)) return;
+        if (el.nodeType === 1 && !visible(el)) return;
+        seen++;
+        var tag = el.tagName;
+        if (el.nodeType === 1 && BLOCK.test(tag)) {
+          // Descend first so nested blocks become their own lines; but also
+          // capture direct-child text so the "own" label of a container is
+          // preserved.
+          var own = ownText(el);
+          if (own) out.push(own);
+        }
+        for (var c = el.firstChild; c; c = c.nextSibling) {
+          if (c.nodeType === 1) walk(c);
+          else if (c.nodeType === 3 && el.nodeType === 1 && !BLOCK.test(el.tagName)) {
+            var v = String(c.nodeValue || '').replace(/\s+/g, ' ').trim();
+            if (v) out.push(v);
+          }
+        }
+      })(r);
+      // Deduplicate consecutive duplicates and flatten tiny fragments onto
+      // nearby lines for readability.
+      var lines = [];
+      for (var li = 0; li < out.length; li++) {
+        var s = out[li].replace(/\s+/g, ' ').trim();
+        if (!s) continue;
+        if (lines.length && lines[lines.length - 1] === s) continue;
+        lines.push(s);
+      }
+      return lines.join('\n');
+    }
+    var snapshot = blockText(root);
+    if (snapshot.length > MAX_SNAPSHOT) snapshot = snapshot.slice(0, MAX_SNAPSHOT) + '…';
 
-    return {
+    var result = {
       source: 'dom-scrape',
       title: title,
       url: location.pathname + location.search,
       filters: filters,
       kpis: kpis,
       tables: tables,
-      textDigest: digest
+      visibleText: snapshot
     };
+
+    // Surface what we captured for debugging — dashboards vary a lot and this
+    // makes mismatches obvious without the user having to guess.
+    try {
+      if (window.__xrayAiDebug !== false) {
+        console.log('[XRayAI] scrape', {
+          rootTag: root.tagName,
+          rootClass: root.className,
+          kpis: kpis.length,
+          tables: tables.length,
+          filters: filters.length,
+          snapshotChars: snapshot.length
+        });
+      }
+    } catch (e) {}
+
+    return result;
   }
 
   // SSE POST: we need to POST a body and read an event stream back. Browsers'

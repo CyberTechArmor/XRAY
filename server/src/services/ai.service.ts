@@ -528,6 +528,14 @@ export async function streamReply(
       settings.system_prompt,
       settings.guardrails,
       [
+        'Reading the dashboard context:',
+        '- <current_view> is a JSON snapshot of what is rendered on the page right now. It contains some of: title, filters, kpis (label/value pairs), tables (headers + rows), and visibleText (a line-per-block snapshot preserving layout).',
+        '- Trust this data. If kpis or tables or visibleText contain real numbers and labels, the dashboard has loaded — answer the question using that data instead of claiming the dashboard is still loading.',
+        '- Only say the data is unavailable when every one of kpis, tables, and visibleText is empty or contains only words like "Loading" or "Spinner".',
+        '- Prefer the structured kpis/tables fields when they match the question. Fall back to visibleText for anything else (charts, captions, grid-based leaderboards, etc.).',
+        '- Never invent numbers — cite specific values from the context.',
+      ].join('\n'),
+      [
         'When you want to highlight on the dashboard, change filters, clear annotations, reset the view, or undo — emit a SINGLE fenced code block at the END of your reply tagged `xray-actions` containing a JSON array. Example:',
         '```xray-actions',
         '[{"action":"highlight","target":"leaderboard.row","params":{"rowId":"3","note":"Top margin"}}]',
