@@ -48,6 +48,13 @@ if [ -d "$WEBROOT" ]; then
     cp "$SCRIPT_DIR/frontend/bundles/"* "$WEBROOT/bundles/"
     ok "Bundles updated ($(ls "$SCRIPT_DIR/frontend/bundles/" | wc -l) files)"
   fi
+  for d in ai; do
+    if [ -d "$SCRIPT_DIR/frontend/$d" ]; then
+      mkdir -p "$WEBROOT/$d"
+      cp -r "$SCRIPT_DIR/frontend/$d/"* "$WEBROOT/$d/"
+      ok "$d/ updated ($(ls "$SCRIPT_DIR/frontend/$d/" | wc -l) files)"
+    fi
+  done
   chown -R www-data:www-data "$WEBROOT" 2>/dev/null || true
 else
   warn "Webroot $WEBROOT not found — skipping frontend deploy"

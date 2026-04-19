@@ -1,4 +1,4 @@
-var CACHE_NAME = 'xray-v19';
+var CACHE_NAME = 'xray-v20';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -10,7 +10,10 @@ var SHELL_ASSETS = [
   '/manifest.json',
   '/icon-192.png',
   '/icon-512.png',
-  '/badge-96.png'
+  '/badge-96.png',
+  '/ai/admin.js',
+  '/ai/sdk.js',
+  '/ai/sdk.css'
 ];
 
 // Install: cache app shell
@@ -38,6 +41,19 @@ self.addEventListener('activate', function(e) {
   );
 });
 
+// Returns true if the response's content-type is compatible with the requested URL's
+// expected type. Guards against nginx's SPA fallback (which returns index.html for
+// missing files) poisoning the cache under a .js / .css / .json key.
+function typeMatches(pathname, resp) {
+  if (!resp) return false;
+  var ct = (resp.headers.get('content-type') || '').toLowerCase();
+  if (/\.js($|\?)/.test(pathname))   return ct.indexOf('javascript') !== -1;
+  if (/\.css($|\?)/.test(pathname))  return ct.indexOf('css') !== -1;
+  if (/\.json($|\?)/.test(pathname)) return ct.indexOf('json') !== -1;
+  if (/\.svg($|\?)/.test(pathname))  return ct.indexOf('svg') !== -1;
+  return true;
+}
+
 // Fetch: network-first for API, cache-first for static
 self.addEventListener('fetch', function(e) {
   var url = new URL(e.request.url);
@@ -58,7 +74,7 @@ self.addEventListener('fetch', function(e) {
       if (cached) {
         // Update cache in background
         fetch(e.request).then(function(resp) {
-          if (resp && resp.status === 200) {
+          if (resp && resp.status === 200 && typeMatches(url.pathname, resp)) {
             caches.open(CACHE_NAME).then(function(cache) {
               cache.put(e.request, resp);
             });
@@ -67,7 +83,7 @@ self.addEventListener('fetch', function(e) {
         return cached;
       }
       return fetch(e.request).then(function(resp) {
-        if (resp && resp.status === 200) {
+        if (resp && resp.status === 200 && typeMatches(url.pathname, resp)) {
           var clone = resp.clone();
           caches.open(CACHE_NAME).then(function(cache) {
             cache.put(e.request, clone);

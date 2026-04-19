@@ -22,6 +22,13 @@ if [ -d "$SCRIPT_DIR/frontend/bundles" ]; then
   cp "$SCRIPT_DIR/frontend/bundles/"* /var/www/xray/bundles/
   echo "  copied bundles/"
 fi
+for d in ai; do
+  if [ -d "$SCRIPT_DIR/frontend/$d" ]; then
+    mkdir -p "/var/www/xray/$d"
+    cp -r "$SCRIPT_DIR/frontend/$d/"* "/var/www/xray/$d/"
+    echo "  copied $d/"
+  fi
+done
 chown -R www-data:www-data /var/www/xray 2>/dev/null || true
 
 echo "=== [2/4] Rebuilding and restarting server container ==="
