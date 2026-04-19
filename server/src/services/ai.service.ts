@@ -1,7 +1,30 @@
 import { Response } from 'express';
-import { withClient, withTenantContext } from '../db/connection';
+import { withClient, withTenantContext, getPool } from '../db/connection';
+import type { PoolClient } from '../db/connection';
 import { getSetting } from './settings.service';
 import { AppError } from '../middleware/error-handler';
+
+// Per-user RLS helper (migration 016): sets BOTH app.current_tenant and
+// app.current_user_id so the user_scope policies on ai_threads, ai_messages,
+// ai_pins, ai_user_dashboard_prefs, ai_usage_daily, ai_message_feedback
+// match the row's user_id. Everything that touches those tables goes through
+// this helper so the DB enforces isolation even if the app layer forgets a
+// WHERE clause.
+async function withAiUserContext<T>(
+  tenantId: string,
+  userId: string,
+  fn: (client: PoolClient) => Promise<T>
+): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
+    await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [userId]);
+    await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
+    return await fn(client);
+  } finally {
+    client.release();
+  }
+}
 
 // Anthropic Messages API. Using native fetch (Node 18+) to avoid a new npm dep.
 const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
@@ -227,7 +250,7 @@ export async function listThreads(
   userId: string,
   dashboardId: string
 ): Promise<AiThread[]> {
-  return withTenantContext(tenantId, false, async (client) => {
+  return withAiUserContext(tenantId, userId, async (client) => {
     const result = await client.query(
       `SELECT id, tenant_id, user_id, dashboard_id, title, archived, created_at, updated_at
        FROM platform.ai_threads
@@ -245,7 +268,7 @@ export async function createThread(
   dashboardId: string,
   title?: string
 ): Promise<AiThread> {
-  return withTenantContext(tenantId, false, async (client) => {
+  return withAiUserContext(tenantId, userId, async (client) => {
     const result = await client.query(
       `INSERT INTO platform.ai_threads (tenant_id, user_id, dashboard_id, title)
        VALUES ($1, $2, $3, $4)
@@ -261,7 +284,7 @@ async function loadThreadForUser(
   tenantId: string,
   userId: string
 ): Promise<AiThread> {
-  return withTenantContext(tenantId, false, async (client) => {
+  return withAiUserContext(tenantId, userId, async (client) => {
     const result = await client.query(
       `SELECT id, tenant_id, user_id, dashboard_id, title, archived, created_at, updated_at
        FROM platform.ai_threads WHERE id = $1 AND user_id = $2`,
@@ -283,7 +306,7 @@ export async function renameThread(
   await loadThreadForUser(threadId, tenantId, userId);
   const clean = (title || '').trim().slice(0, 200);
   if (!clean) throw new AppError(400, 'INVALID_TITLE', 'Title is required');
-  await withTenantContext(tenantId, false, async (client) => {
+  await withAiUserContext(tenantId, userId, async (client) => {
     await client.query(
       `UPDATE platform.ai_threads SET title = $1, updated_at = now() WHERE id = $2 AND user_id = $3`,
       [clean, threadId, userId]
@@ -297,7 +320,7 @@ export async function archiveThread(
   userId: string
 ): Promise<void> {
   await loadThreadForUser(threadId, tenantId, userId);
-  await withTenantContext(tenantId, false, async (client) => {
+  await withAiUserContext(tenantId, userId, async (client) => {
     await client.query(
       `UPDATE platform.ai_threads SET archived = true, updated_at = now() WHERE id = $1 AND user_id = $2`,
       [threadId, userId]
@@ -311,7 +334,7 @@ export async function listMessages(
   userId: string
 ): Promise<AiMessage[]> {
   await loadThreadForUser(threadId, tenantId, userId);
-  return withTenantContext(tenantId, false, async (client) => {
+  return withAiUserContext(tenantId, userId, async (client) => {
     const result = await client.query(
       `SELECT m.id, m.thread_id, m.role, m.content, m.annotations, m.model_id,
               m.input_tokens, m.output_tokens, m.created_at,
@@ -334,7 +357,7 @@ export async function getTodayUsage(
   userId: string
 ): Promise<{ count: number; cap: number; remaining: number }> {
   const settings = await getCurrentSettings();
-  const row = await withTenantContext(tenantId, false, async (client) => {
+  const row = await withAiUserContext(tenantId, userId, async (client) => {
     const r = await client.query(
       `SELECT message_count FROM platform.ai_usage_daily
        WHERE tenant_id = $1 AND user_id = $2 AND usage_date = CURRENT_DATE`,
@@ -352,7 +375,7 @@ async function incrementUsage(
   inputTokens: number,
   outputTokens: number
 ): Promise<void> {
-  await withTenantContext(tenantId, false, async (client) => {
+  await withAiUserContext(tenantId, userId, async (client) => {
     await client.query(
       `INSERT INTO platform.ai_usage_daily (tenant_id, user_id, usage_date, message_count, input_tokens, output_tokens)
        VALUES ($1, $2, CURRENT_DATE, 1, $3, $4)
@@ -442,7 +465,7 @@ export async function streamReply(
       res.end(); return;
     }
 
-    const userMsgId = await withTenantContext(tenantId, false, async (client) => {
+    const userMsgId = await withAiUserContext(tenantId, userId, async (client) => {
       const r = await client.query(
         `INSERT INTO platform.ai_messages (thread_id, tenant_id, user_id, role, content)
          VALUES ($1, $2, $3, 'user', $4) RETURNING id`,
@@ -453,7 +476,7 @@ export async function streamReply(
     });
 
     // 5. Build messages array for Anthropic (history + this turn w/ context injected)
-    const historyRows = await withTenantContext(tenantId, false, async (client) => {
+    const historyRows = await withAiUserContext(tenantId, userId, async (client) => {
       const r = await client.query(
         `SELECT role, content FROM platform.ai_messages
          WHERE thread_id = $1 AND role IN ('user','assistant')
@@ -602,7 +625,7 @@ export async function streamReply(
     const actions = extractXrayActions(fullText);
 
     // 9. Persist assistant message + increment usage
-    const assistantId = await withTenantContext(tenantId, false, async (client) => {
+    const assistantId = await withAiUserContext(tenantId, userId, async (client) => {
       const r = await client.query(
         `INSERT INTO platform.ai_messages
          (thread_id, tenant_id, user_id, role, content, annotations, model_id,
@@ -686,7 +709,7 @@ export async function pinMessage(
   note: string | null
 ): Promise<{ id: string }> {
   // Verify message belongs to one of this user's threads
-  return withTenantContext(tenantId, false, async (client) => {
+  return withAiUserContext(tenantId, userId, async (client) => {
     const m = await client.query(
       `SELECT m.id, m.thread_id
        FROM platform.ai_messages m
@@ -709,7 +732,7 @@ export async function unpinMessage(
   tenantId: string,
   userId: string
 ): Promise<void> {
-  await withTenantContext(tenantId, false, async (client) => {
+  await withAiUserContext(tenantId, userId, async (client) => {
     await client.query(
       `DELETE FROM platform.ai_pins WHERE id = $1 AND user_id = $2`,
       [pinId, userId]
@@ -724,7 +747,7 @@ export async function listPins(
 ): Promise<
   Array<{ pin_id: string; message_id: string; thread_id: string; thread_title: string; note: string | null; content: string; created_at: string }>
 > {
-  return withTenantContext(tenantId, false, async (client) => {
+  return withAiUserContext(tenantId, userId, async (client) => {
     const result = await client.query(
       `SELECT p.id as pin_id, p.message_id, p.thread_id, t.title as thread_title,
               p.note, m.content, p.created_at
@@ -1004,7 +1027,7 @@ export async function setMessageFeedback(
     throw new AppError(400, 'INVALID_RATING', 'rating must be 1 or -1');
   }
   const trimmedNote = (note || '').trim().slice(0, 2000) || null;
-  return withTenantContext(tenantId, false, async (client) => {
+  return withAiUserContext(tenantId, userId, async (client) => {
     // Verify user owns the thread containing this message
     const owner = await client.query(
       `SELECT m.thread_id
@@ -1034,7 +1057,7 @@ export async function clearMessageFeedback(
   tenantId: string,
   userId: string
 ): Promise<void> {
-  await withTenantContext(tenantId, false, async (client) => {
+  await withAiUserContext(tenantId, userId, async (client) => {
     await client.query(
       `DELETE FROM platform.ai_message_feedback
        WHERE message_id = $1 AND user_id = $2`,
@@ -1048,7 +1071,7 @@ export async function getMessageFeedback(
   tenantId: string,
   userId: string
 ): Promise<MessageFeedback | null> {
-  return withTenantContext(tenantId, false, async (client) => {
+  return withAiUserContext(tenantId, userId, async (client) => {
     const r = await client.query(
       `SELECT message_id, rating, note, created_at, updated_at
        FROM platform.ai_message_feedback
