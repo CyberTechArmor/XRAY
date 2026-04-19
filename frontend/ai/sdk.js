@@ -214,9 +214,13 @@
         var mo = new MutationObserver(function() {
           if (!rail || rail.classList.contains('xrai-hidden')) return;
           clearTimeout(renderContextTimer);
+          // Update ONLY the summary line, not the quick prompts. The quick
+          // prompt buttons are rendered once on open and never change — if
+          // we rebuilt them on every dashboard mutation, hovering one would
+          // flicker whenever the dashboard animated (which is constantly).
           renderContextTimer = setTimeout(function() {
-            try { renderContext(); } catch (e) {}
-          }, 250);
+            try { renderContextSummary(); } catch (e) {}
+          }, 400);
         });
         mo.observe(document.body, { childList: true, subtree: true, characterData: true });
       }
@@ -345,10 +349,32 @@
     });
   }
 
+  // Default quick prompts shown in the NOW area when the dashboard didn't
+  // supply its own `suggestedPrompts`. Tuned for action + insight:
+  // three opportunity-finders (keep the user's attention on money/risk) and
+  // one analyst-style trends probe.
+  var DEFAULT_PROMPTS = [
+    'What should I pay attention to?',
+    'Top 5 opportunities to recover, save, or earn',
+    'Which rows are outliers, and why?',
+    'Rank the biggest wins and biggest misses',
+    'What trends, correlations, or anomalies stand out?'
+  ];
+
   function renderContext() {
+    renderContextSummary();
+    renderQuickPrompts();
+    updateUsageLabel();
+    updateAnnToolbar();
+  }
+
+  // Just the "NOW" summary line + sub-title. Safe to call on every DOM
+  // mutation — it doesn't rebuild the quick-prompt buttons, so hover state
+  // on them survives live dashboard updates (no more flicker).
+  function renderContextSummary() {
     var sub = rail.querySelector('#xrai-sub');
     var ctxEl = rail.querySelector('#xrai-now-ctx');
-    var quick = rail.querySelector('#xrai-now-quick');
+    if (!sub || !ctxEl) return;
     var scraped = null;
     try { scraped = scrapeDomContext(); } catch (e) { scraped = null; }
     if (registered && registered.title) sub.textContent = registered.title;
@@ -379,19 +405,20 @@
     } else {
       ctxEl.textContent = 'Dashboard context unavailable.';
     }
-    // Quick prompts — dashboard-provided, or sensible defaults so the user
-    // always has a one-click starting point (even if the dashboard hasn't
-    // registered yet or didn't supply any suggestedPrompts).
+  }
+
+  // Build the quick-prompt buttons once per open. They never change while
+  // the rail is visible, so rebuilding them on every DOM mutation was
+  // causing a hover-flicker when the dashboard animated.
+  function renderQuickPrompts() {
+    var quick = rail.querySelector('#xrai-now-quick');
+    if (!quick) return;
+    var sp = (registered && registered.suggestedPrompts) || DEFAULT_PROMPTS;
+    var signature = sp.join('||');
+    if (quick.dataset.sig === signature) return; // already rendered
+    quick.dataset.sig = signature;
     quick.innerHTML = '';
-    var sp = (registered && registered.suggestedPrompts) || [];
-    if (!sp.length) {
-      sp = [
-        'What is on this dashboard?',
-        'Summarize the top rows',
-        'What should I pay attention to?'
-      ];
-    }
-    sp.slice(0, 4).forEach(function(p) {
+    sp.forEach(function(p) {
       var b = document.createElement('button');
       b.className = 'xrai-quick-btn';
       b.textContent = p;
@@ -402,8 +429,6 @@
       };
       quick.appendChild(b);
     });
-    updateUsageLabel();
-    updateAnnToolbar();
   }
 
   function updateUsageLabel() {
@@ -521,17 +546,19 @@
     var body = '<div class="xrai-msg-body">' + mdEscape(text) + '</div>';
     if (m.role !== 'assistant') return body;
 
-    // Tools row: thumbs up, thumbs down, pin. Highlight the active rating if set.
+    // Tools row: thumbs up, thumbs down. Only rendered once the message has
+    // a real server-side id — showing disabled buttons during streaming just
+    // makes the browser draw the not-allowed crossed-circle cursor on hover.
     var isUp   = m.rating ===  1;
     var isDown = m.rating === -1;
-    var disabled = m.pending || !m.id || String(m.id).indexOf('tmp-') === 0;
-    var d = disabled ? ' disabled' : '';
+    var ready = !m.pending && m.id && String(m.id).indexOf('tmp-') !== 0;
+    if (!ready) return body;
     return body +
       '<div class="xrai-msg-tools">' +
-        '<button class="xrai-msg-rate' + (isUp ? ' active up' : '') + '" data-rate="1" data-msg="' + (m.id || '') + '" title="Helpful"' + d + '>' +
+        '<button class="xrai-msg-rate' + (isUp ? ' active up' : '') + '" data-rate="1" data-msg="' + (m.id || '') + '" title="Helpful">' +
           '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 11v9H3v-9zM7 11l4-8a2 2 0 0 1 3.6 1.2L13 11h6a2 2 0 0 1 2 2.3l-1.3 6a2 2 0 0 1-2 1.7H7"/></svg>' +
         '</button>' +
-        '<button class="xrai-msg-rate' + (isDown ? ' active down' : '') + '" data-rate="-1" data-msg="' + (m.id || '') + '" title="Not helpful"' + d + '>' +
+        '<button class="xrai-msg-rate' + (isDown ? ' active down' : '') + '" data-rate="-1" data-msg="' + (m.id || '') + '" title="Not helpful">' +
           '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M17 13V4h4v9zM17 13l-4 8a2 2 0 0 1-3.6-1.2L11 13H5a2 2 0 0 1-2-2.3l1.3-6a2 2 0 0 1 2-1.7H17"/></svg>' +
         '</button>' +
       '</div>';
@@ -636,6 +663,11 @@
       } else if (evt.type === 'done') {
         pendingAsst.id = evt.messageId;
         pendingAsst.pending = false;
+        // Re-render so the tools row (thumbs up/down) picks up the real
+        // message id and drops its disabled state — otherwise the browser
+        // keeps showing the not-allowed cursor even after the answer is
+        // complete.
+        renderMessages();
         // Execute any xray-actions the assistant emitted
         if (Array.isArray(evt.actions)) {
           evt.actions.forEach(executeAction);
@@ -1287,6 +1319,48 @@
           i++;
         }
         out.push('<blockquote class="xrai-md-bq">' + inline(bq.join(' ')) + '</blockquote>');
+        continue;
+      }
+
+      // Horizontal rule (three or more -, *, or _).
+      if (/^\s*(?:[-*_]\s*){3,}\s*$/.test(line)) {
+        out.push('<hr class="xrai-md-hr">');
+        i++; continue;
+      }
+
+      // GitHub-style pipe table. Needs a header row, a divider row of
+      // |---|---|, and 0+ body rows. Columns in the divider can specify
+      // alignment (:---, :---:, ---:), which we pass through as style.
+      var isPipeRow = /^\s*\|?(?:[^\n|]*\|)+[^\n|]*\|?\s*$/;
+      var isDividerRow = /^\s*\|?(?:\s*:?-{2,}:?\s*\|)+\s*:?-{2,}:?\s*\|?\s*$/;
+      if (isPipeRow.test(line) && i + 1 < lines.length && isDividerRow.test(lines[i + 1])) {
+        var splitRow = function(r) {
+          r = r.trim().replace(/^\|/, '').replace(/\|\s*$/, '');
+          return r.split('|').map(function(c) { return c.trim(); });
+        };
+        var headers = splitRow(line);
+        var aligns = splitRow(lines[i + 1]).map(function(c) {
+          if (/^:-+:$/.test(c)) return 'center';
+          if (/:-+$/.test(c))    return 'right';
+          if (/^:-+/.test(c))    return 'left';
+          return '';
+        });
+        i += 2;
+        var bodyRows = [];
+        while (i < lines.length && isPipeRow.test(lines[i]) && !isBlank(lines[i])) {
+          bodyRows.push(splitRow(lines[i]));
+          i++;
+        }
+        var styleFor = function(idx) { return aligns[idx] ? ' style="text-align:' + aligns[idx] + '"' : ''; };
+        var thead = '<thead><tr>' + headers.map(function(h, ix) {
+          return '<th' + styleFor(ix) + '>' + inline(h) + '</th>';
+        }).join('') + '</tr></thead>';
+        var tbody = '<tbody>' + bodyRows.map(function(row) {
+          return '<tr>' + row.map(function(c, ix) {
+            return '<td' + styleFor(ix) + '>' + inline(c) + '</td>';
+          }).join('') + '</tr>';
+        }).join('') + '</tbody>';
+        out.push('<div class="xrai-md-table-wrap"><table class="xrai-md-table">' + thead + tbody + '</table></div>');
         continue;
       }
 
