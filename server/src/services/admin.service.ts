@@ -1,8 +1,23 @@
 import { withClient, withTransaction } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { encrypt } from '../lib/crypto';
+import { encryptSecret, decryptSecret, encryptJsonField, decryptJsonField } from '../lib/encrypted-column';
 import { refreshCache as refreshSettingsCache } from './settings.service';
 import * as auditService from './audit.service';
+
+function decryptConnectionRow<T extends { id: string; connection_details?: string | null }>(row: T): T {
+  if (row.connection_details !== undefined) {
+    row.connection_details = decryptSecret(row.connection_details, `connections:connection_details:${row.id}`);
+  }
+  return row;
+}
+
+function decryptDashboardRow<T extends { id: string; fetch_headers?: unknown }>(row: T): T {
+  if (row.fetch_headers !== undefined) {
+    row.fetch_headers = decryptJsonField(row.fetch_headers, `dashboards:fetch_headers:${row.id}`);
+  }
+  return row;
+}
 
 // ─── Tenants ──────────────────────────────────────────────
 
@@ -215,7 +230,7 @@ export async function listAllDashboards(query: { page: number; limit: number }) 
        ORDER BY d.created_at DESC LIMIT $1 OFFSET $2`,
       [query.limit, offset]
     );
-    return { data: result.rows, total, page: query.page, limit: query.limit };
+    return { data: result.rows.map(decryptDashboardRow), total, page: query.page, limit: query.limit };
   });
 }
 
@@ -231,7 +246,7 @@ export async function getDashboardDetail(dashboardId: string) {
       [dashboardId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
-    return result.rows[0];
+    return decryptDashboardRow(result.rows[0]);
   });
 }
 
@@ -252,7 +267,7 @@ export async function createDashboard(input: {
         input.status || 'draft',
         input.viewHtml || null, input.viewCss || null, input.viewJs || null,
         input.fetchUrl || null, input.fetchMethod || 'GET',
-        input.fetchHeaders ? JSON.stringify(input.fetchHeaders) : '{}',
+        JSON.stringify(encryptJsonField(input.fetchHeaders || {})),
         input.fetchBody ? JSON.stringify(input.fetchBody) : null,
         input.fetchQueryParams ? JSON.stringify(input.fetchQueryParams) : null,
         input.tileImageUrl || null,
@@ -260,7 +275,7 @@ export async function createDashboard(input: {
     );
     const dash = result.rows[0];
     auditService.log({ tenantId: input.tenantId, action: 'dashboard.create', resourceType: 'dashboard', resourceId: dash.id, metadata: { name: input.name } });
-    return dash;
+    return decryptDashboardRow(dash);
   });
 }
 
@@ -282,8 +297,9 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       const col = allowedKeys[key];
       if (col && value !== undefined) {
         fields.push(`${col} = $${idx}`);
-        // JSON fields need stringification
-        if (col === 'fetch_headers' || col === 'fetch_body' || col === 'fetch_query_params') {
+        if (col === 'fetch_headers') {
+          values.push(JSON.stringify(encryptJsonField((value as Record<string, unknown>) || {})));
+        } else if (col === 'fetch_body' || col === 'fetch_query_params') {
           values.push(value ? JSON.stringify(value) : null);
         } else {
           values.push(value);
@@ -301,7 +317,7 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
     const dash = result.rows[0];
     auditService.log({ tenantId: dash.tenant_id, action: 'dashboard.update', resourceType: 'dashboard', resourceId: dashboardId, metadata: { fields: Object.keys(updates) } });
-    return dash;
+    return decryptDashboardRow(dash);
   });
 }
 
@@ -373,8 +389,7 @@ export async function fetchDashboardContent(dashboardId: string) {
     const dash = result.rows[0];
     if (!dash.fetch_url) throw new AppError(400, 'NO_CONNECTION', 'Dashboard has no connection URL configured');
 
-    const headers: Record<string, string> = typeof dash.fetch_headers === 'string'
-      ? JSON.parse(dash.fetch_headers) : (dash.fetch_headers || {});
+    const headers = decryptJsonField(dash.fetch_headers, `dashboards:fetch_headers:${dash.id}`) as Record<string, string>;
 
     const fetchOpts: RequestInit = {
       method: dash.fetch_method || 'GET',
@@ -428,7 +443,7 @@ export async function listAllConnections(query: { page: number; limit: number })
        ORDER BY c.created_at DESC LIMIT $1 OFFSET $2`,
       [query.limit, offset]
     );
-    return { data: result.rows, total, page: query.page, limit: query.limit };
+    return { data: result.rows.map(decryptConnectionRow), total, page: query.page, limit: query.limit };
   });
 }
 
@@ -443,11 +458,11 @@ export async function createConnection(input: {
       `INSERT INTO platform.connections (tenant_id, name, source_type, source_detail, pipeline_ref, description, connection_details, image_url)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [input.tenantId, input.name, input.sourceType, input.sourceDetail || null, input.pipelineRef || null,
-       input.description || null, input.connectionDetails || null, input.imageUrl || null]
+       input.description || null, encryptSecret(input.connectionDetails ?? null), input.imageUrl || null]
     );
     const conn = result.rows[0];
     auditService.log({ tenantId: input.tenantId, action: 'connection.create', resourceType: 'connection', resourceId: conn.id, metadata: { name: input.name, sourceType: input.sourceType } });
-    return conn;
+    return decryptConnectionRow(conn);
   });
 }
 
@@ -465,7 +480,11 @@ export async function updateConnection(connectionId: string, updates: Record<str
       const col = allowedKeys[key];
       if (col && value !== undefined) {
         fields.push(`${col} = $${idx}`);
-        values.push(value);
+        if (col === 'connection_details') {
+          values.push(encryptSecret(value == null ? null : String(value)));
+        } else {
+          values.push(value);
+        }
         idx++;
       }
     }
@@ -479,7 +498,7 @@ export async function updateConnection(connectionId: string, updates: Record<str
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
     const conn = result.rows[0];
     auditService.log({ tenantId: conn.tenant_id, action: 'connection.update', resourceType: 'connection', resourceId: connectionId, metadata: { fields: Object.keys(updates) } });
-    return conn;
+    return decryptConnectionRow(conn);
   });
 }
 

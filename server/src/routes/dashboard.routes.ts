@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticateJWT } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
 import { validateBody, dashboardAccessSchema, embedCreateSchema } from '../lib/validation';
+import { decryptJsonField } from '../lib/encrypted-column';
 import * as dashboardService from '../services/dashboard.service';
 import * as aiService from '../services/ai.service';
 import { getSetting } from '../services/settings.service';
@@ -182,8 +183,10 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     }
 
     // Proxy fetch to n8n with retry
-    const parsedHeaders: Record<string, string> = typeof dashboard.fetch_headers === 'string'
-      ? JSON.parse(dashboard.fetch_headers) : (dashboard.fetch_headers || {});
+    const parsedHeaders = decryptJsonField(
+      dashboard.fetch_headers,
+      `dashboards:fetch_headers:${dashboard.id}`
+    ) as Record<string, string>;
 
     // Build fetch URL with query params
     let fetchUrl = dashboard.fetch_url;

@@ -10,7 +10,7 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   set -a; source "$SCRIPT_DIR/.env"; set +a
 fi
 
-echo "=== [1/4] Deploying frontend files to /var/www/xray ==="
+echo "=== [1/5] Deploying frontend files to /var/www/xray ==="
 mkdir -p /var/www/xray/bundles
 for f in index.html app.css app.js landing.css landing.js manifest.json sw.js icon.svg icon-192.png icon-512.png share.html; do
   if [ -f "$SCRIPT_DIR/frontend/$f" ]; then
@@ -31,10 +31,10 @@ for d in ai; do
 done
 chown -R www-data:www-data /var/www/xray 2>/dev/null || true
 
-echo "=== [2/4] Rebuilding and restarting server container ==="
+echo "=== [2/5] Rebuilding and restarting server container ==="
 docker compose up -d --build server
 
-echo "=== [3/4] Running database migrations ==="
+echo "=== [3/5] Running database migrations ==="
 PG_CONTAINER=$(docker compose ps -q postgres)
 if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
   # Wait for postgres to be ready
@@ -56,7 +56,19 @@ else
   echo "  WARNING: postgres container not found, skipping migrations"
 fi
 
-echo "=== [4/4] Reloading nginx ==="
+echo "=== [4/5] Running credential backfill ==="
+SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
+if [ -n "$SERVER_CONTAINER" ]; then
+  if docker compose exec -T server test -f dist/scripts/backfill-encrypt-credentials.js 2>/dev/null; then
+    docker compose exec -T server node dist/scripts/backfill-encrypt-credentials.js 2>&1 | sed 's/^/  /'
+  else
+    echo "  (backfill script not in image — skipping)"
+  fi
+else
+  echo "  WARNING: server container not running, skipping backfill"
+fi
+
+echo "=== [5/5] Reloading nginx ==="
 nginx -t && systemctl reload nginx
 
 echo ""

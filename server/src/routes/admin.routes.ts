@@ -397,6 +397,7 @@ router.delete('/connections/:id', async (req, res, next) => {
 router.get('/connections/:id', async (req, res, next) => {
   try {
     const { withClient } = await import('../db/connection');
+    const { decryptSecret } = await import('../lib/encrypted-column');
     const conn = await withClient(async (client) => {
       await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
       const result = await client.query(
@@ -407,7 +408,11 @@ router.get('/connections/:id', async (req, res, next) => {
          WHERE c.id = $1`,
         [req.params.id]
       );
-      return result.rows[0];
+      const row = result.rows[0];
+      if (row && row.connection_details !== undefined) {
+        row.connection_details = decryptSecret(row.connection_details, `connections:connection_details:${row.id}`);
+      }
+      return row;
     });
     if (!conn) return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Connection not found' } });
     res.json({

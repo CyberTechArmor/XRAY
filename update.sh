@@ -20,7 +20,7 @@ echo "  ╚═══════════════════════
 echo ""
 
 # ── Step 1: Pull latest code ──
-echo "  [1/5] Pulling latest code..."
+echo "  [1/7] Pulling latest code..."
 cd "$SCRIPT_DIR"
 if git rev-parse --is-inside-work-tree &>/dev/null; then
   BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -32,7 +32,7 @@ else
 fi
 
 # ── Step 2: Deploy frontend files ──
-echo "  [2/6] Deploying frontend..."
+echo "  [2/7] Deploying frontend..."
 WEBROOT="/var/www/xray"
 if [ -d "$WEBROOT" ]; then
   mkdir -p "$WEBROOT/bundles"
@@ -61,7 +61,7 @@ else
 fi
 
 # ── Step 3: Update nginx config from template ──
-echo "  [3/6] Updating nginx config..."
+echo "  [3/7] Updating nginx config..."
 NGINX_CONF="/etc/nginx/sites-available/xray.conf"
 if [ -f "$NGINX_CONF" ] && [ -f "$SCRIPT_DIR/nginx/xray.conf.template" ]; then
   # Extract current domain, embed domain, and app port from existing config
@@ -84,7 +84,7 @@ else
 fi
 
 # ── Step 4: Rebuild and restart backend ──
-echo "  [4/6] Rebuilding backend..."
+echo "  [4/7] Rebuilding backend..."
 if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
   cd "$SCRIPT_DIR"
   docker compose build --no-cache 2>&1 | tail -5 && ok "Backend rebuilt" || warn "Docker build failed"
@@ -130,7 +130,7 @@ VAPIDEOF
 fi
 
 # ── Step 5: Run database migrations ──
-echo "  [5/6] Running database migrations..."
+echo "  [5/7] Running database migrations..."
 PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null || echo "")
 if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
   # Wait for postgres to be ready
@@ -153,10 +153,14 @@ if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
       MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
     } || {
       # Benign "already exists" errors are expected when re-applying. Surface
-      # anything else so broken migrations don't get swallowed.
-      if echo "$OUT" | grep -qiE "(ERROR|FATAL)" | grep -viE "already exists|duplicate"; then
+      # anything else so broken migrations don't get swallowed. The previous
+      # implementation chained `grep -q | grep -v` — but -q writes no output,
+      # so the second grep always saw empty stdin and the condition always
+      # evaluated false, silently masking real migration errors.
+      REAL_ERRORS=$(echo "$OUT" | grep -iE "(ERROR|FATAL)" | grep -viE "already exists|duplicate" || true)
+      if [ -n "$REAL_ERRORS" ]; then
         MIGRATION_FAILED=$((MIGRATION_FAILED + 1))
-        warn "migration $MNAME: $(echo "$OUT" | grep -iE 'ERROR|FATAL' | head -3)"
+        warn "migration $MNAME: $(echo "$REAL_ERRORS" | head -3)"
       else
         # Idempotent re-apply — treat as success
         MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
@@ -171,8 +175,31 @@ else
   warn "Skipping migrations (no postgres container or migrations/ dir)"
 fi
 
+# ── Step 5b: Backfill encrypted credentials (migration 017 companion) ──
+# Idempotent. Rewrites any plaintext rows in webhooks.secret,
+# connections.connection_details, and dashboards.fetch_headers as enc:v1
+# envelopes. Skips already-encrypted rows. Harmless on fresh DBs with
+# no plaintext rows. See CONTEXT.md.
+echo "  [5b] Running credential backfill..."
+SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
+if [ -n "$SERVER_CONTAINER" ]; then
+  if docker compose exec -T server test -f dist/scripts/backfill-encrypt-credentials.js 2>/dev/null; then
+    BACKFILL_OUT=$(docker compose exec -T server node dist/scripts/backfill-encrypt-credentials.js 2>&1) && {
+      echo "$BACKFILL_OUT" | sed 's/^/    /'
+      ok "Backfill complete"
+    } || {
+      warn "Backfill failed — rerun manually: docker compose exec -T server node dist/scripts/backfill-encrypt-credentials.js"
+      echo "$BACKFILL_OUT" | sed 's/^/    /'
+    }
+  else
+    warn "Backfill script not present in server image (older build?) — skipping"
+  fi
+else
+  warn "Server container not running — skipping backfill"
+fi
+
 # ── Step 6: Reload nginx ──
-echo "  [6/6] Reloading nginx..."
+echo "  [7/7] Reloading nginx..."
 if command -v nginx &>/dev/null; then
   nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && ok "Nginx reloaded" || warn "Nginx reload failed"
 else

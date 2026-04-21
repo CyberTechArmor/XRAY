@@ -1,6 +1,14 @@
 import { withClient, withTransaction } from '../db/connection';
 import { generateToken, hashToken } from '../lib/crypto';
+import { decryptJsonField } from '../lib/encrypted-column';
 import { AppError } from '../middleware/error-handler';
+
+function decryptDashboardRow<T extends { id: string; fetch_headers?: unknown }>(row: T): T {
+  if (row && row.fetch_headers !== undefined) {
+    row.fetch_headers = decryptJsonField(row.fetch_headers, `dashboards:fetch_headers:${row.id}`);
+  }
+  return row;
+}
 
 interface Dashboard {
   id: string;
@@ -75,7 +83,7 @@ export async function listDashboards(
          JOIN platform.tenants t ON t.id = d.tenant_id
          ORDER BY d.updated_at DESC`
       );
-      return result.rows;
+      return result.rows.map(decryptDashboardRow);
     }
 
     await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
@@ -88,7 +96,7 @@ export async function listDashboards(
          ORDER BY d.updated_at DESC`,
         [tenantId]
       );
-      return result.rows;
+      return result.rows.map(decryptDashboardRow);
     }
 
     // Regular users: only dashboards they have explicit access to
@@ -101,7 +109,7 @@ export async function listDashboards(
        ORDER BY d.updated_at DESC`,
       [tenantId, userId]
     );
-    return result.rows;
+    return result.rows.map(decryptDashboardRow);
   });
 }
 
@@ -118,7 +126,7 @@ export async function getDashboard(
     if (result.rows.length === 0) {
       throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
     }
-    return result.rows[0];
+    return decryptDashboardRow(result.rows[0]);
   });
 }
 
@@ -170,7 +178,7 @@ export async function createDashboard(input: {
         input.viewJs || null,
       ]
     );
-    return result.rows[0];
+    return decryptDashboardRow(result.rows[0]);
   });
 }
 
@@ -207,7 +215,7 @@ export async function updateDashboard(
     if (result.rows.length === 0) {
       throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
     }
-    return result.rows[0];
+    return decryptDashboardRow(result.rows[0]);
   });
 }
 
@@ -430,7 +438,7 @@ export async function getPublicDashboard(
     if (result.rows.length === 0) {
       throw new AppError(404, 'NOT_FOUND', 'Dashboard not found or share link has been revoked');
     }
-    return result.rows[0];
+    return decryptDashboardRow(result.rows[0]);
   });
 }
 
@@ -448,9 +456,9 @@ export async function renderPublicDashboard(
     };
   }
 
-  // Proxy fetch for dynamic dashboards
-  const headers: Record<string, string> = typeof dashboard.fetch_headers === 'string'
-    ? JSON.parse(dashboard.fetch_headers) : (dashboard.fetch_headers || {});
+  // Proxy fetch for dynamic dashboards. fetch_headers is already plaintext
+  // here — getPublicDashboard decrypts on the way out.
+  const headers = (dashboard.fetch_headers || {}) as Record<string, string>;
   const fetchOpts: RequestInit = {
     method: dashboard.fetch_method || 'GET',
     headers: { 'Content-Type': 'application/json', ...headers },
@@ -719,6 +727,6 @@ export async function getEmbedDashboard(
       throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
     }
 
-    return dashResult.rows[0];
+    return decryptDashboardRow(dashResult.rows[0]);
   });
 }
