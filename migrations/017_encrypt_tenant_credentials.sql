@@ -12,9 +12,22 @@
 --   3. Run scripts/backfill-encrypt-credentials.ts to rewrite any
 --      plaintext rows still in place.
 --
--- Idempotent: trigger functions are CREATE OR REPLACE, triggers are
--- wrapped in DO $$ ... duplicate_object blocks. One function per
--- column so NEW.<col> is resolved statically — no dynamic field access.
+-- Idempotent: everything runs inside one transaction. Triggers are
+-- dropped and recreated so the migration always converges to the same
+-- state, regardless of whether the DB is fresh, partially on an older
+-- version of this file, or already fully applied. Functions are
+-- CREATE OR REPLACE for the same reason.
+
+BEGIN;
+
+-- Drop any legacy artifacts from an earlier iteration of this migration
+-- (the v1 of the file used parameterized EXECUTE format() functions).
+-- Safe no-ops on a fresh install.
+DROP TRIGGER IF EXISTS enforce_enc_webhooks_secret ON platform.webhooks;
+DROP TRIGGER IF EXISTS enforce_enc_connections_details ON platform.connections;
+DROP TRIGGER IF EXISTS enforce_enc_dashboards_fetch_headers ON platform.dashboards;
+DROP FUNCTION IF EXISTS platform.require_encrypted_text();
+DROP FUNCTION IF EXISTS platform.require_encrypted_jsonb();
 
 CREATE OR REPLACE FUNCTION platform.require_enc_webhooks_secret() RETURNS trigger AS $$
 BEGIN
@@ -56,20 +69,16 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DO $$ BEGIN
-  CREATE TRIGGER enforce_enc_webhooks_secret
-    BEFORE INSERT OR UPDATE OF secret ON platform.webhooks
-    FOR EACH ROW EXECUTE FUNCTION platform.require_enc_webhooks_secret();
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE TRIGGER enforce_enc_webhooks_secret
+  BEFORE INSERT OR UPDATE OF secret ON platform.webhooks
+  FOR EACH ROW EXECUTE FUNCTION platform.require_enc_webhooks_secret();
 
-DO $$ BEGIN
-  CREATE TRIGGER enforce_enc_connections_details
-    BEFORE INSERT OR UPDATE OF connection_details ON platform.connections
-    FOR EACH ROW EXECUTE FUNCTION platform.require_enc_connections_details();
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE TRIGGER enforce_enc_connections_details
+  BEFORE INSERT OR UPDATE OF connection_details ON platform.connections
+  FOR EACH ROW EXECUTE FUNCTION platform.require_enc_connections_details();
 
-DO $$ BEGIN
-  CREATE TRIGGER enforce_enc_dashboards_fetch_headers
-    BEFORE INSERT OR UPDATE OF fetch_headers ON platform.dashboards
-    FOR EACH ROW EXECUTE FUNCTION platform.require_enc_dashboards_fetch_headers();
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE TRIGGER enforce_enc_dashboards_fetch_headers
+  BEFORE INSERT OR UPDATE OF fetch_headers ON platform.dashboards
+  FOR EACH ROW EXECUTE FUNCTION platform.require_enc_dashboards_fetch_headers();
+
+COMMIT;
