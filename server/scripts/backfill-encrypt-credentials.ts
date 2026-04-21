@@ -9,7 +9,7 @@
  * Run AFTER deploying code that writes enc:v1 and AFTER applying
  * migration 017.
  */
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { encryptSecret, encryptJsonField } from '../src/lib/encrypted-column';
 
 const DRY_RUN = process.argv.includes('--dry-run');
@@ -30,13 +30,13 @@ function isEncryptedJsonb(v: unknown): boolean {
 }
 
 async function backfillText(
-  pool: Pool,
+  client: PoolClient,
   label: string,
   table: string,
   column: string,
 ): Promise<Counters> {
   const counters: Counters = { encrypted: 0, skipped: 0 };
-  const { rows } = await pool.query(
+  const { rows } = await client.query(
     `SELECT id, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} <> ''`,
   );
   for (const row of rows) {
@@ -46,7 +46,7 @@ async function backfillText(
     }
     const ciphertext = encryptSecret(row.value as string);
     if (!DRY_RUN) {
-      await pool.query(`UPDATE ${table} SET ${column} = $1 WHERE id = $2`, [ciphertext, row.id]);
+      await client.query(`UPDATE ${table} SET ${column} = $1 WHERE id = $2`, [ciphertext, row.id]);
     }
     counters.encrypted++;
   }
@@ -55,13 +55,13 @@ async function backfillText(
 }
 
 async function backfillJsonb(
-  pool: Pool,
+  client: PoolClient,
   label: string,
   table: string,
   column: string,
 ): Promise<Counters> {
   const counters: Counters = { encrypted: 0, skipped: 0 };
-  const { rows } = await pool.query(
+  const { rows } = await client.query(
     `SELECT id, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL AND ${column} <> '{}'::jsonb`,
   );
   for (const row of rows) {
@@ -71,7 +71,7 @@ async function backfillJsonb(
     }
     const wrapped = encryptJsonField(row.value as Record<string, unknown>);
     if (!DRY_RUN) {
-      await pool.query(
+      await client.query(
         `UPDATE ${table} SET ${column} = $1::jsonb WHERE id = $2`,
         [JSON.stringify(wrapped), row.id],
       );
@@ -86,13 +86,19 @@ async function main() {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL not set');
   if (!process.env.ENCRYPTION_KEY) throw new Error('ENCRYPTION_KEY not set');
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const client = await pool.connect();
   try {
+    // Take a platform-admin stance for the whole session so RLS on the
+    // three target tables doesn't hide rows. `false` = session-scoped
+    // (persists across statements on this client, no explicit tx).
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', false)`);
     console.log(`Backfill starting${DRY_RUN ? ' (dry run)' : ''}...`);
-    await backfillText(pool, 'webhooks.secret', 'platform.webhooks', 'secret');
-    await backfillText(pool, 'connections.connection_details', 'platform.connections', 'connection_details');
-    await backfillJsonb(pool, 'dashboards.fetch_headers', 'platform.dashboards', 'fetch_headers');
+    await backfillText(client, 'webhooks.secret', 'platform.webhooks', 'secret');
+    await backfillText(client, 'connections.connection_details', 'platform.connections', 'connection_details');
+    await backfillJsonb(client, 'dashboards.fetch_headers', 'platform.dashboards', 'fetch_headers');
     console.log('Backfill complete.');
   } finally {
+    client.release();
     await pool.end();
   }
 }
