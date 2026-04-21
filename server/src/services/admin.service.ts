@@ -2,6 +2,7 @@ import { withClient, withTransaction } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { encrypt } from '../lib/crypto';
 import { encryptSecret, decryptSecret, encryptJsonField, decryptJsonField } from '../lib/encrypted-column';
+import { mintBridgeJwt } from '../lib/n8n-bridge';
 import { refreshCache as refreshSettingsCache } from './settings.service';
 import * as auditService from './audit.service';
 
@@ -256,12 +257,13 @@ export async function createDashboard(input: {
   fetchUrl?: string | null; fetchMethod?: string; fetchHeaders?: Record<string, string> | null; fetchBody?: unknown;
   fetchQueryParams?: Record<string, string> | null;
   tileImageUrl?: string | null;
+  templateId?: string | null; integration?: string | null; params?: Record<string, unknown> | null;
 }) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, tile_image_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, tile_image_url, template_id, integration, params)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *`,
       [
         input.tenantId, input.name, input.description || null,
         input.status || 'draft',
@@ -271,6 +273,9 @@ export async function createDashboard(input: {
         input.fetchBody ? JSON.stringify(input.fetchBody) : null,
         input.fetchQueryParams ? JSON.stringify(input.fetchQueryParams) : null,
         input.tileImageUrl || null,
+        input.templateId || null,
+        input.integration || null,
+        JSON.stringify(input.params || {}),
       ]
     );
     const dash = result.rows[0];
@@ -292,6 +297,7 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       fetchHeaders: 'fetch_headers', fetchBody: 'fetch_body',
       fetchQueryParams: 'fetch_query_params',
       tileImageUrl: 'tile_image_url',
+      templateId: 'template_id', integration: 'integration', params: 'params',
     };
     for (const [key, value] of Object.entries(updates)) {
       const col = allowedKeys[key];
@@ -301,6 +307,16 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
           values.push(JSON.stringify(encryptJsonField((value as Record<string, unknown>) || {})));
         } else if (col === 'fetch_body' || col === 'fetch_query_params') {
           values.push(value ? JSON.stringify(value) : null);
+        } else if (col === 'params') {
+          // JSONB column with NOT NULL DEFAULT '{}'. Coerce null/undefined
+          // to '{}' so the admin can "clear" params without hitting the
+          // constraint.
+          values.push(JSON.stringify(value || {}));
+        } else if (col === 'template_id' || col === 'integration') {
+          // Empty string from the form clears the field back to NULL,
+          // which puts the dashboard back onto the legacy fetch_headers
+          // path.
+          values.push(value === '' ? null : value);
         } else {
           values.push(value);
         }
@@ -382,14 +398,42 @@ export async function fetchDashboardContent(dashboardId: string) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      'SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, status FROM platform.dashboards WHERE id = $1',
+      `SELECT id, tenant_id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, status,
+              template_id, integration, params
+       FROM platform.dashboards WHERE id = $1`,
       [dashboardId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
     const dash = result.rows[0];
     if (!dash.fetch_url) throw new AppError(400, 'NO_CONNECTION', 'Dashboard has no connection URL configured');
 
-    const headers = decryptJsonField(dash.fetch_headers, `dashboards:fetch_headers:${dash.id}`) as Record<string, string>;
+    // Same branching as the authed render path. Admin preview has no
+    // end-user context — mint with user_id absent.
+    let headers: Record<string, string>;
+    if (dash.integration) {
+      const minted = mintBridgeJwt({
+        tenantId: dash.tenant_id,
+        userId: null,
+        templateId: dash.template_id || null,
+        integration: dash.integration,
+        params: (dash.params as Record<string, unknown>) || {},
+      });
+      headers = { Authorization: `Bearer ${minted.jwt}` };
+      auditService.log({
+        tenantId: dash.tenant_id,
+        action: 'dashboard.bridge_mint',
+        resourceType: 'dashboard',
+        resourceId: dash.id,
+        metadata: {
+          jti: minted.jti,
+          integration: dash.integration,
+          template_id: dash.template_id || null,
+          via: 'admin_preview',
+        },
+      });
+    } else {
+      headers = decryptJsonField(dash.fetch_headers, `dashboards:fetch_headers:${dash.id}`) as Record<string, string>;
+    }
 
     const fetchOpts: RequestInit = {
       method: dash.fetch_method || 'GET',

@@ -77,6 +77,10 @@ export const dashboardCreateSchema = z.object({
   fetchBody: z.any().optional().nullable(),
   fetchQueryParams: z.record(z.string()).optional().nullable(),
   tileImageUrl: z.string().url().max(2000).optional().nullable(),
+  // n8n JWT bridge config. Non-empty `integration` flips the render path.
+  templateId: z.string().max(200).optional().nullable(),
+  integration: z.string().max(100).optional().nullable(),
+  params: z.record(z.any()).optional().nullable(),
 });
 
 export const dashboardUpdateSchema = z.object({
@@ -92,6 +96,10 @@ export const dashboardUpdateSchema = z.object({
   fetchBody: z.any().optional(),
   fetchQueryParams: z.record(z.string()).optional().nullable(),
   tileImageUrl: z.string().url().max(2000).optional().nullable(),
+  // n8n JWT bridge config. Empty string clears back to the legacy path.
+  templateId: z.string().max(200).optional().nullable(),
+  integration: z.string().max(100).optional().nullable(),
+  params: z.record(z.any()).optional().nullable(),
 });
 
 export const connectionTemplateCreateSchema = z.object({
