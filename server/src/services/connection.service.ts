@@ -1,5 +1,13 @@
 import { withClient } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
+import { decryptSecret } from '../lib/encrypted-column';
+
+function decryptConnectionRow<T extends { id: string; connection_details?: string | null }>(row: T): T {
+  if (row.connection_details !== undefined) {
+    row.connection_details = decryptSecret(row.connection_details, `connections:connection_details:${row.id}`);
+  }
+  return row;
+}
 
 export async function listConnections(tenantId: string) {
   return withClient(async (client) => {
@@ -9,7 +17,7 @@ export async function listConnections(tenantId: string) {
       'SELECT * FROM platform.connections WHERE tenant_id = $1 ORDER BY created_at DESC',
       [tenantId]
     );
-    return result.rows;
+    return result.rows.map(decryptConnectionRow);
   });
 }
 
@@ -28,6 +36,6 @@ export async function getConnection(tenantId: string, connectionId: string) {
       'SELECT * FROM platform.connection_tables WHERE connection_id = $1 ORDER BY table_name',
       [connectionId]
     );
-    return { ...connResult.rows[0], tables: tablesResult.rows };
+    return { ...decryptConnectionRow(connResult.rows[0]), tables: tablesResult.rows };
   });
 }

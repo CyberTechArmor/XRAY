@@ -1,9 +1,16 @@
 import { withClient, withTransaction } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { encrypt } from '../lib/crypto';
-import { encryptSecret, encryptJsonField, decryptJsonField } from '../lib/encrypted-column';
+import { encryptSecret, decryptSecret, encryptJsonField, decryptJsonField } from '../lib/encrypted-column';
 import { refreshCache as refreshSettingsCache } from './settings.service';
 import * as auditService from './audit.service';
+
+function decryptConnectionRow<T extends { id: string; connection_details?: string | null }>(row: T): T {
+  if (row.connection_details !== undefined) {
+    row.connection_details = decryptSecret(row.connection_details, `connections:connection_details:${row.id}`);
+  }
+  return row;
+}
 
 // ─── Tenants ──────────────────────────────────────────────
 
@@ -429,7 +436,7 @@ export async function listAllConnections(query: { page: number; limit: number })
        ORDER BY c.created_at DESC LIMIT $1 OFFSET $2`,
       [query.limit, offset]
     );
-    return { data: result.rows, total, page: query.page, limit: query.limit };
+    return { data: result.rows.map(decryptConnectionRow), total, page: query.page, limit: query.limit };
   });
 }
 
@@ -448,7 +455,7 @@ export async function createConnection(input: {
     );
     const conn = result.rows[0];
     auditService.log({ tenantId: input.tenantId, action: 'connection.create', resourceType: 'connection', resourceId: conn.id, metadata: { name: input.name, sourceType: input.sourceType } });
-    return conn;
+    return decryptConnectionRow(conn);
   });
 }
 
@@ -484,7 +491,7 @@ export async function updateConnection(connectionId: string, updates: Record<str
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
     const conn = result.rows[0];
     auditService.log({ tenantId: conn.tenant_id, action: 'connection.update', resourceType: 'connection', resourceId: connectionId, metadata: { fields: Object.keys(updates) } });
-    return conn;
+    return decryptConnectionRow(conn);
   });
 }
 

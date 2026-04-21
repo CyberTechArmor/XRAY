@@ -1,5 +1,6 @@
 import { withClient, withTransaction } from '../db/connection';
 import { generateToken, hashToken } from '../lib/crypto';
+import { decryptJsonField } from '../lib/encrypted-column';
 import { AppError } from '../middleware/error-handler';
 
 interface Dashboard {
@@ -449,8 +450,10 @@ export async function renderPublicDashboard(
   }
 
   // Proxy fetch for dynamic dashboards
-  const headers: Record<string, string> = typeof dashboard.fetch_headers === 'string'
-    ? JSON.parse(dashboard.fetch_headers) : (dashboard.fetch_headers || {});
+  const headers = decryptJsonField(
+    dashboard.fetch_headers,
+    `dashboards:fetch_headers:${dashboard.id}`
+  ) as Record<string, string>;
   const fetchOpts: RequestInit = {
     method: dashboard.fetch_method || 'GET',
     headers: { 'Content-Type': 'application/json', ...headers },
