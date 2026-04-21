@@ -83,6 +83,25 @@ else
   warn "Nginx config or template not found — skipping"
 fi
 
+# ── Step 3c: Ensure N8N_BRIDGE_JWT_SECRET exists in .env ──
+# Must run BEFORE the rebuild so the new server boots with the var set —
+# config.ts now validates it at import time and will crash without it.
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  if ! grep -q '^N8N_BRIDGE_JWT_SECRET=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
+    BRIDGE_SECRET=$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 64)
+    cat >> "$SCRIPT_DIR/.env" <<BRIDGEEOF
+
+# ─── n8n JWT Bridge ───
+# Shared HS256 secret between XRay and n8n. n8n's "JWT Auth" credential
+# must hold this same value. Rotate on both sides in one window.
+N8N_BRIDGE_JWT_SECRET=${BRIDGE_SECRET}
+BRIDGEEOF
+    ok "N8N_BRIDGE_JWT_SECRET added to .env — set this same value on n8n"
+  else
+    ok "N8N_BRIDGE_JWT_SECRET already configured"
+  fi
+fi
+
 # ── Step 4: Rebuild and restart backend ──
 echo "  [4/7] Rebuilding backend..."
 if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then

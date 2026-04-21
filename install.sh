@@ -123,6 +123,7 @@ step 4 "Generating secrets"
 
 JWT_SECRET=$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 64)
 ENCRYPTION_KEY=$(openssl rand -hex 32)
+N8N_BRIDGE_JWT_SECRET=$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 64)
 DB_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
 STRIPE_WEBHOOK_SECRET=""
 
@@ -132,6 +133,7 @@ VAPID_PRIVATE_KEY=""
 
 ok "JWT secret generated (64 chars)"
 ok "Encryption key generated (256-bit hex)"
+ok "n8n bridge secret generated (64 chars) — set this same value on n8n"
 ok "Database password generated (32 chars)"
 
 # ── Step 5: .env File ──────────────────────────────────────
@@ -157,6 +159,11 @@ DB_PASSWORD=${DB_PASSWORD}
 # ─── Authentication ───
 JWT_SECRET=${JWT_SECRET}
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
+
+# ─── n8n JWT Bridge ───
+# Shared HS256 secret between XRay and n8n. n8n's "JWT Auth" credential
+# must hold this same value. Rotate on both sides in one window.
+N8N_BRIDGE_JWT_SECRET=${N8N_BRIDGE_JWT_SECRET}
 
 # ─── WebAuthn ───
 RP_NAME=XRay BI
