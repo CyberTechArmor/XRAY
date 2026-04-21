@@ -27,6 +27,21 @@ export const config = {
     }
     return key;
   })(),
+  n8nBridge: {
+    // HS256 secret shared with n8n. Must match the "JWT Auth" credential
+    // configured on every webhook that accepts XRay renders. Rotating this
+    // value requires updating both sides in the same window.
+    jwtSecret: (() => {
+      const key = getEnvRequired('N8N_BRIDGE_JWT_SECRET');
+      if (key.length < 32) {
+        throw new Error('N8N_BRIDGE_JWT_SECRET must be at least 32 characters');
+      }
+      return key;
+    })(),
+    issuer: 'xray',
+    audience: 'n8n',
+    expirySeconds: 60,
+  },
   stripeWebhookSecret: getEnv('STRIPE_WEBHOOK_SECRET'),
   webauthn: {
     rpName: getEnv('WEBAUTHN_RP_NAME', 'XRay BI'),
