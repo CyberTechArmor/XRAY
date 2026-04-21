@@ -152,6 +152,150 @@ backfill is complete and it's safe to retire the fallback later.
 
 ---
 
-## Step 2 — Next up: XRay ↔ n8n JWT bridge
+## Step 2 — XRay ↔ n8n JWT bridge (shipped)
 
-See the next-step kickoff prompt for details.
+### What changed
+
+- `server/src/lib/n8n-bridge.ts` — new. `mintBridgeJwt({ tenantId, userId?,
+  templateId?, integration, accessToken?, params? })` signs an HS256 token
+  with `iss='xray'`, `aud='n8n'`, `sub=tenant_id`, `jti=UUID`, `iat`/`exp`
+  (60 s lifetime), plus `user_id`, `template_id`, `integration`,
+  `access_token`, `params`. Unset optional claims are **absent**, not
+  empty — keeps n8n-side validation from seeing false-signal nulls.
+- `server/src/lib/n8n-bridge.test.ts` — 6 vitest specs. Claim shape,
+  absent-vs-present optionals, `jti` uniqueness, input validation,
+  wrong-secret rejection.
+- `server/src/config.ts` — new `config.n8nBridge` block. Reads
+  `N8N_BRIDGE_JWT_SECRET` (min 32 chars) with the same at-boot throw
+  pattern as `ENCRYPTION_KEY`.
+- `server/src/routes/dashboard.routes.ts` — authed `POST /:id/render`
+  branches on `dashboards.integration`:
+  - non-null → mint JWT, send as `Authorization: Bearer`, audit
+    `dashboard.bridge_mint` with metadata `{ jti, integration,
+    template_id, via: 'authed_render' }`.
+  - null → legacy `fetch_headers` path, unchanged.
+  Also SELECTs `tenant_id` (needed for `sub`) and the three new columns.
+- `server/src/services/dashboard.service.ts` — same branching in
+  `renderPublicDashboard`. Public-share mints with `user_id` absent
+  and audit metadata `via: 'public_share'` plus the first 8 chars of
+  the share token for trace triangulation.
+- `server/src/services/admin.service.ts` — `fetchDashboardContent`
+  (admin preview) branches the same way with `via: 'admin_preview'`.
+  `createDashboard` / `updateDashboard` accept `templateId` /
+  `integration` / `params`; empty strings on the first two clear back
+  to NULL (back to the legacy path). `params` coerces null/undefined
+  to `'{}'` to respect the NOT NULL default.
+- `server/src/lib/validation.ts` — `dashboardCreateSchema` /
+  `dashboardUpdateSchema` extended with the three optional fields.
+- `server/src/services/portability.service.ts` — export/import column
+  list extended so the three new columns round-trip.
+- `frontend/bundles/general.json` — admin dashboard builder gets a new
+  **n8n Bridge (JWT auth)** card between Connection and Appearance.
+  Three inputs: Integration, Template ID, Params (JSON). Load/save
+  paths wired.
+- `migrations/018_dashboards_bridge_config.sql` (+ companion under
+  `down/`) — adds `template_id TEXT`, `integration TEXT`,
+  `params JSONB NOT NULL DEFAULT '{}'`. Additive, idempotent (`IF NOT
+  EXISTS`). No encryption trigger — routing data, not credentials.
+- `install.sh` — generates `N8N_BRIDGE_JWT_SECRET` (64 chars, matches
+  `JWT_SECRET` rules) and writes to `.env`.
+- `update.sh` — step 3c (new, before rebuild) appends the var to
+  existing `.env` files if missing, so the rebuilt container boots
+  cleanly.
+
+### Env changes
+
+- **New required var:** `N8N_BRIDGE_JWT_SECRET`, minimum 32 chars. Must
+  match the secret configured on every n8n webhook's "JWT Auth"
+  credential that accepts XRay renders. Rotate on both sides in the
+  same window; a mismatch breaks every bridge-path dashboard.
+- Required in every environment that boots the server:
+  `DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `N8N_BRIDGE_JWT_SECRET`.
+
+### Schema changes
+
+- Three additive columns on `platform.dashboards`:
+  `template_id TEXT`, `integration TEXT`, `params JSONB NOT NULL
+  DEFAULT '{}'::jsonb`. Existing rows need no backfill — the JSONB
+  default covers them, and the two TEXT columns are nullable.
+- `init.sql` was NOT updated (same convention as step 1; numbered
+  migrations are source of truth post-init).
+
+### How n8n validates (the other side of the contract)
+
+1. Configure an n8n credential of type "JWT Auth": algorithm HS256,
+   secret = `N8N_BRIDGE_JWT_SECRET`.
+2. On the Webhook node, set Authentication → JWT Auth → that credential.
+   n8n verifies signature + `exp` automatically.
+3. In a downstream Set/Code node: assert `$json.iss === 'xray'`,
+   `$json.aud === 'n8n'`, extract `sub` (tenant_id), `user_id`,
+   `template_id`, `integration`, `access_token`, `params`. Route on
+   `integration` or `template_id`.
+4. Log `jti` on the n8n side so a leaked token's trail exists on both
+   systems.
+
+### Opting a dashboard onto the JWT path
+
+Admin UI: populate the **Integration** field on the dashboard builder.
+Empty value → legacy `fetch_headers` path. Non-empty → JWT path.
+`Auth Bearer Token` and `Headers` above the bridge card are ignored for
+JWT-path dashboards.
+
+SQL opt-in (for batch cutover or ops work):
+```sql
+UPDATE platform.dashboards
+   SET integration = 'housecall_pro',
+       template_id = 'tmpl_technician_daily',
+       params = '{"window_days": 30}'::jsonb
+ WHERE id = $1;
+```
+
+### Known follow-ups not done this session
+
+- **`Auth Bearer Token` / `Headers` form fields** on the builder are
+  dead for JWT-path dashboards. Kept visible so legacy dashboards can
+  still be edited. Step 3's schema refactor drops `fetch_headers`;
+  that's the right time to remove these form fields.
+- **`access_token` claim** is always absent this session. Step 4
+  (OAuth integration handling) is where XRay looks up the tenant's
+  per-integration token from `platform.connections.connection_details`
+  and passes it through.
+- **"Dashboards defined once, tenants auto-inherit via connection
+  source_type"** is a post-step-5 concern. `integration` + `template_id`
+  as opaque strings are the hooks for that future refactor — no
+  redesign needed on the bridge side when it lands.
+- **`dashboards.fetch_body` encryption** — moot. The JWT travels in
+  the Authorization header, never in the body. `fetch_body` stays
+  available for legacy payloads; its contents are not credentials.
+- **RLS is still decorative** (documented under step 1). Unchanged by
+  step 2 — the render paths still gate via explicit `WHERE
+  tenant_id = $1`. Step 6 fixes.
+- **Plaintext-read fallback in `encrypted-column.ts`** still in place.
+  Unrelated cleanup, a future session.
+
+### Verify on VPS after deploy
+
+```
+# Env var is set in the container.
+docker compose exec server env | grep N8N_BRIDGE_JWT_SECRET
+
+# At least one opted-in dashboard exists (flip one for smoke test).
+psql $DATABASE_URL -c \
+  "UPDATE platform.dashboards SET integration='housecall_pro'
+     WHERE id='<dashboard-uuid>' RETURNING id, integration, template_id;"
+
+# Render it — expect Authorization: Bearer <jwt> to hit the n8n webhook.
+# Check audit_log for the mint trace:
+psql $DATABASE_URL -c \
+  "SELECT created_at, action, resource_id, metadata->>'jti' AS jti,
+          metadata->>'integration' AS integration, metadata->>'via' AS via
+     FROM platform.audit_log
+    WHERE action='dashboard.bridge_mint'
+    ORDER BY created_at DESC LIMIT 5;"
+```
+
+---
+
+## Step 3 — Next up: schema refactor + dashboard-template cutover
+
+See `.claude/step-3-kickoff.md` for details.
