@@ -230,7 +230,7 @@ export async function listAllDashboards(query: { page: number; limit: number }) 
        ORDER BY d.created_at DESC LIMIT $1 OFFSET $2`,
       [query.limit, offset]
     );
-    return { data: result.rows, total, page: query.page, limit: query.limit };
+    return { data: result.rows.map(decryptDashboardRow), total, page: query.page, limit: query.limit };
   });
 }
 
@@ -246,7 +246,7 @@ export async function getDashboardDetail(dashboardId: string) {
       [dashboardId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
-    return result.rows[0];
+    return decryptDashboardRow(result.rows[0]);
   });
 }
 
