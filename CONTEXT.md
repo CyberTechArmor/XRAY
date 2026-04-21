@@ -75,6 +75,28 @@ non-null value either equals `''`/`{}` or matches `enc:v1:%` / `{"_enc":"enc:v1:
 
 ### Known follow-ups not done this session
 
+- **RLS is effectively decorative in the current deploy — critical for
+  step 6.** Empirically verified during the step-1 review:
+  1. The `set_config(..., 'true')` pattern used throughout the services
+     does not persist the GUC to subsequent `client.query()` calls. Each
+     query is its own autocommit transaction, and `SET LOCAL` unwinds at
+     transaction end. I reproduced this by running the exact XRay
+     pattern against a local Postgres 16 via node-postgres: the query
+     after `set_config` throws `invalid input syntax for type uuid: ""`
+     when the RLS policy dereferences `current_setting('app.current_tenant', true)::uuid`.
+  2. The masking factor: in Docker, `POSTGRES_USER` creates a superuser,
+     and the role owns `platform.*` tables. Both superuser and table
+     owner bypass RLS by default (no `ALTER TABLE ... FORCE ROW LEVEL SECURITY`
+     is set). So the policies never actually filter; tenant isolation in
+     prod comes from explicit `WHERE tenant_id = $1` in services.
+  3. Step-1 work is unaffected — triggers fire for all roles, and the
+     backfill script uses `is_local=false` (session-scoped, verified to
+     persist). But step 6 needs to address: (a) run the app as a
+     non-superuser non-owner role, (b) enable FORCE ROW LEVEL SECURITY
+     on tenant tables, (c) fix the `set_config` pattern by wrapping in
+     explicit transactions or switching to `is_local=false`, (d) use
+     `withTenantContext` consistently. All four likely; pick one as the
+     entry point and the others fall out.
 - **`GET /api/embed/:token` is unauthenticated and returns the whole
   dashboard row**, including `fetch_url` and (now-decrypted)
   `fetch_headers`. This is a pre-existing design flaw, not a regression
