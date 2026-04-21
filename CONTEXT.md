@@ -46,9 +46,12 @@ Strict ordering — inverting any two of these will break writes:
 
 1. **Deploy new server code.** Writes encrypt, reads tolerate both
    formats. Safe to run against a DB that still has plaintext rows.
-2. **Apply migration 017.** `psql $DATABASE_URL -f migrations/017_encrypt_tenant_credentials.sql`.
-   Existing plaintext rows are untouched (trigger only fires on
-   INSERT/UPDATE). Any future write must carry the envelope.
+2. **Apply migration 017.** `deploy.sh` / `update.sh` / `install.sh` all
+   iterate `migrations/*.sql` and will pick it up automatically. Manual
+   equivalent: `psql $DATABASE_URL -f migrations/017_encrypt_tenant_credentials.sql`.
+   The down migration lives under `migrations/down/` so the glob does
+   not execute it. Existing plaintext rows are untouched (trigger only
+   fires on INSERT/UPDATE). Any future write must carry the envelope.
 3. **Run the backfill.** From the server dir:
    `npm run backfill:encrypt-credentials` (add `-- --dry-run` to preview).
    Idempotent — rerun-safe.
