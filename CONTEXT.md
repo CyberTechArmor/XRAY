@@ -72,6 +72,17 @@ non-null value either equals `''`/`{}` or matches `enc:v1:%` / `{"_enc":"enc:v1:
 
 ### Known follow-ups not done this session
 
+- **`GET /api/embed/:token` is unauthenticated and returns the whole
+  dashboard row**, including `fetch_url` and (now-decrypted)
+  `fetch_headers`. This is a pre-existing design flaw, not a regression
+  from step 1 — the same endpoint returned plaintext before encryption
+  was introduced. Proper fix is to project only `view_html`, `view_css`,
+  `view_js`, and `name` from the embed endpoint. Out of scope for
+  credentials-at-rest; address before any embed tokens land in the wild.
+  Same caveat applies in a weaker form to the authenticated
+  `GET /dashboards/:id` and the public `/share/:token` path — authed
+  users with `dashboards.view` see the row today, which is a
+  permission-model question rather than an encryption question.
 - **`dashboards.fetch_body`** (JSONB) is not encrypted. Today it holds
   static template/tenant params rather than credentials, but it will
   hold the n8n JWT in step 2 — revisit encryption scope when step 2

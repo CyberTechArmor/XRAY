@@ -12,6 +12,13 @@ function decryptConnectionRow<T extends { id: string; connection_details?: strin
   return row;
 }
 
+function decryptDashboardRow<T extends { id: string; fetch_headers?: unknown }>(row: T): T {
+  if (row.fetch_headers !== undefined) {
+    row.fetch_headers = decryptJsonField(row.fetch_headers, `dashboards:fetch_headers:${row.id}`);
+  }
+  return row;
+}
+
 // ─── Tenants ──────────────────────────────────────────────
 
 export async function listAllTenants(query: { page: number; limit: number }) {
@@ -268,7 +275,7 @@ export async function createDashboard(input: {
     );
     const dash = result.rows[0];
     auditService.log({ tenantId: input.tenantId, action: 'dashboard.create', resourceType: 'dashboard', resourceId: dash.id, metadata: { name: input.name } });
-    return dash;
+    return decryptDashboardRow(dash);
   });
 }
 
@@ -310,7 +317,7 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
     const dash = result.rows[0];
     auditService.log({ tenantId: dash.tenant_id, action: 'dashboard.update', resourceType: 'dashboard', resourceId: dashboardId, metadata: { fields: Object.keys(updates) } });
-    return dash;
+    return decryptDashboardRow(dash);
   });
 }
 
