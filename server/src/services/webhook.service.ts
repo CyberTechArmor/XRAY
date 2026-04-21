@@ -1,5 +1,6 @@
 import { getPool, withClient } from '../db/connection';
 import { generateToken } from '../lib/crypto';
+import { encryptSecret, decryptSecret } from '../lib/encrypted-column';
 import * as audit from './audit.service';
 import crypto from 'crypto';
 
@@ -35,7 +36,7 @@ export async function createWebhook(params: CreateWebhookParams) {
       `INSERT INTO platform.webhooks (tenant_id, name, target_url, secret, events, created_by)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [params.tenantId, params.name, params.url, secret, params.events || ['account.created'], params.createdBy]
+      [params.tenantId, params.name, params.url, encryptSecret(secret), params.events || ['account.created'], params.createdBy]
     );
 
     audit.log({
@@ -47,7 +48,9 @@ export async function createWebhook(params: CreateWebhookParams) {
       metadata: { name: params.name, url: params.url },
     });
 
-    return result.rows[0];
+    // Return plaintext secret to the caller — this is the only time
+    // it's revealed; the DB row holds the enc:v1: envelope.
+    return { ...result.rows[0], secret };
   });
 }
 
@@ -70,7 +73,12 @@ export async function listAllWebhooks(tenantId: string) {
 export async function getWebhook(id: string, tenantId: string) {
   return withClient(async (client) => {
     await bypassRLS(client);
-    const result = await client.query(`SELECT * FROM platform.webhooks WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
+    const result = await client.query(
+      `SELECT id, tenant_id, name, target_url, events, is_active,
+              last_triggered_at, failure_count, created_by, created_at, updated_at
+       FROM platform.webhooks WHERE id = $1 AND tenant_id = $2`,
+      [id, tenantId]
+    );
     return result.rows[0] || null;
   });
 }
@@ -87,7 +95,9 @@ export async function updateWebhook(id: string, tenantId: string, params: Update
     if (params.isActive !== undefined) { sets.push(`is_active = $${idx}`); values.push(params.isActive); idx++; }
     values.push(id, tenantId);
     const result = await client.query(
-      `UPDATE platform.webhooks SET ${sets.join(', ')} WHERE id = $${idx} AND tenant_id = $${idx + 1} RETURNING *`,
+      `UPDATE platform.webhooks SET ${sets.join(', ')} WHERE id = $${idx} AND tenant_id = $${idx + 1}
+       RETURNING id, tenant_id, name, target_url, events, is_active,
+                 last_triggered_at, failure_count, created_by, created_at, updated_at`,
       values
     );
     return result.rows[0] || null;
@@ -114,7 +124,7 @@ export async function regenerateSecret(id: string, tenantId: string): Promise<{ 
     const newSecret = generateToken(32);
     const result = await client.query(
       `UPDATE platform.webhooks SET secret = $1, updated_at = now() WHERE id = $2 AND tenant_id = $3 RETURNING id`,
-      [newSecret, id, tenantId]
+      [encryptSecret(newSecret), id, tenantId]
     );
     if (result.rows.length === 0) return null;
     return { secret: newSecret };
@@ -126,8 +136,9 @@ export async function regenerateSecret(id: string, tenantId: string): Promise<{ 
  */
 async function sendWebhook(wh: { id: string; target_url: string; secret: string | null }, event: string, payload: Record<string, unknown>): Promise<boolean> {
   const body = JSON.stringify({ event, data: payload, timestamp: new Date().toISOString(), webhook_id: wh.id });
-  const signature = wh.secret
-    ? crypto.createHmac('sha256', wh.secret).update(body).digest('hex')
+  const plaintextSecret = decryptSecret(wh.secret, `webhooks:secret:${wh.id}`);
+  const signature = plaintextSecret
+    ? crypto.createHmac('sha256', plaintextSecret).update(body).digest('hex')
     : '';
 
   try {
