@@ -406,6 +406,23 @@ else
   warn "Could not run migrations (postgres container not found or no migrations/)"
 fi
 
+# ── Step 9b: Backfill encrypted credentials (migration 017 companion) ──
+# No-op on a fresh install (no plaintext rows to rewrite), but harmless
+# and keeps the flow consistent with update.sh. Idempotent.
+info "Running credential backfill..."
+SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
+if [ -n "$SERVER_CONTAINER" ]; then
+  if docker compose exec -T server test -f dist/scripts/backfill-encrypt-credentials.js 2>/dev/null; then
+    docker compose exec -T server node dist/scripts/backfill-encrypt-credentials.js 2>&1 \
+      | sed 's/^/    /' || warn "Backfill reported errors — rerun manually if needed"
+    ok "Backfill complete"
+  else
+    info "Backfill script not in image — skipping (expected on older builds)"
+  fi
+else
+  warn "Server container not running — skipping backfill"
+fi
+
 # ── Step 10: Health Check ─────────────────────────────────
 step "10" "Waiting for application to become healthy"
 

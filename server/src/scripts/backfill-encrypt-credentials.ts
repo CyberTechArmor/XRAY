@@ -3,14 +3,18 @@
  * envelopes. Safe to re-run: rows already carrying the envelope are
  * skipped. Pass --dry-run to preview without writing.
  *
- *   cd server && npx tsx scripts/backfill-encrypt-credentials.ts [--dry-run]
+ * Compiled to dist/scripts/backfill-encrypt-credentials.js by tsc and
+ * shipped inside the server container. Invoked from update.sh after
+ * migration 017 applies:
+ *
+ *   docker compose exec -T server node dist/scripts/backfill-encrypt-credentials.js
  *
  * Reads DATABASE_URL and ENCRYPTION_KEY from env, same as the server.
  * Run AFTER deploying code that writes enc:v1 and AFTER applying
  * migration 017.
  */
 import { Pool, PoolClient } from 'pg';
-import { encryptSecret, encryptJsonField } from '../src/lib/encrypted-column';
+import { encryptSecret, encryptJsonField } from '../lib/encrypted-column';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 

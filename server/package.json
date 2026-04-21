@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/db/seed.ts",
-    "backfill:encrypt-credentials": "tsx scripts/backfill-encrypt-credentials.ts",
+    "backfill:encrypt-credentials": "node dist/scripts/backfill-encrypt-credentials.js",
+    "backfill:encrypt-credentials:dev": "tsx src/scripts/backfill-encrypt-credentials.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

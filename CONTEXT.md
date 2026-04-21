@@ -42,19 +42,25 @@ prompt for the full five-step arc.
 
 ### Deploy order on the VPS
 
-Strict ordering — inverting any two of these will break writes:
+`update.sh` and `install.sh` now handle all three steps end-to-end in
+the correct order. For manual deploys or out-of-band runs:
 
 1. **Deploy new server code.** Writes encrypt, reads tolerate both
    formats. Safe to run against a DB that still has plaintext rows.
-2. **Apply migration 017.** `deploy.sh` / `update.sh` / `install.sh` all
-   iterate `migrations/*.sql` and will pick it up automatically. Manual
-   equivalent: `psql $DATABASE_URL -f migrations/017_encrypt_tenant_credentials.sql`.
-   The down migration lives under `migrations/down/` so the glob does
-   not execute it. Existing plaintext rows are untouched (trigger only
-   fires on INSERT/UPDATE). Any future write must carry the envelope.
-3. **Run the backfill.** From the server dir:
-   `npm run backfill:encrypt-credentials` (add `-- --dry-run` to preview).
-   Idempotent — rerun-safe.
+   `update.sh` step 4 (`docker compose build --no-cache && up -d`).
+2. **Apply migration 017.** Scripts iterate `migrations/*.sql` and pick
+   it up automatically. The down migration lives under `migrations/down/`
+   so the glob does not execute it. Existing plaintext rows are
+   untouched (trigger only fires on INSERT/UPDATE). Manual equivalent:
+   `psql $DATABASE_URL -f migrations/017_encrypt_tenant_credentials.sql`.
+3. **Run the backfill.** `update.sh` step 5b runs
+   `docker compose exec -T server node dist/scripts/backfill-encrypt-credentials.js`
+   after migrations. Idempotent — rerun-safe. Manual equivalent:
+   ```
+   docker compose exec -T server node dist/scripts/backfill-encrypt-credentials.js
+   ```
+   For a dev machine outside the container:
+   `cd server && npm run backfill:encrypt-credentials:dev`.
 
 After step 3 you can `SELECT` any of the three columns and confirm every
 non-null value either equals `''`/`{}` or matches `enc:v1:%` / `{"_enc":"enc:v1:%"}`.
