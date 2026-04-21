@@ -1,6 +1,8 @@
 import { withClient, withTransaction } from '../db/connection';
 import { generateToken, hashToken } from '../lib/crypto';
 import { decryptJsonField } from '../lib/encrypted-column';
+import { mintBridgeJwt } from '../lib/n8n-bridge';
+import * as auditService from './audit.service';
 import { AppError } from '../middleware/error-handler';
 
 function decryptDashboardRow<T extends { id: string; fetch_headers?: unknown }>(row: T): T {
@@ -27,6 +29,9 @@ interface Dashboard {
   is_public: boolean;
   public_token: string | null;
   status: string;
+  template_id: string | null;
+  integration: string | null;
+  params: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }
@@ -456,9 +461,37 @@ export async function renderPublicDashboard(
     };
   }
 
-  // Proxy fetch for dynamic dashboards. fetch_headers is already plaintext
-  // here — getPublicDashboard decrypts on the way out.
-  const headers = (dashboard.fetch_headers || {}) as Record<string, string>;
+  // Proxy fetch for dynamic dashboards. Two auth modes:
+  //  1. Bridge (integration set) — mint an HS256 JWT per render. The
+  //     share context has no user, so the user_id claim is absent.
+  //  2. Legacy (integration null) — forward the (already-decrypted)
+  //     fetch_headers as-is.
+  let headers: Record<string, string>;
+  if (dashboard.integration) {
+    const minted = mintBridgeJwt({
+      tenantId: dashboard.tenant_id,
+      userId: null,
+      templateId: dashboard.template_id || null,
+      integration: dashboard.integration,
+      params: (dashboard.params as Record<string, unknown>) || {},
+    });
+    headers = { Authorization: `Bearer ${minted.jwt}` };
+    auditService.log({
+      tenantId: dashboard.tenant_id,
+      action: 'dashboard.bridge_mint',
+      resourceType: 'dashboard',
+      resourceId: dashboard.id,
+      metadata: {
+        jti: minted.jti,
+        integration: dashboard.integration,
+        template_id: dashboard.template_id || null,
+        via: 'public_share',
+        public_token_prefix: publicToken.slice(0, 8),
+      },
+    });
+  } else {
+    headers = (dashboard.fetch_headers || {}) as Record<string, string>;
+  }
   const fetchOpts: RequestInit = {
     method: dashboard.fetch_method || 'GET',
     headers: { 'Content-Type': 'application/json', ...headers },

@@ -3,8 +3,10 @@ import { authenticateJWT } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
 import { validateBody, dashboardAccessSchema, embedCreateSchema } from '../lib/validation';
 import { decryptJsonField } from '../lib/encrypted-column';
+import { mintBridgeJwt } from '../lib/n8n-bridge';
 import * as dashboardService from '../services/dashboard.service';
 import * as aiService from '../services/ai.service';
+import * as auditService from '../services/audit.service';
 import { getSetting } from '../services/settings.service';
 import { config } from '../config';
 
@@ -131,18 +133,20 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       if (req.user!.tid) {
         await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [req.user!.tid]);
       }
-      // Platform admin can render any dashboard regardless of tenant
+      // Platform admin can render any dashboard regardless of tenant.
+      // Select tenant_id too — bridge JWT uses it as `sub`, and platform
+      // admin renders otherwise wouldn't know which tenant to mint for.
       const query = req.user!.is_platform_admin
         ? {
-            text: `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
-                    view_html, view_css, view_js
+            text: `SELECT id, tenant_id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
+                    view_html, view_css, view_js, template_id, integration, params
              FROM platform.dashboards
              WHERE id = $1 AND status = 'active'`,
             values: [req.params.id],
           }
         : {
-            text: `SELECT id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
-                    view_html, view_css, view_js
+            text: `SELECT id, tenant_id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
+                    view_html, view_css, view_js, template_id, integration, params
              FROM platform.dashboards
              WHERE id = $1 AND tenant_id = $2 AND status = 'active'`,
             values: [req.params.id, req.user!.tid],
@@ -182,11 +186,45 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       });
     }
 
-    // Proxy fetch to n8n with retry
-    const parsedHeaders = decryptJsonField(
-      dashboard.fetch_headers,
-      `dashboards:fetch_headers:${dashboard.id}`
-    ) as Record<string, string>;
+    // Proxy fetch to n8n with retry. Two auth modes:
+    //  1. Bridge (integration set) — mint an HS256 JWT per render and send
+    //     it as Authorization: Bearer. fetch_headers is ignored on this
+    //     path; step 3 drops the column once every dashboard is cut over.
+    //  2. Legacy (integration null/empty) — decrypt fetch_headers and
+    //     forward as-is. This is the original behavior.
+    let parsedHeaders: Record<string, string>;
+    if (dashboard.integration) {
+      const minted = mintBridgeJwt({
+        tenantId: dashboard.tenant_id,
+        userId: req.user!.sub,
+        templateId: dashboard.template_id || null,
+        integration: dashboard.integration,
+        params: (dashboard.params as Record<string, unknown>) || {},
+        // access_token stays absent until step 4 wires OAuth lookup.
+      });
+      parsedHeaders = { Authorization: `Bearer ${minted.jwt}` };
+      // Audit-log the mint so a leaked token can be traced back to
+      // (tenant, user, dashboard). Fire-and-forget, matches the existing
+      // audit pattern elsewhere in this file.
+      auditService.log({
+        tenantId: dashboard.tenant_id,
+        userId: req.user!.sub,
+        action: 'dashboard.bridge_mint',
+        resourceType: 'dashboard',
+        resourceId: dashboard.id,
+        metadata: {
+          jti: minted.jti,
+          integration: dashboard.integration,
+          template_id: dashboard.template_id || null,
+          via: 'authed_render',
+        },
+      });
+    } else {
+      parsedHeaders = decryptJsonField(
+        dashboard.fetch_headers,
+        `dashboards:fetch_headers:${dashboard.id}`
+      ) as Record<string, string>;
+    }
 
     // Build fetch URL with query params
     let fetchUrl = dashboard.fetch_url;
