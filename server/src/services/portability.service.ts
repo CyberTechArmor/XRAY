@@ -82,10 +82,32 @@ export async function exportPlatform(opts: ExportOptions, userId?: string): Prom
     }
 
     // ── Connections + tables + comments ──
+    // Step 4: OAuth + API-key credentials on platform.connections are
+    // excluded from the export. These are live credentials specific to
+    // the running platform's ENCRYPTION_KEY + provider app registration;
+    // they shouldn't round-trip through a JSON export. After an import,
+    // tenants re-run the Connect flow. The integration_id + auth_method
+    // ARE exported so the imported rows are recognizable and the
+    // scheduler knows which are OAuth-shaped, but the actual tokens
+    // and api_key ciphertexts are dropped.
+    const CONNECTION_OAUTH_EXCLUDE = [
+      'oauth_refresh_token',
+      'oauth_access_token',
+      'oauth_access_token_expires_at',
+      'oauth_last_refreshed_at',
+      'oauth_refresh_failed_count',
+      'oauth_last_error',
+      'api_key',
+    ];
     if (opts.connections !== false) {
       const connections = await client.query(
         'SELECT * FROM platform.connections ORDER BY created_at'
       );
+      connections.rows = connections.rows.map((row: Record<string, unknown>) => {
+        const clean = { ...row };
+        for (const col of CONNECTION_OAUTH_EXCLUDE) delete clean[col];
+        return clean;
+      });
       const connIds = connections.rows.map((c: any) => c.id);
       const tables = connIds.length ? await client.query(
         `SELECT * FROM platform.connection_tables WHERE connection_id = ANY($1)`,
@@ -302,9 +324,13 @@ export async function importPlatform(zipBuffer: Buffer, userId?: string): Promis
     }
 
     // ── Import connections ──
+    // integration_id + auth_method imported so the scheduler recognizes
+    // OAuth-shaped rows. Tokens / api_key are NOT in the export
+    // (excluded above) and NOT in this whitelist — tenants reconnect
+    // after import to populate fresh credentials.
     if (dataFiles.connections) {
       const { imported, skipped } = await importRows(client, 'platform.connections', dataFiles.connections, 'id',
-        ['id', 'tenant_id', 'name', 'source_type', 'source_detail', 'pipeline_ref', 'description', 'connection_details', 'image_url', 'status', 'created_at', 'updated_at']);
+        ['id', 'tenant_id', 'name', 'source_type', 'source_detail', 'pipeline_ref', 'description', 'connection_details', 'image_url', 'status', 'integration_id', 'auth_method', 'created_at', 'updated_at']);
       result.imported.connections = imported;
       result.skipped.connections = skipped;
     }
