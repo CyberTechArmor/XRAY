@@ -98,6 +98,23 @@ admin UI before step 3 lands.
 
 ## Design commitments that apply to step 3
 
+- **The bridge JWT now carries a rich claim set** (added in the
+  interlude session between step 2 and step 3 — see CONTEXT.md). When
+  you collapse the render branches, preserve every existing call to
+  `mintBridgeJwt` with all its current fields intact: `tenant_*`,
+  `dashboard_*`, `user_*`, `isPlatformAdmin`, `params`, and — most
+  importantly — the per-call-site `via` value. The `via` values today
+  are `authed_render`, `admin_impersonation` (computed in
+  `dashboard.routes.ts` when `is_platform_admin && dashboard.tenant_id
+  !== req.user.tid`), `public_share`, and `admin_preview`. Step 3's
+  cutover must not collapse these four into one or lose the
+  `admin_impersonation` branch — they are the SOC 2 impersonation
+  trail.
+- **The authed render SELECT now JOINs `platform.tenants` + LEFT JOINs
+  `platform.users` + `platform.roles`.** Keep the JOINs; they feed the
+  tenant/user labels the JWT now emits. Same JOIN shape is in
+  `admin.service.ts:fetchDashboardContent` and a sibling helper
+  `fetchTenantLabels(tenantId)` lives in `dashboard.service.ts`.
 - **Migration 020** is the home for the column drop + trigger drop
   (017's `fetch_headers` trigger). First destructive migration in the
   bridge arc. Stage it explicitly: up drops the column + trigger,
@@ -129,7 +146,8 @@ metadata).
 
 ## Acceptance check for step 3
 
-1. `npm test` — green (no regressions in the 19 existing specs).
+1. `npm test` — green (no regressions in the 24 existing specs; 12 in
+   `encrypted-column.test.ts`, 12 in `n8n-bridge.test.ts`).
 2. `npm run build` — clean.
 3. `psql` shows `platform.dashboards.fetch_headers` gone and the
    `enforce_enc_dashboards_fetch_headers` trigger dropped:

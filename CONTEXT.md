@@ -347,6 +347,137 @@ SELECT created_at, action, resource_id,
 
 ---
 
+## Interlude — JWT labels + pipeline hardening plan (shipped)
+
+Session between step 2 and step 3. Expanded the bridge JWT claim set so
+n8n and any downstream DB verifier have first-class access to tenant,
+dashboard, user, and call-site context without a second round-trip to
+the platform. Also captured the three-Postgres design decisions that
+will drive the pipeline-hardening work after step 6.
+
+### What changed
+
+- `server/src/lib/n8n-bridge.ts` — `BridgeJwtInput` extended with
+  tenant labels (`tenantSlug`, `tenantName`, `tenantStatus`,
+  `warehouseHost`), dashboard labels (`dashboardId`, `dashboardName`,
+  `dashboardStatus`, `isPublic`), user labels (`userEmail`, `userName`,
+  `userRole`, `isPlatformAdmin`), and a `via` tag. Helper
+  `setIfPresent` keeps unset optional fields absent rather than null,
+  while preserving boolean `false`. `BridgeVia` type is
+  `'authed_render' | 'admin_impersonation' | 'public_share' |
+  'admin_preview'`.
+- `server/src/lib/n8n-bridge.test.ts` — 7 specs → 12 specs. Covers
+  full claim snapshot, sub==tenant_id invariant, public_share user
+  absence, admin_impersonation and admin_preview acting-admin claims,
+  empty-string-vs-absent semantics, boolean preservation.
+- `server/src/routes/dashboard.routes.ts` — authed render SELECT now
+  `JOIN platform.tenants` + `LEFT JOIN platform.users` + `LEFT JOIN
+  platform.roles` on the acting user. Computes
+  `via: 'admin_impersonation'` when
+  `is_platform_admin && dashboard.tenant_id !== req.user.tid`, else
+  `'authed_render'`. Both the JWT claim and the audit_log row record
+  the same computed value so the impersonation trail is self-contained
+  in `platform.audit_log`.
+- `server/src/services/dashboard.service.ts` — added
+  `fetchTenantLabels(tenantId)` helper. `renderPublicDashboard`
+  passes tenant labels + dashboard labels into `mintBridgeJwt` with
+  `via: 'public_share'`; user_* claims intentionally absent.
+- `server/src/services/admin.service.ts` — `fetchDashboardContent`
+  now accepts `adminUserId`. SELECT adds the same JOINs; emits
+  `via: 'admin_preview'` with the acting admin's user row (LEFT JOIN
+  tolerates missing rows for platform admins outside the target
+  tenant).
+- `server/src/routes/admin.routes.ts` — threads `req.user?.sub`
+  through to `adminService.fetchDashboardContent`.
+- `.claude/pipeline-hardening-notes.md` — new. Captures: the
+  three-Postgres target architecture (platform / n8n / data-lake, no
+  consolidation); staged Model D → J pipeline-DB hardening plan;
+  Option B (DB-side `pipeline.access_audit` table inserted by
+  `pipeline.authorize` SECURITY DEFINER function) as the SOC 2-aligned
+  audit approach committed for Model J; platform-admin impersonation
+  semantics under D/J; open items (does the one current hard-coded
+  client's tables already have `tenant_id`, workflow inventory,
+  migration plan for the existing client).
+
+### Deploy surface
+
+No new env vars, no new migrations, no new npm deps, no docker-compose
+changes. `update.sh` and `install.sh` both accommodate this without
+modification — the SELECT JOINs target columns that have existed since
+init.sql day one (`platform.tenants.{slug,name,status,warehouse_host}`,
+`platform.users.{email,name,role_id}`, `platform.roles.slug`). RLS
+behavior is preserved: tenants and roles have no RLS; users' JOIN
+satisfies either `tenant_isolation` (tenant user) or
+`platform_admin_bypass` (admin) depending on which GUCs are set.
+
+### Claim set (final, what n8n sees)
+
+Always present: `iss`, `aud`, `sub` (= tenant_id), `jti`, `iat`, `exp`,
+`tenant_id`, `integration`, `params`, `via`.
+
+Always present when loaded from `platform.tenants`: `tenant_slug`,
+`tenant_name`, `tenant_status`. Absent when null: `warehouse_host`.
+
+Always present when loaded from `platform.dashboards`: `dashboard_id`,
+`dashboard_name`, `dashboard_status`, `is_public`. Absent when null:
+`template_id`.
+
+Present on authed_render / admin_impersonation / admin_preview, absent
+on public_share: `user_id`, `user_email`, `user_name`, `user_role`,
+`is_platform_admin`.
+
+Still absent until step 4: `access_token`. Step 4 populates it from
+the tenant's OAuth refresh-token lookup.
+
+### Naming
+
+`sub` is kept equal to `tenant_id` so n8n's native JWT Auth node (which
+reads `sub`) continues working unchanged. All new claims are flat and
+domain-prefixed (`tenant_*`, `dashboard_*`, `user_*`) — no nested
+objects, so n8n Set/Code nodes read them as `$json.tenant_slug` etc.
+
+### Platform admin impersonation (handled, SOC 2-ready at app layer)
+
+A platform admin clicking any tenant's dashboard already worked under
+step 2 — the platform picks the target tenant as `sub` at mint time.
+This session added explicit labeling: the `via: 'admin_impersonation'`
+value plus the user_* claims + `is_platform_admin: true` make every
+cross-tenant render an auditable, signed, 60-second event. Model J
+will layer a DB-side audit row on top (Option B in the pipeline notes)
+so the trail exists in both `platform.audit_log` and
+`pipeline.access_audit` — the SOC 2 Type II "access logging lives in
+the database" bar.
+
+### Known follow-ups not done this session
+
+- **Step 3 cutover** is still untouched. See `.claude/step-3-kickoff.md`.
+- **Access token population** (step 4) still absent from the JWT.
+- **Pipeline hardening (Models D / J)** — design fully specified in
+  `.claude/pipeline-hardening-notes.md`; not built. Phase A (Model D)
+  blocked on step 6's platform-RLS fix landing first.
+- **RLS-is-decorative finding** from step 1 still stands.
+- **Plaintext-read fallback** in `encrypted-column.ts` still in place.
+
+### Verify on VPS after deploy
+
+```sql
+-- New via values appear in bridge_mint audit rows.
+SELECT metadata->>'via' AS via, count(*)
+  FROM platform.audit_log
+ WHERE action = 'dashboard.bridge_mint'
+   AND created_at > now() - interval '1 day'
+ GROUP BY 1;
+
+-- An admin rendering someone else's dashboard leaves a clean trail.
+SELECT created_at, user_id, tenant_id, metadata->>'jti' AS jti
+  FROM platform.audit_log
+ WHERE action = 'dashboard.bridge_mint'
+   AND metadata->>'via' = 'admin_impersonation'
+ ORDER BY created_at DESC LIMIT 5;
+```
+
+---
+
 ## Step 3 — Next up: schema refactor + dashboard-template cutover
 
 See `.claude/step-3-kickoff.md` for details.
