@@ -3,6 +3,8 @@ import { AppError } from '../middleware/error-handler';
 import { encrypt } from '../lib/crypto';
 import { encryptSecret, decryptSecret } from '../lib/encrypted-column';
 import { mintBridgeJwt } from '../lib/n8n-bridge';
+import { mintPipelineJwt, isPipelineJwtConfigured } from '../lib/pipeline-jwt';
+import * as integrationService from './integration.service';
 import { refreshCache as refreshSettingsCache } from './settings.service';
 import * as auditService from './audit.service';
 
@@ -495,6 +497,26 @@ export async function fetchDashboardContent(dashboardId: string, adminUserId?: s
         'This dashboard has an integration but no bridge signing secret.'
       );
     }
+    // admin_preview runs OAuth lookup same as authed paths — a platform
+    // admin previewing a dashboard sees it rendered with the target
+    // tenant's own credentials. If the tenant hasn't connected, the
+    // admin gets 409 OAUTH_NOT_CONNECTED just like the tenant would.
+    const tokenResult = await integrationService.resolveAccessTokenForRender(
+      dash.tenant_id,
+      dash.integration
+    );
+    if (tokenResult.kind === 'needs_reconnect') {
+      throw new AppError(
+        409,
+        'OAUTH_NOT_CONNECTED',
+        'This integration needs to be reconnected by the tenant before preview.'
+      );
+    }
+    const accessToken =
+      tokenResult.kind === 'ready' ? tokenResult.accessToken : null;
+    const authMethod =
+      tokenResult.kind === 'ready' ? tokenResult.authMethod : null;
+
     const minted = mintBridgeJwt({
       tenantId: dash.tenant_id,
       tenantSlug: dash.tenant_slug,
@@ -518,8 +540,23 @@ export async function fetchDashboardContent(dashboardId: string, adminUserId?: s
       isPlatformAdmin: adminUserId ? true : null,
       via: 'admin_preview',
       secret: bridgeSecret,
+      accessToken,
+      authMethod,
     });
     const headers: Record<string, string> = { Authorization: `Bearer ${minted.jwt}` };
+
+    let pipelineJti: string | null = null;
+    if (isPipelineJwtConfigured()) {
+      const pipelineMinted = mintPipelineJwt({
+        tenantId: dash.tenant_id,
+        userId: adminUserId || undefined,
+        isPlatformAdmin: !!adminUserId,
+        via: 'admin_preview',
+      });
+      pipelineJti = pipelineMinted.jti;
+      headers['X-XRay-Pipeline-Token'] = `Bearer ${pipelineMinted.jwt}`;
+    }
+
     auditService.log({
       tenantId: dash.tenant_id,
       userId: adminUserId,
@@ -528,9 +565,12 @@ export async function fetchDashboardContent(dashboardId: string, adminUserId?: s
       resourceId: dash.id,
       metadata: {
         jti: minted.jti,
+        pipeline_jti: pipelineJti,
         integration: dash.integration,
         template_id: dash.template_id || null,
         via: 'admin_preview',
+        auth_method: authMethod,
+        access_token_present: !!accessToken,
       },
     });
 

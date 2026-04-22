@@ -2,6 +2,7 @@ import { withClient, withTransaction } from '../db/connection';
 import { generateToken, hashToken } from '../lib/crypto';
 import { decryptSecret } from '../lib/encrypted-column';
 import { mintBridgeJwt } from '../lib/n8n-bridge';
+import { mintPipelineJwt, isPipelineJwtConfigured } from '../lib/pipeline-jwt';
 import * as auditService from './audit.service';
 import { AppError } from '../middleware/error-handler';
 
@@ -537,6 +538,10 @@ export async function renderPublicDashboard(
     );
   }
   const tenantLabels = await fetchTenantLabels(dashboard.tenant_id);
+  // public_share intentionally does NOT perform OAuth lookup. Share
+  // links are DB-backed and must work even when no user/OAuth context
+  // exists. access_token + auth_method stay absent; the bridge JWT still
+  // carries tenant/dashboard labels + params so n8n can route.
   const minted = mintBridgeJwt({
     tenantId: dashboard.tenant_id,
     tenantSlug: tenantLabels?.slug ?? null,
@@ -555,6 +560,20 @@ export async function renderPublicDashboard(
     secret: bridgeSecret,
   });
   const headers: Record<string, string> = { Authorization: `Bearer ${minted.jwt}` };
+
+  // Pipeline JWT still minted on public_share — gives a future
+  // pipeline.access_audit row with via='public_share' and user_id=null,
+  // matching the model committed in pipeline-hardening-notes.md.
+  let pipelineJti: string | null = null;
+  if (isPipelineJwtConfigured()) {
+    const pipelineMinted = mintPipelineJwt({
+      tenantId: dashboard.tenant_id,
+      via: 'public_share',
+    });
+    pipelineJti = pipelineMinted.jti;
+    headers['X-XRay-Pipeline-Token'] = `Bearer ${pipelineMinted.jwt}`;
+  }
+
   auditService.log({
     tenantId: dashboard.tenant_id,
     action: 'dashboard.bridge_mint',
@@ -562,9 +581,12 @@ export async function renderPublicDashboard(
     resourceId: dashboard.id,
     metadata: {
       jti: minted.jti,
+      pipeline_jti: pipelineJti,
       integration: dashboard.integration,
       template_id: dashboard.template_id || null,
       via: 'public_share',
+      auth_method: null,
+      access_token_present: false,
       public_token_prefix: publicToken.slice(0, 8),
     },
   });

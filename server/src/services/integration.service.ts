@@ -339,6 +339,104 @@ export async function listActiveForTenant(tenantId: string) {
   });
 }
 
+// ─── Render-path token resolver ─────────────────────────────────────────────
+
+export type RenderTokenResult =
+  | {
+      // Tenant has an OAuth or API-key connection for this integration
+      // and the credential is ready to use.
+      kind: 'ready';
+      accessToken: string;
+      authMethod: AuthMethod;
+    }
+  | {
+      // No matching connection row at all (tenant hasn't connected to
+      // this integration yet), OR the row exists but has no credential
+      // stored. Caller treats as "OAuth not needed / not connected" —
+      // for non-public paths this becomes a 409 OAUTH_NOT_CONNECTED
+      // with the connect modal in the UI; for public_share it just
+      // leaves access_token absent on the bridge JWT.
+      kind: 'not_connected';
+    }
+  | {
+      // Connection exists and has a credential, but status='error' or
+      // OAuth token has blown past the safety window.
+      // Caller treats identically to 'not_connected' but with a
+      // different error code so the UI can say "Needs reconnect" vs
+      // "Connect to continue."
+      kind: 'needs_reconnect';
+      reason: string;
+    }
+  | {
+      // Dashboard's integration slug has no matching row in
+      // platform.integrations (admin deleted the row, or the slug was
+      // typed in before step 4). Render degrades gracefully — caller
+      // leaves access_token absent and proceeds. Logged once.
+      kind: 'unknown_integration';
+    };
+
+const warnedUnknownIntegration = new Set<string>();
+
+export async function resolveAccessTokenForRender(
+  tenantId: string,
+  integrationSlug: string | null
+): Promise<RenderTokenResult> {
+  if (!integrationSlug) return { kind: 'not_connected' };
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT i.id AS integration_id, i.status AS integration_status,
+              c.id AS connection_id,
+              c.auth_method, c.status AS connection_status,
+              c.api_key, c.oauth_access_token, c.oauth_access_token_expires_at,
+              c.oauth_refresh_failed_count
+         FROM platform.integrations i
+         LEFT JOIN platform.connections c
+           ON c.integration_id = i.id AND c.tenant_id = $1
+        WHERE i.slug = $2
+        LIMIT 1`,
+      [tenantId, integrationSlug]
+    );
+    if (result.rows.length === 0) {
+      // Dashboard references a slug that has no integration row. Warn
+      // once so config drift is visible, then degrade.
+      const key = `${integrationSlug}`;
+      if (!warnedUnknownIntegration.has(key)) {
+        warnedUnknownIntegration.add(key);
+        console.warn(
+          `[integration.service] dashboard references unknown integration slug='${integrationSlug}' — treating as non-OAuth`
+        );
+      }
+      return { kind: 'unknown_integration' };
+    }
+    const row = result.rows[0];
+    if (!row.connection_id) return { kind: 'not_connected' };
+    if (row.connection_status === 'error') {
+      return { kind: 'needs_reconnect', reason: 'connection.status=error' };
+    }
+    if (row.auth_method === 'api_key') {
+      const apiKey = decryptSecret(row.api_key, `connections:api_key:${row.connection_id}`);
+      if (!apiKey) return { kind: 'not_connected' };
+      return { kind: 'ready', accessToken: apiKey, authMethod: 'api_key' };
+    }
+    // OAuth path. If the scheduler hasn't yet stored a token, or it's
+    // already expired, the render should prompt reconnect rather than
+    // succeed with a stale-or-missing value.
+    const expiresAt = row.oauth_access_token_expires_at
+      ? new Date(row.oauth_access_token_expires_at).getTime()
+      : 0;
+    if (!row.oauth_access_token || expiresAt <= Date.now()) {
+      return { kind: 'needs_reconnect', reason: 'oauth_access_token expired or missing' };
+    }
+    const oauthAccess = decryptSecret(
+      row.oauth_access_token,
+      `connections:oauth_access_token:${row.connection_id}`
+    );
+    if (!oauthAccess) return { kind: 'needs_reconnect', reason: 'decrypt failed' };
+    return { kind: 'ready', accessToken: oauthAccess, authMethod: 'oauth' };
+  });
+}
+
 // ─── Validation ─────────────────────────────────────────────────────────────
 
 // Validates that the input satisfies the cross-field contract:

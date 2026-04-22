@@ -35,14 +35,17 @@ let running = false;
 
 export function startScheduler(): void {
   if (intervalHandle) return;
+  intervalHandle = setInterval(tickSafely, TICK_INTERVAL_MS);
   // First tick runs immediately so the startup-sync case (server comes
   // up after a long outage, tokens are stale) doesn't wait 5 minutes.
-  // Wrapped in setImmediate so it runs after the current call returns,
-  // matching the fire-and-forget pattern elsewhere in the codebase.
+  // Guard against stopScheduler() being called between schedule and
+  // dispatch — if the interval got cleared, skip the tick. Prevents
+  // pending setImmediate callbacks from firing tests' tickSafely after
+  // the test has stopped the scheduler.
   setImmediate(() => {
+    if (!intervalHandle) return;
     tickSafely();
   });
-  intervalHandle = setInterval(tickSafely, TICK_INTERVAL_MS);
   console.log(
     `[oauth-scheduler] started — tick=${TICK_INTERVAL_MS / 1000}s, window=${REFRESH_WINDOW_MINUTES}min`
   );
