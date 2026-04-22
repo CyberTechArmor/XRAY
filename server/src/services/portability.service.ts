@@ -355,8 +355,12 @@ export async function importPlatform(zipBuffer: Buffer, userId?: string): Promis
       // post step 3 (migration 020 drops the column). Older exports that
       // still carry the field will just have it ignored on import — the
       // JWT bridge path replaces it.
+      // scope (step 4b) joins the whitelist so Global dashboards
+      // (scope='global', tenant_id=NULL) round-trip correctly. Older
+      // exports pre-4b will have scope absent in the row; the column
+      // default 'tenant' applies at INSERT time.
       const { imported, skipped } = await importRows(client, 'platform.dashboards', dataFiles.dashboards, 'id',
-        ['id', 'tenant_id', 'name', 'description', 'view_html', 'view_css', 'view_js', 'fetch_url', 'fetch_method', 'fetch_body', 'tile_image_url', 'status', 'is_public', 'created_at', 'updated_at', 'template_id', 'integration', 'params', 'bridge_secret']);
+        ['id', 'tenant_id', 'name', 'description', 'view_html', 'view_css', 'view_js', 'fetch_url', 'fetch_method', 'fetch_body', 'tile_image_url', 'status', 'is_public', 'created_at', 'updated_at', 'template_id', 'integration', 'params', 'bridge_secret', 'scope']);
       result.imported.dashboards = imported;
       result.skipped.dashboards = skipped;
     }

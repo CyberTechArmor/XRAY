@@ -258,15 +258,37 @@ export async function getDashboardDetail(dashboardId: string) {
   });
 }
 
-export async function createDashboard(input: {
-  tenantId: string; name: string; description?: string; status?: string;
-  viewHtml?: string; viewCss?: string; viewJs?: string;
-  fetchUrl?: string | null; fetchMethod?: string; fetchBody?: unknown;
-  fetchQueryParams?: Record<string, string> | null;
-  tileImageUrl?: string | null;
-  templateId?: string | null; integration?: string | null; params?: Record<string, unknown> | null;
-  bridgeSecret?: string | null;
-}) {
+export async function createDashboard(
+  input: {
+    tenantId?: string | null; name: string; description?: string; status?: string;
+    viewHtml?: string; viewCss?: string; viewJs?: string;
+    fetchUrl?: string | null; fetchMethod?: string; fetchBody?: unknown;
+    fetchQueryParams?: Record<string, string> | null;
+    tileImageUrl?: string | null;
+    templateId?: string | null; integration?: string | null; params?: Record<string, unknown> | null;
+    bridgeSecret?: string | null;
+    scope?: 'tenant' | 'global';
+  },
+  ctx?: { isPlatformAdmin?: boolean }
+) {
+  const scope: 'tenant' | 'global' = input.scope === 'global' ? 'global' : 'tenant';
+  // Globals are platform-admin-only authoring. Tenant users cannot
+  // create a Global; block at the service layer so route layers can
+  // pass `scope` through without repeating the check.
+  if (scope === 'global' && !ctx?.isPlatformAdmin) {
+    throw new AppError(
+      403,
+      'GLOBAL_DASHBOARD_REQUIRES_ADMIN',
+      'Only a platform admin can create a Global dashboard.'
+    );
+  }
+  // Global rows don't have a tenant. Tenant rows require one. The DB
+  // CHECK (migration 025) also enforces this; surface a clear 400
+  // before the DB bounces the insert.
+  const effectiveTenantId: string | null = scope === 'global' ? null : (input.tenantId ?? null);
+  if (scope === 'tenant' && !effectiveTenantId) {
+    throw new AppError(400, 'TENANT_REQUIRED', 'tenantId is required for Tenant-scoped dashboards');
+  }
   // If the caller is attaching an integration, the row MUST carry a
   // bridge_secret — otherwise the render path has nothing to sign with.
   // The admin UI's "Generate" button fills this field client-side; the
@@ -281,10 +303,10 @@ export async function createDashboard(input: {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_body, fetch_query_params, tile_image_url, template_id, integration, params, bridge_secret)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *`,
+      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_body, fetch_query_params, tile_image_url, template_id, integration, params, bridge_secret, scope)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
       [
-        input.tenantId, input.name, input.description || null,
+        effectiveTenantId, input.name, input.description || null,
         input.status || 'draft',
         input.viewHtml || null, input.viewCss || null, input.viewJs || null,
         input.fetchUrl || null, input.fetchMethod || 'GET',
@@ -295,10 +317,19 @@ export async function createDashboard(input: {
         input.integration || null,
         JSON.stringify(input.params || {}),
         encryptSecret(input.bridgeSecret || null),
+        scope,
       ]
     );
     const dash = result.rows[0];
-    auditService.log({ tenantId: input.tenantId, action: 'dashboard.create', resourceType: 'dashboard', resourceId: dash.id, metadata: { name: input.name } });
+    auditService.log({
+      // Globals carry tenant_id=null; audit log still needs a value,
+      // use the platform tenant sentinel (matches integration.create).
+      tenantId: effectiveTenantId ?? '00000000-0000-0000-0000-000000000000',
+      action: 'dashboard.create',
+      resourceType: 'dashboard',
+      resourceId: dash.id,
+      metadata: { name: input.name, scope },
+    });
     return decryptDashboardRow(dash);
   });
 }
@@ -454,30 +485,69 @@ export async function deleteConnectionTemplate(templateId: string) {
 
 // ─── Dashboard Proxy (fetch from n8n) ────────────────────
 
-export async function fetchDashboardContent(dashboardId: string, adminUserId?: string) {
+export async function fetchDashboardContent(
+  dashboardId: string,
+  adminUserId?: string,
+  options?: { targetTenantId?: string }
+) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-    // JOIN tenants for tenant_* labels. LEFT JOIN users+roles on the acting
-    // admin — platform admins don't belong to the target tenant, so this
-    // is decoupled from d.tenant_id. adminUserId is optional to stay
-    // backwards-compatible with any internal caller that doesn't have one.
+    // Step 4b: d.scope + nullable d.tenant_id. For Globals, the admin
+    // must specify a targetTenantId (which tenant's credentials to
+    // render under); the preview UI's tenant-picker supplies it.
+    // For Tenant-scoped rows, renderingTenantId = d.tenant_id.
     const result = await client.query(
-      `SELECT d.id, d.tenant_id, d.name AS dashboard_name, d.status AS dashboard_status,
+      `SELECT d.id, d.tenant_id, d.scope,
+              d.name AS dashboard_name, d.status AS dashboard_status,
               d.fetch_url, d.fetch_method, d.fetch_body, d.fetch_query_params,
-              d.template_id, d.integration, d.params, d.bridge_secret, d.is_public,
-              t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
-              t.warehouse_host,
-              u.email AS user_email, u.name AS user_name,
-              r.slug AS user_role
+              d.template_id, d.integration, d.params, d.bridge_secret, d.is_public
          FROM platform.dashboards d
-         JOIN platform.tenants t ON t.id = d.tenant_id
-         LEFT JOIN platform.users u ON u.id = $2
-         LEFT JOIN platform.roles r ON r.id = u.role_id
         WHERE d.id = $1`,
-      [dashboardId, adminUserId ?? null]
+      [dashboardId]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
     const dash = result.rows[0];
+    const isGlobal = dash.scope === 'global';
+    const renderingTenantId: string | null = isGlobal
+      ? options?.targetTenantId ?? null
+      : dash.tenant_id;
+    if (isGlobal && !renderingTenantId) {
+      throw new AppError(
+        400,
+        'RENDERING_TENANT_REQUIRED',
+        'Previewing a Global dashboard requires selecting a target tenant.'
+      );
+    }
+    // Resolve the rendering tenant's labels for the tenant_* JWT claims.
+    const tenantLabels = await client.query(
+      `SELECT slug, name, status, warehouse_host FROM platform.tenants WHERE id = $1`,
+      [renderingTenantId]
+    );
+    if (tenantLabels.rows.length === 0) {
+      throw new AppError(404, 'TENANT_NOT_FOUND', 'Target tenant for preview not found');
+    }
+    const tenantRow = tenantLabels.rows[0];
+    // Acting admin labels (same shape as pre-4b).
+    const adminLabels = adminUserId
+      ? await client.query(
+          `SELECT u.email AS user_email, u.name AS user_name, r.slug AS user_role
+             FROM platform.users u
+             LEFT JOIN platform.roles r ON r.id = u.role_id
+            WHERE u.id = $1`,
+          [adminUserId]
+        )
+      : { rows: [] as Array<{ user_email?: string | null; user_name?: string | null; user_role?: string | null }> };
+    const adminRow = adminLabels.rows[0] || {};
+    // Stitch the fields the downstream code expects.
+    dash.tenant_slug = tenantRow.slug;
+    dash.tenant_name = tenantRow.name;
+    dash.tenant_status = tenantRow.status;
+    dash.warehouse_host = tenantRow.warehouse_host;
+    dash.user_email = adminRow.user_email ?? null;
+    dash.user_name = adminRow.user_name ?? null;
+    dash.user_role = adminRow.user_role ?? null;
+    dash.rendering_tenant_id = renderingTenantId;
+
     if (!dash.fetch_url) throw new AppError(400, 'NO_CONNECTION', 'Dashboard has no connection URL configured');
 
     // JWT bridge is the only render path post step 3 (migration 020).
@@ -498,11 +568,13 @@ export async function fetchDashboardContent(dashboardId: string, adminUserId?: s
       );
     }
     // admin_preview runs OAuth lookup same as authed paths — a platform
-    // admin previewing a dashboard sees it rendered with the target
-    // tenant's own credentials. If the tenant hasn't connected, the
-    // admin gets 409 OAUTH_NOT_CONNECTED just like the tenant would.
+    // admin previewing a dashboard sees it rendered with the rendering
+    // tenant's own credentials. For Globals, renderingTenantId was
+    // resolved from options.targetTenantId above. For Tenant rows,
+    // it's dash.tenant_id. If the tenant hasn't connected, the admin
+    // gets 409 OAUTH_NOT_CONNECTED just like the tenant would.
     const tokenResult = await integrationService.resolveAccessTokenForRender(
-      dash.tenant_id,
+      renderingTenantId!,
       dash.integration
     );
     if (tokenResult.kind === 'needs_reconnect') {
@@ -518,7 +590,7 @@ export async function fetchDashboardContent(dashboardId: string, adminUserId?: s
       tokenResult.kind === 'ready' ? tokenResult.authMethod : null;
 
     const minted = mintBridgeJwt({
-      tenantId: dash.tenant_id,
+      tenantId: renderingTenantId!,
       tenantSlug: dash.tenant_slug,
       tenantName: dash.tenant_name,
       tenantStatus: dash.tenant_status,
@@ -548,7 +620,7 @@ export async function fetchDashboardContent(dashboardId: string, adminUserId?: s
     let pipelineJti: string | null = null;
     if (isPipelineJwtConfigured()) {
       const pipelineMinted = mintPipelineJwt({
-        tenantId: dash.tenant_id,
+        tenantId: renderingTenantId!,
         userId: adminUserId || undefined,
         isPlatformAdmin: !!adminUserId,
         via: 'admin_preview',
@@ -558,7 +630,7 @@ export async function fetchDashboardContent(dashboardId: string, adminUserId?: s
     }
 
     auditService.log({
-      tenantId: dash.tenant_id,
+      tenantId: renderingTenantId!,
       userId: adminUserId,
       action: 'dashboard.bridge_mint',
       resourceType: 'dashboard',
@@ -571,6 +643,8 @@ export async function fetchDashboardContent(dashboardId: string, adminUserId?: s
         via: 'admin_preview',
         auth_method: authMethod,
         access_token_present: !!accessToken,
+        scope: dash.scope,
+        dashboard_tenant_id: dash.tenant_id,
       },
     });
 

@@ -240,7 +240,9 @@ router.get('/dashboards/:id', async (req, res, next) => {
 router.post('/dashboards', async (req, res, next) => {
   try {
     const data = validateBody(dashboardCreateSchema, req.body);
-    const result = await adminService.createDashboard(data);
+    const result = await adminService.createDashboard(data, {
+      isPlatformAdmin: !!req.user?.is_platform_admin,
+    });
     res.status(201).json({
       ok: true,
       data: result,
@@ -328,7 +330,15 @@ router.patch('/connections/:id', async (req, res, next) => {
 // POST /dashboards/:id/fetch - proxy fetch dashboard content from connection
 router.post('/dashboards/:id/fetch', async (req, res, next) => {
   try {
-    const result = await adminService.fetchDashboardContent(req.params.id, req.user?.sub);
+    // targetTenantId is required when previewing a Global dashboard.
+    // Comes from either the JSON body (preferred) or the query string.
+    const targetTenantId =
+      (typeof req.body?.target_tenant_id === 'string' && req.body.target_tenant_id) ||
+      (typeof req.query?.target_tenant_id === 'string' && req.query.target_tenant_id) ||
+      undefined;
+    const result = await adminService.fetchDashboardContent(req.params.id, req.user?.sub, {
+      targetTenantId: targetTenantId || undefined,
+    });
     res.json({
       ok: true,
       data: result,

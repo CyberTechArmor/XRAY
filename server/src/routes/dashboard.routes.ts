@@ -129,42 +129,52 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
   try {
     const { withClient } = await import('../db/connection');
 
-    // Separate SELECT then UPDATE to avoid RLS issues with UPDATE...RETURNING
+    // Separate SELECT then UPDATE to avoid RLS issues with UPDATE...RETURNING.
+    // Step 4b: the SELECT handles BOTH scope='tenant' and scope='global'.
+    // - Tenant rows: d.tenant_id is the rendering tenant; JOIN platform.tenants
+    //   against d.tenant_id works directly.
+    // - Global rows: d.tenant_id is NULL; the rendering tenant is req.user.tid.
+    //   JOIN platform.tenants against COALESCE(d.tenant_id, req.user.tid) so
+    //   tenant_* JWT claims load the rendering tenant's row.
+    // The integration-gated / grant-gated permission check runs AFTER the
+    // SELECT — the row SELECT itself doesn't try to encode it in WHERE.
     const dashboard = await withClient(async (client) => {
       await client.query(`SELECT set_config('app.is_platform_admin', $1, true)`, [String(req.user!.is_platform_admin)]);
       if (req.user!.tid) {
         await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [req.user!.tid]);
       }
-      // Platform admin can render any dashboard regardless of tenant.
-      // JOIN platform.tenants for the tenant_* JWT claims. JOIN users+roles
-      // for user_* claims. LEFT JOIN on users so a platform admin whose
-      // row no longer exists in the target tenant still renders (rare but
-      // possible). bridge_secret stays on the dashboards row.
       const baseSelect = `
-        SELECT d.id, d.tenant_id, d.name AS dashboard_name, d.status AS dashboard_status,
+        SELECT d.id, d.tenant_id AS dashboard_tenant_id, d.scope,
+               d.name AS dashboard_name, d.status AS dashboard_status,
                d.fetch_url, d.fetch_method, d.fetch_body, d.fetch_query_params,
                d.view_html, d.view_css, d.view_js, d.template_id, d.integration, d.params,
                d.bridge_secret, d.is_public,
+               COALESCE(d.tenant_id, $3::uuid) AS rendering_tenant_id,
                t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
                t.warehouse_host,
                u.email AS user_email, u.name AS user_name,
                r.slug AS user_role
           FROM platform.dashboards d
-          JOIN platform.tenants t ON t.id = d.tenant_id
+          LEFT JOIN platform.tenants t ON t.id = COALESCE(d.tenant_id, $3::uuid)
           LEFT JOIN platform.users u ON u.id = $2
           LEFT JOIN platform.roles r ON r.id = u.role_id`;
+      // Tenant users see their own tenant's rows + every Global.
+      // Platform admins see every row. Global rows' permission gate
+      // (integration / grant) runs post-SELECT.
       const query = req.user!.is_platform_admin
         ? {
             text: `${baseSelect} WHERE d.id = $1 AND d.status = 'active'`,
-            values: [req.params.id, req.user!.sub],
+            values: [req.params.id, req.user!.sub, req.user!.tid],
           }
         : {
-            text: `${baseSelect} WHERE d.id = $1 AND d.tenant_id = $3 AND d.status = 'active'`,
+            text: `${baseSelect} WHERE d.id = $1 AND d.status = 'active' AND (d.scope = 'global' OR d.tenant_id = $3)`,
             values: [req.params.id, req.user!.sub, req.user!.tid],
           };
       const result = await client.query(query);
       if (result.rows[0]) {
-        // Side-effects: update last_viewed_at and track views
+        // Side-effects: update last_viewed_at and track views. last_viewed_at
+        // stays on the dashboard row — it's a single "when was this last
+        // touched" signal, not per-tenant. View count stays per-user.
         await client.query(
           `UPDATE platform.dashboards SET last_viewed_at = now() WHERE id = $1`,
           [req.params.id]
@@ -183,7 +193,50 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Dashboard not found or inactive' } });
     }
 
-    // If dashboard has no fetch_url, return static content directly
+    const isGlobal = dashboard.scope === 'global';
+    const renderingTenantId: string = dashboard.rendering_tenant_id;
+    if (!renderingTenantId) {
+      // Admin rendering a Global without a home tenant — nothing to bind
+      // credentials to. Preview UI should pass via the admin service
+      // with a chosen tenant; the render route itself assumes req.user.tid.
+      return res.status(400).json({
+        ok: false,
+        error: {
+          code: 'RENDERING_TENANT_REQUIRED',
+          message: 'Rendering a Global dashboard requires a tenant context.',
+        },
+      });
+    }
+
+    // Custom Global (no integration) — tenant must have an explicit
+    // grant. Integration-connected Globals skip this branch; the
+    // resolveAccessTokenForRender gate below serves as their auth.
+    if (isGlobal && !dashboard.integration) {
+      const grant = await withClient(async (client) => {
+        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        const r = await client.query(
+          `SELECT 1 FROM platform.dashboard_tenant_grants
+            WHERE dashboard_id = $1 AND tenant_id = $2`,
+          [dashboard.id, renderingTenantId]
+        );
+        return r.rows.length > 0;
+      });
+      if (!grant && !req.user!.is_platform_admin) {
+        return res.status(403).json({
+          ok: false,
+          error: {
+            code: 'GLOBAL_NOT_GRANTED',
+            message: 'This Global dashboard is not granted to your tenant.',
+          },
+        });
+      }
+    }
+
+    // If dashboard has no fetch_url, return static content directly. For
+    // Globals this is the Custom Global path — render the stored HTML
+    // under the rendering tenant's context. No per-tenant variation on
+    // the content itself, but the future might want per-tenant
+    // substitution — keyed on the cache table already.
     if (!dashboard.fetch_url) {
       const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
       return res.json({
@@ -230,21 +283,25 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     }
     // `via` distinguishes a tenant user rendering their own dashboard
     // (authed_render) from a platform admin rendering someone else's
-    // (admin_impersonation). An admin with no home tenant (tid null)
-    // is always impersonating when they render, so the null-safe
-    // compare falls through correctly.
+    // (admin_impersonation). For Global dashboards the rendering tenant
+    // IS the admin's own tenant (the Global isn't "owned" by any one
+    // tenant), so admin_impersonation only kicks in for Tenant-scoped
+    // rows that belong to a different tenant.
     const actingVia: 'authed_render' | 'admin_impersonation' =
-      req.user!.is_platform_admin && dashboard.tenant_id !== req.user!.tid
+      req.user!.is_platform_admin &&
+      !isGlobal &&
+      dashboard.dashboard_tenant_id !== req.user!.tid
         ? 'admin_impersonation'
         : 'authed_render';
 
-    // Resolve the tenant's OAuth / API-key credential for this
-    // integration. The scheduler keeps OAuth access tokens fresh; this
-    // is just a DB read. See integration.service.resolveAccessTokenForRender
-    // for the three-state outcome (ready / not_connected /
-    // needs_reconnect / unknown_integration).
+    // Resolve the RENDERING tenant's OAuth / API-key credential for
+    // this integration. For Tenant rows this is dashboard.tenant_id
+    // (= renderingTenantId). For Globals it's the requester's tenant.
+    // Either way the resolver is identical — the 4-state outcome
+    // (ready / not_connected / needs_reconnect / unknown_integration)
+    // plus the step-4 409 semantics carry over.
     const tokenResult = await integrationService.resolveAccessTokenForRender(
-      dashboard.tenant_id,
+      renderingTenantId,
       dashboard.integration
     );
     if (tokenResult.kind === 'needs_reconnect') {
@@ -263,7 +320,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       tokenResult.kind === 'ready' ? tokenResult.authMethod : null;
 
     const minted = mintBridgeJwt({
-      tenantId: dashboard.tenant_id,
+      tenantId: renderingTenantId,
       tenantSlug: dashboard.tenant_slug,
       tenantName: dashboard.tenant_name,
       tenantStatus: dashboard.tenant_status,
@@ -294,7 +351,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     let pipelineJti: string | null = null;
     if (isPipelineJwtConfigured()) {
       const pipelineMinted = mintPipelineJwt({
-        tenantId: dashboard.tenant_id,
+        tenantId: renderingTenantId,
         userId: req.user!.sub,
         isPlatformAdmin: !!req.user!.is_platform_admin,
         via: actingVia,
@@ -308,7 +365,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     // audit pattern elsewhere in this file. `via` mirrors the JWT
     // claim so the audit row is self-contained for SOC 2 review.
     auditService.log({
-      tenantId: dashboard.tenant_id,
+      tenantId: renderingTenantId,
       userId: req.user!.sub,
       action: 'dashboard.bridge_mint',
       resourceType: 'dashboard',
@@ -321,6 +378,8 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
         via: actingVia,
         auth_method: authMethod,
         access_token_present: !!accessToken,
+        scope: dashboard.scope,
+        dashboard_tenant_id: dashboard.dashboard_tenant_id,
       },
     });
 
@@ -376,14 +435,34 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           data = { html, css: '', js: '' };
         }
 
-        // Cache successful render to view_html/view_css/view_js for future fallback
+        // Cache the successful render. Step 4b: writes to
+        // dashboard_render_cache keyed on (dashboard_id, rendering
+        // tenant) so Global dashboards get a cache row per rendering
+        // tenant (no more racing clobber). Tenant-scoped rows ALSO
+        // continue to dual-write the legacy view_html/view_css/view_js
+        // columns on platform.dashboards for non-render readers that
+        // still expect them (embed, portability, admin preview
+        // fallback). Retiring those columns is a post-step cleanup.
         if (data && (data.html || data.css || data.js)) {
           withClient(async (client) => {
             await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
             await client.query(
-              `UPDATE platform.dashboards SET view_html = $1, view_css = $2, view_js = $3 WHERE id = $4`,
-              [data.html || '', data.css || '', data.js || '', dashboard.id]
+              `INSERT INTO platform.dashboard_render_cache
+                 (dashboard_id, tenant_id, view_html, view_css, view_js, rendered_at)
+               VALUES ($1, $2, $3, $4, $5, now())
+               ON CONFLICT (dashboard_id, tenant_id) DO UPDATE
+                 SET view_html = EXCLUDED.view_html,
+                     view_css = EXCLUDED.view_css,
+                     view_js = EXCLUDED.view_js,
+                     rendered_at = now()`,
+              [dashboard.id, renderingTenantId, data.html || '', data.css || '', data.js || '']
             );
+            if (dashboard.scope === 'tenant') {
+              await client.query(
+                `UPDATE platform.dashboards SET view_html = $1, view_css = $2, view_js = $3 WHERE id = $4`,
+                [data.html || '', data.css || '', data.js || '', dashboard.id]
+              );
+            }
           }).catch(() => {}); // fire-and-forget cache write
         }
 
@@ -404,15 +483,31 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       }
     }
 
-    // All attempts failed — fall back to cached static content if available
-    if (dashboard.view_html) {
+    // All attempts failed — fall back to cached static content. Read
+    // from dashboard_render_cache keyed on (dashboard, rendering
+    // tenant) first. For Tenant-scoped rows, fall back to the legacy
+    // view_html/view_css/view_js columns if the cache row hasn't been
+    // populated yet (e.g. first render ever, upstream was down).
+    const cached = await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const r = await client.query(
+        `SELECT view_html, view_css, view_js FROM platform.dashboard_render_cache
+          WHERE dashboard_id = $1 AND tenant_id = $2`,
+        [dashboard.id, renderingTenantId]
+      );
+      return r.rows[0] || null;
+    });
+    const fallbackHtml = cached?.view_html || (dashboard.scope === 'tenant' ? dashboard.view_html : null);
+    const fallbackCss = cached?.view_css || (dashboard.scope === 'tenant' ? dashboard.view_css : null);
+    const fallbackJs = cached?.view_js || (dashboard.scope === 'tenant' ? dashboard.view_js : null);
+    if (fallbackHtml) {
       const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
       return res.json({
         ok: true,
         data: {
-          html: (boot?.htmlPrefix || '') + dashboard.view_html + (boot?.htmlSuffix || ''),
-          css: dashboard.view_css || '',
-          js: dashboard.view_js || '',
+          html: (boot?.htmlPrefix || '') + fallbackHtml + (boot?.htmlSuffix || ''),
+          css: fallbackCss || '',
+          js: fallbackJs || '',
           ai: boot?.ai || { available: false },
         },
         meta: { fallback: true },
