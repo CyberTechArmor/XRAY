@@ -4,9 +4,11 @@ import { requirePermission } from '../middleware/rbac';
 import { validateBody, dashboardAccessSchema, embedCreateSchema } from '../lib/validation';
 import { decryptSecret } from '../lib/encrypted-column';
 import { mintBridgeJwt } from '../lib/n8n-bridge';
+import { mintPipelineJwt, isPipelineJwtConfigured } from '../lib/pipeline-jwt';
 import * as dashboardService from '../services/dashboard.service';
 import * as aiService from '../services/ai.service';
 import * as auditService from '../services/audit.service';
+import * as integrationService from '../services/integration.service';
 import { getSetting } from '../services/settings.service';
 import { config } from '../config';
 
@@ -235,6 +237,31 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       req.user!.is_platform_admin && dashboard.tenant_id !== req.user!.tid
         ? 'admin_impersonation'
         : 'authed_render';
+
+    // Resolve the tenant's OAuth / API-key credential for this
+    // integration. The scheduler keeps OAuth access tokens fresh; this
+    // is just a DB read. See integration.service.resolveAccessTokenForRender
+    // for the three-state outcome (ready / not_connected /
+    // needs_reconnect / unknown_integration).
+    const tokenResult = await integrationService.resolveAccessTokenForRender(
+      dashboard.tenant_id,
+      dashboard.integration
+    );
+    if (tokenResult.kind === 'needs_reconnect') {
+      return res.status(409).json({
+        ok: false,
+        error: {
+          code: 'OAUTH_NOT_CONNECTED',
+          message: 'This integration needs to be reconnected before the dashboard can render.',
+          integration: dashboard.integration,
+        },
+      });
+    }
+    const accessToken =
+      tokenResult.kind === 'ready' ? tokenResult.accessToken : null;
+    const authMethod =
+      tokenResult.kind === 'ready' ? tokenResult.authMethod : null;
+
     const minted = mintBridgeJwt({
       tenantId: dashboard.tenant_id,
       tenantSlug: dashboard.tenant_slug,
@@ -255,9 +282,27 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       isPlatformAdmin: !!req.user!.is_platform_admin,
       via: actingVia,
       secret: bridgeSecret,
-      // access_token stays absent until step 4 wires OAuth lookup.
+      accessToken,
+      authMethod,
     });
     const parsedHeaders: Record<string, string> = { Authorization: `Bearer ${minted.jwt}` };
+
+    // Mint the RS256 pipeline data-access JWT alongside the bridge JWT
+    // and ride it in a sibling header. No consumer on the pipeline DB
+    // side yet (Model J lands post-step-6); this is the minting half of
+    // that contract. Absent-keypair path skips cleanly.
+    let pipelineJti: string | null = null;
+    if (isPipelineJwtConfigured()) {
+      const pipelineMinted = mintPipelineJwt({
+        tenantId: dashboard.tenant_id,
+        userId: req.user!.sub,
+        isPlatformAdmin: !!req.user!.is_platform_admin,
+        via: actingVia,
+      });
+      pipelineJti = pipelineMinted.jti;
+      parsedHeaders['X-XRay-Pipeline-Token'] = `Bearer ${pipelineMinted.jwt}`;
+    }
+
     // Audit-log the mint so a leaked token can be traced back to
     // (tenant, user, dashboard). Fire-and-forget, matches the existing
     // audit pattern elsewhere in this file. `via` mirrors the JWT
@@ -270,9 +315,12 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       resourceId: dashboard.id,
       metadata: {
         jti: minted.jti,
+        pipeline_jti: pipelineJti,
         integration: dashboard.integration,
         template_id: dashboard.template_id || null,
         via: actingVia,
+        auth_method: authMethod,
+        access_token_present: !!accessToken,
       },
     });
 

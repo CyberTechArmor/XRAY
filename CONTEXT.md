@@ -698,6 +698,243 @@ Authorization header reaches n8n and the response comes back rendered.
 
 ---
 
-## Step 4 — Next up: OAuth access_token population + RS256 keypair
+## Step 4 — OAuth groundwork + Integrations admin + RS256 pipeline JWT (shipped)
 
-See `.claude/step-4-kickoff.md` for details.
+Everything the step-4 kickoff promised plus the in-session extensions
+from the planning conversation (per-integration API-key-vs-OAuth toggle,
+platform-admin Integrations tab, tenant-facing pill + Connect modal,
+"My Integrations" strip, scheduled per-tenant token refresh). The
+Global-vs-Tenant Dashboard redesign got spun out to step 4b —
+documented under `.claude/step-4b-kickoff.md`.
+
+### What changed
+
+**Schema (additive, pre-rebuild stage)**
+
+- `migrations/021_integrations.sql` — new `platform.integrations`
+  catalog. One row per external system XRay can OAuth into or connect
+  via API key (HouseCall Pro, QuickBooks, etc.). Columns: `slug`,
+  `display_name`, `icon_url`, `status` (`pending|active|disabled`),
+  `supports_oauth`, `supports_api_key` (CHECK `(supports_oauth OR
+  supports_api_key)`), OAuth fields (`auth_url`, `token_url`,
+  `client_id`, `client_secret`, `scopes`, `extra_authorize_params`
+  JSONB for provider quirks like Google's `access_type=offline`),
+  API-key fields (`api_key_header_name`, `api_key_instructions`).
+  Trigger `enforce_enc_integrations_client_secret` guards the
+  `client_secret` column under the same `enc:v1:` envelope as 017/019.
+- `migrations/022_connections_oauth_state.sql` — extends
+  `platform.connections` with per-tenant OAuth/API-key state:
+  `integration_id` (FK `ON DELETE RESTRICT`), `auth_method`
+  (`oauth|api_key`), `oauth_refresh_token`, `oauth_access_token`,
+  `oauth_access_token_expires_at`, `oauth_last_refreshed_at`,
+  `oauth_refresh_failed_count`, `oauth_last_error`, `api_key`. Partial
+  unique index on `(tenant_id, integration_id) WHERE integration_id IS
+  NOT NULL` enforces one connection-row-per-(tenant, integration);
+  legacy non-OAuth rows with `integration_id=NULL` stay free to
+  duplicate. Three `enc:v1:` triggers consolidate into one function
+  guarding `oauth_refresh_token`, `oauth_access_token`, `api_key`.
+  Partial index on `oauth_access_token_expires_at` (where
+  `auth_method='oauth' AND integration_id IS NOT NULL`) for scheduler
+  efficiency. Down scripts preserved in `migrations/down/`.
+
+**Server libs + services**
+
+- `server/src/lib/pipeline-jwt.ts` — RS256 mint for `aud='xray-pipeline'`.
+  Claim shape locked: `iss='xray'`, `sub=tenant_id`, `jti`, `iat`,
+  `exp` (60s), `tenant_id`, `via`, plus `user_id` + `is_platform_admin`
+  (both absent on `public_share` per pipeline-hardening commit of
+  nullable `acting_user_id`). `isPipelineJwtConfigured()` +
+  `warnIfUnconfigured()` give the graceful-absent path — fresh installs
+  that boot before the keypair is provisioned don't 500.
+- `server/src/lib/oauth-tokens.ts` — RFC 6749 refresh-token exchange.
+  Retry policy `[0s, 30s, 60s, 120s, 240s]` (5 attempts, ~450s worst
+  case) for scheduler refreshes; `exchangeAuthorizationCode` is a
+  single attempt for the interactive callback path. RFC 6749 defaults
+  baked in (POST form-urlencoded, client_id/secret in body, expires_in
+  default 3600, preserve stored refresh_token when provider omits it).
+  Test seams `__setFetcherForTest` + `__setSleeperForTest`. Provider
+  extras (QBO's `realmId`, etc.) kept in a bag so per-provider code
+  can pull from them without this lib knowing their shape.
+- `server/src/lib/oauth-scheduler.ts` — 5-min setInterval tick. Picks
+  up any connection whose access token expires within 30 min AND
+  auth_method='oauth' AND integration.status='active'. Per-connection
+  `pg_try_advisory_xact_lock(hashtext(id::text)::bigint)` serializes
+  refreshes for future multi-instance deploys. Failure accounting:
+  `oauth_refresh_failed_count >= 5` flips connection `status='error'`
+  with `oauth_last_error` populated. First tick runs via setImmediate
+  at startScheduler() so post-outage recovery doesn't wait 5 min.
+  Boots from `index.ts` after HTTP listener is up.
+- `server/src/lib/oauth-state.ts` — signed state JWT for the
+  authorize/callback flow. HS256 against `JWT_SECRET`, 10-min exp,
+  claims `{t, i, u, n}` (tenant_id, integration_id, user_id, nonce).
+  `buildAuthorizeUrl` merges standard OAuth 2.0 params with
+  `integration.extra_authorize_params`.
+- `server/src/services/integration.service.ts` — CRUD for
+  `platform.integrations` + `resolveAccessTokenForRender` (single JOIN,
+  4-state result: ready / not_connected / needs_reconnect /
+  unknown_integration). Secret handling follows the step-2 contract —
+  API responses redact `client_secret` and surface `client_secret_set:
+  boolean`. Two internal helpers (`getIntegrationWithSecret`,
+  `decryptIntegrationClientSecret`) encapsulate the single "need
+  plaintext" code path so reviewers can grep for it. Cross-field
+  `validateIntegrationConfig` enforces auth-method-specific required
+  fields (auth_url/token_url/client_id for OAuth; api_key_header_name
+  for API key).
+
+**Routes**
+
+- `GET /api/connections/oauth/:slug/authorize` — returns the provider's
+  authorize URL with a signed state JWT. Frontend does a full-page
+  redirect (popup/iframe defeated by provider X-Frame-Options).
+- `GET /api/oauth/callback` — no auth (state JWT is the trust anchor).
+  Verifies state, exchanges code at provider, encrypts + stores tokens,
+  UPSERTs the tenant's `platform.connections` row (prefers updating
+  existing `source_type=slug` rows to cover the hardcoded-pre-step-4-
+  client migration story), redirects to `/app?connected=<slug>` or
+  `/app?oauth_error=<code>`. App boot's `checkOauthReturnParams()`
+  reads those params and toasts the outcome.
+- `POST /api/connections/api-key/:slug` — tenant pastes API key;
+  encrypt + store on the connection with `auth_method='api_key'`.
+- `POST /api/connections/disconnect/:slug` — clears tokens + sets
+  connection `status='pending'`. Row kept so dashboards still reference
+  the integration_id.
+- `GET /api/connections/my-integrations` — owner/platform-admin-only.
+  Lists active integrations + per-tenant connection state.
+- `GET/POST/PATCH/DELETE /api/admin/integrations` — platform-admin
+  CRUD. List + get responses include `meta.oauth_redirect_uri` so the
+  admin UI can copy-paste the URL into each provider's dev console.
+
+**Render-path wiring**
+
+Three call sites read pre-refreshed credentials via
+`integration.service.resolveAccessTokenForRender`, mint pipeline JWT
+in parallel, add `X-XRay-Pipeline-Token` header:
+
+- `dashboard.routes.ts` authed render → `/render` returns 409
+  `OAUTH_NOT_CONNECTED` on needs_reconnect (frontend catches and
+  opens the Connect modal).
+- `dashboard.service.ts` `renderPublicDashboard` → no OAuth lookup
+  (public_share works DB-only per your direction); pipeline JWT still
+  minted with user_id absent.
+- `admin.service.ts` `fetchDashboardContent` (admin preview) → OAuth
+  resolved under target tenant's credentials; 409 surfaces as
+  `AppError(409, 'OAUTH_NOT_CONNECTED')` so impersonating admins see
+  "tenant must reconnect" rather than 500.
+
+All three emit `auth_method` on the bridge JWT so n8n workflows can
+branch between OAuth Bearer and static API-key header schemes. Audit
+metadata on `dashboard.bridge_mint` gains `pipeline_jti`, `auth_method`,
+`access_token_present` (value-less boolean, for SOC-2 triage).
+
+**Frontend**
+
+- `views.admin_integrations` (Platform > Integrations nav). CRUD for
+  `platform.integrations` with auth-method toggles, conditional OAuth
+  /API-key sections, masked client_secret + green "Secured" pill per
+  the step-2 contract, copy-paste OAuth callback URL banner, status
+  selector including `pending` for pre-created-but-awaiting-approval
+  rows.
+- Dashboard builder: free-text Integration field replaced with a
+  `<select>` populated from `/api/connections/my-integrations` + a
+  "Custom (no auth)" default. Inline Connect button + status pill
+  next to the dropdown. Free-text slug preservation: dashboards
+  referencing a slug no longer in the catalog keep the slug with a
+  "(not in catalog)" suffix so saves don't wipe it (render-path
+  degrades gracefully per the lib).
+- `window.__xrayOpenConnectModal(slug, onConnected)` — global Connect
+  modal with OAuth + API Key cards. Dimmed for unsupported methods
+  rather than hidden so tenants can see what's available in principle.
+- Dashboard list pill on every card with an integration (green/amber/
+  gray; Custom and unknown-slug cards get no pill). Click-intercept in
+  the capture phase: broken pill opens the Connect modal instead of
+  navigating.
+- "My Integrations" strip at the top of the dashboard list — owner +
+  platform admin only — with Connect/Reconnect/Disconnect actions per
+  integration.
+- Tenant-facing Connections view (`views.connections`) removed.
+- Bundle version → `2026-04-22-024`.
+
+**Deploy plumbing**
+
+- `config.ts` — `pipelineJwt` block (issuer/audience/expiry + private
+  and public keys with `normalizePem` accepting raw or base64 PEM) +
+  `oauth.redirectUri` derived from env (`XRAY_OAUTH_REDIRECT_URI` ||
+  `ORIGIN` || `APP_URL` + `/api/oauth/callback`) + `stateExpirySeconds`.
+- `install.sh` — generates an RSA 2048 keypair during the secrets
+  step, base64-encodes both PEMs, writes to `.env` alongside JWT_SECRET
+  and ENCRYPTION_KEY. Also seeds `XRAY_OAUTH_REDIRECT_URI`.
+- `update.sh` — idempotent check for `XRAY_PIPELINE_JWT_PRIVATE_KEY`
+  and `XRAY_OAUTH_REDIRECT_URI` matching the VAPID block's pattern.
+  Missing → generate, append, restart server.
+
+**Portability**
+
+`platform.connections.{oauth_refresh_token, oauth_access_token,
+expires_at, last_refreshed_at, refresh_failed_count, last_error,
+api_key}` are **excluded** from export. Live credentials specific to
+the platform's ENCRYPTION_KEY + provider app registration; they don't
+round-trip. `integration_id` + `auth_method` DO round-trip so imported
+rows are recognizable. Tenants re-run the Connect flow after import.
+
+### Env changes
+
+- `XRAY_PIPELINE_JWT_PRIVATE_KEY` — platform-wide RS256 signing key
+  for the pipeline data-access JWT. Base64-encoded PEM. Generated by
+  install.sh / update.sh. Absent = graceful skip (render doesn't 500,
+  pipeline JWT just not emitted).
+- `XRAY_PIPELINE_JWT_PUBLIC_KEY` — corresponding public key. Ships to
+  pipeline DB later (Model J).
+- `XRAY_OAUTH_REDIRECT_URI` — optional override for the OAuth callback
+  URL. Default-derives from ORIGIN / APP_URL.
+
+### Verify on VPS after deploy
+
+```sql
+-- Migrations 021 + 022 applied
+SELECT trigger_name FROM information_schema.triggers
+ WHERE trigger_name IN (
+   'enforce_enc_integrations_client_secret',
+   'enforce_enc_connections_oauth_refresh_token',
+   'enforce_enc_connections_oauth_access_token',
+   'enforce_enc_connections_api_key'
+ ) ORDER BY trigger_name;
+-- Expect 4 rows.
+
+-- No stray plaintext on the new encrypted columns
+SELECT id FROM platform.connections
+ WHERE oauth_refresh_token IS NOT NULL AND oauth_refresh_token <> ''
+   AND oauth_refresh_token NOT LIKE 'enc:v1:%';
+-- Should return 0 rows (trigger rejects any write that would violate).
+
+-- Scheduler activity (after first tick on a tenant with an OAuth conn):
+SELECT id, oauth_access_token_expires_at, oauth_last_refreshed_at,
+       oauth_refresh_failed_count, status
+  FROM platform.connections
+ WHERE auth_method = 'oauth' AND integration_id IS NOT NULL
+ ORDER BY oauth_last_refreshed_at DESC NULLS LAST;
+```
+
+### Known follow-ups not done this session
+
+- **Global-vs-Tenant Dashboard picker** is step 4b. Full scope +
+  open design questions in `.claude/step-4b-kickoff.md`.
+- **Valkey-backed shared cache** if XRay ever fans out past one box.
+  The current oauth-scheduler uses in-process state + DB writes; no
+  cache needed for the single-box model. When that day comes, use
+  Valkey (not Redis) per the operator's direction.
+- **Provider-specific quirks** the generic OAuth 2.0 path doesn't
+  cover: PKCE, Basic-auth-header-only providers, Intuit's realmId
+  handling. Each needs a targeted branch in `oauth-tokens.ts` keyed
+  on slug. Empty `platform.integrations` at ship means this only
+  bites when a specific provider gets added.
+- **Pipeline DB consumer** (Model J) — still post-step-6. Step 4 just
+  mints the token; nobody verifies it yet.
+- **RLS still decorative**, plaintext-read fallback in
+  `encrypted-column.ts` still in place, `withClient` →
+  `withTenantContext` migration still deferred to step 6.
+
+---
+
+## Step 4b — Next up: Global Dashboards redesign
+
+See `.claude/step-4b-kickoff.md` for details.

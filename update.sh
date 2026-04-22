@@ -162,6 +162,51 @@ fi
 echo "  [5c] Running post-rebuild migrations..."
 apply_migrations_from "$SCRIPT_DIR/migrations/post-rebuild" "post-rebuild"
 
+# ── Step 5b0: Ensure Pipeline JWT keypair + OAuth redirect URI in .env ──
+# Step 4 introduced a platform-wide RS256 keypair that signs the
+# xray-pipeline JWT. Absent keypair = graceful skip in server code
+# (render doesn't 500), but we generate on upgrade so the keypair is
+# ready by the time Model J's pipeline.authorize() lands. Idempotent.
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  if ! grep -q '^XRAY_PIPELINE_JWT_PRIVATE_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
+    echo "  [5b0] Generating pipeline JWT RS256 keypair..."
+    PIPELINE_JWT_DIR=$(mktemp -d)
+    if openssl genrsa -out "$PIPELINE_JWT_DIR/private.pem" 2048 >/dev/null 2>&1 \
+       && openssl rsa -in "$PIPELINE_JWT_DIR/private.pem" -pubout -out "$PIPELINE_JWT_DIR/public.pem" >/dev/null 2>&1; then
+      PIPELINE_PRIV=$(base64 -w0 < "$PIPELINE_JWT_DIR/private.pem")
+      PIPELINE_PUB=$(base64 -w0 < "$PIPELINE_JWT_DIR/public.pem")
+      cat >> "$SCRIPT_DIR/.env" <<PIPELINEJWTEOF
+
+# ─── Pipeline JWT (RS256 keypair for xray-pipeline audience) ───
+XRAY_PIPELINE_JWT_PRIVATE_KEY=${PIPELINE_PRIV}
+XRAY_PIPELINE_JWT_PUBLIC_KEY=${PIPELINE_PUB}
+PIPELINEJWTEOF
+      ok "Pipeline JWT keypair generated and appended to .env"
+      docker compose restart server >/dev/null 2>&1 && ok "Server restarted with pipeline keypair" || true
+    else
+      warn "Could not generate pipeline JWT keypair — render path will skip minting until fixed"
+    fi
+    rm -rf "$PIPELINE_JWT_DIR"
+  else
+    ok "Pipeline JWT keypair already configured"
+  fi
+
+  # Seed XRAY_OAUTH_REDIRECT_URI from APP_URL if absent. Admin can
+  # override later for multi-domain setups.
+  if ! grep -q '^XRAY_OAUTH_REDIRECT_URI=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
+    APP_URL_VAL=$(grep -oP '^APP_URL=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "")
+    if [ -n "$APP_URL_VAL" ]; then
+      REDIRECT_URI="${APP_URL_VAL%/}/api/oauth/callback"
+      cat >> "$SCRIPT_DIR/.env" <<OAUTHREDIRECTEOF
+
+# ─── OAuth callback URL (register with each provider) ───
+XRAY_OAUTH_REDIRECT_URI=${REDIRECT_URI}
+OAUTHREDIRECTEOF
+      ok "XRAY_OAUTH_REDIRECT_URI seeded: ${REDIRECT_URI}"
+    fi
+  fi
+fi
+
 # ── Step 5b: Ensure VAPID keys exist in .env ──
 if [ -f "$SCRIPT_DIR/.env" ]; then
   if ! grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then

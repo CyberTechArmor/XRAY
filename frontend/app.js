@@ -1155,6 +1155,145 @@
   }
   window.__xrayToast = toast;
 
+  // ── Connect modal (OAuth / API Key integration connect flow) ──
+  // Shared across views. Opened when a tenant user clicks a dashboard
+  // whose integration is 'not_connected' or 'needs_reconnect'. Shows one
+  // or two cards based on which auth methods the integration supports;
+  // unsupported methods are dimmed rather than hidden so the tenant can
+  // see what's available in principle.
+  var __xrayIntegrationCache = null;    // last /api/connections/my-integrations result
+  var __xrayIntegrationCacheAt = 0;
+  function __xrayFetchIntegrations(force) {
+    if (!force && __xrayIntegrationCache && Date.now() - __xrayIntegrationCacheAt < 30000) {
+      return Promise.resolve(__xrayIntegrationCache);
+    }
+    return api.get('/api/connections/my-integrations').then(function(r) {
+      if (r.ok && Array.isArray(r.data)) {
+        __xrayIntegrationCache = r.data;
+        __xrayIntegrationCacheAt = Date.now();
+        return r.data;
+      }
+      return [];
+    });
+  }
+  window.__xrayGetIntegrations = __xrayFetchIntegrations;
+
+  // Pill status string for a given integration slug, keyed off the
+  // cache. Returns one of: 'connected', 'needs_reconnect',
+  // 'not_connected', 'unknown'. Views use this to render pills.
+  window.__xrayIntegrationStatus = function(slug, integrations) {
+    if (!slug) return null;
+    var list = integrations || __xrayIntegrationCache || [];
+    var it = list.find(function(x) { return x.slug === slug; });
+    if (!it) return 'unknown';
+    if (!it.has_connection) return 'not_connected';
+    if (it.connection_status === 'error') return 'needs_reconnect';
+    if (it.connection_status === 'active') return 'connected';
+    return 'not_connected';
+  };
+
+  window.__xrayOpenConnectModal = function(slug, onConnected) {
+    __xrayFetchIntegrations(true).then(function(list) {
+      var it = list.find(function(x) { return x.slug === slug; });
+      if (!it) {
+        toast('Integration "' + slug + '" is not in the catalog.', 'error');
+        return;
+      }
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.style.display = 'flex';
+      overlay.innerHTML =
+        '<div class="modal" style="max-width:620px">'
+        + '<div class="modal-head"><div class="modal-title">Connect ' + (it.display_name || slug) + '</div>'
+        + '<button class="modal-close" data-close>&times;</button></div>'
+        + '<div class="modal-body">'
+        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+        + renderConnectCard('oauth', it)
+        + renderConnectCard('api_key', it)
+        + '</div>'
+        + '<div id="connect-api-key-form" style="display:none;margin-top:16px">'
+        + '<label style="display:block;font-size:13px;color:var(--t2);margin-bottom:6px">API key</label>'
+        + '<input type="password" id="connect-api-key-input" style="width:100%;padding:8px" placeholder="Paste your API key">'
+        + (it.api_key_instructions ? '<div style="font-size:12px;color:var(--t3);margin-top:6px">' + escHtml(it.api_key_instructions) + '</div>' : '')
+        + '<div id="connect-api-key-err" style="color:var(--error,#b31812);font-size:13px;margin-top:8px;display:none"></div>'
+        + '<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">'
+        + '<button class="btn" data-cancel-apikey>Cancel</button>'
+        + '<button class="btn primary" data-save-apikey>Save API key</button>'
+        + '</div>'
+        + '</div>'
+        + '</div></div>';
+      document.body.appendChild(overlay);
+
+      function close() { overlay.remove(); }
+      overlay.querySelector('[data-close]').onclick = close;
+
+      var oauthBtn = overlay.querySelector('[data-connect-oauth]');
+      if (oauthBtn) oauthBtn.onclick = function() {
+        api.get('/api/connections/oauth/' + encodeURIComponent(slug) + '/authorize').then(function(r) {
+          if (!r.ok || !r.data || !r.data.authorize_url) {
+            toast((r.error && r.error.message) || 'Could not start OAuth flow', 'error');
+            return;
+          }
+          // Full-page redirect — provider X-Frame-Options defeats iframes
+          // and popup blockers are unreliable. Server redirects back to
+          // /app with ?connected=<slug> on success.
+          window.location.href = r.data.authorize_url;
+        });
+      };
+      var apiBtn = overlay.querySelector('[data-connect-apikey]');
+      var apiForm = overlay.querySelector('#connect-api-key-form');
+      if (apiBtn) apiBtn.onclick = function() {
+        apiForm.style.display = '';
+      };
+      var cancelApi = overlay.querySelector('[data-cancel-apikey]');
+      if (cancelApi) cancelApi.onclick = function() { apiForm.style.display = 'none'; };
+      var saveApi = overlay.querySelector('[data-save-apikey]');
+      if (saveApi) saveApi.onclick = function() {
+        var v = overlay.querySelector('#connect-api-key-input').value.trim();
+        var err = overlay.querySelector('#connect-api-key-err');
+        err.style.display = 'none';
+        if (!v) { err.textContent = 'API key required'; err.style.display = ''; return; }
+        api.post('/api/connections/api-key/' + encodeURIComponent(slug), { apiKey: v }).then(function(r) {
+          if (!r.ok) {
+            err.textContent = (r.error && r.error.message) || 'Save failed';
+            err.style.display = '';
+            return;
+          }
+          __xrayIntegrationCacheAt = 0; // force refresh on next read
+          toast('Connected to ' + (it.display_name || slug), 'success');
+          close();
+          if (typeof onConnected === 'function') onConnected();
+        });
+      };
+    });
+  };
+
+  function renderConnectCard(method, integration) {
+    var supported = method === 'oauth' ? integration.supports_oauth : integration.supports_api_key;
+    var label = method === 'oauth' ? 'OAuth' : 'API Key';
+    var desc = method === 'oauth'
+      ? 'Sign in through the provider. Tokens refresh automatically.'
+      : 'Paste an API key you created in the provider dashboard.';
+    var dimmed = !supported ? 'opacity:.45;pointer-events:none' : 'cursor:pointer';
+    var notAvail = method === 'oauth'
+      ? 'OAuth not available for this integration yet.'
+      : 'This provider does not offer API keys.';
+    return ''
+      + '<div class="connect-card" style="border:1px solid var(--border,#444);border-radius:8px;padding:16px;' + dimmed + '"'
+      + (supported ? ' data-connect-' + (method === 'oauth' ? 'oauth' : 'apikey') : '') + '>'
+      + '<div style="font-weight:600;margin-bottom:6px">' + label + (method === 'oauth' && integration.supports_oauth ? ' <span style="font-size:11px;color:var(--t3)">recommended</span>' : '') + '</div>'
+      + '<div style="font-size:13px;color:var(--t2);margin-bottom:10px">' + (supported ? desc : notAvail) + '</div>'
+      + (supported ? '<div class="btn primary" style="text-align:center">' + (method === 'oauth' ? 'Connect' : 'Paste key') + '</div>' : '')
+      + '</div>';
+  }
+
+  function escHtml(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
   // ── Auth UI ──
   function showAuthErr(formId, msg) {
     var el = document.getElementById(formId);
@@ -1373,6 +1512,29 @@
         });
       };
     });
+  }
+
+  // ── OAuth callback return handler ──
+  // Callback route redirects back to the app with either ?connected=<slug>
+  // or ?oauth_error=<code>. Toast the outcome and strip the query params
+  // so a browser reload doesn't repeat the toast.
+  function checkOauthReturnParams() {
+    var params = new URLSearchParams(window.location.search);
+    var connected = params.get('connected');
+    var err = params.get('oauth_error');
+    if (!connected && !err) return;
+    // Clean up URL regardless of outcome.
+    params.delete('connected');
+    params.delete('oauth_error');
+    params.delete('oauth_desc');
+    var qs = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : '') + window.location.hash);
+    if (connected) {
+      toast('Connected to ' + connected, 'success');
+    } else if (err) {
+      var desc = params.get('oauth_desc') || err;
+      toast('OAuth connect failed: ' + desc, 'error');
+    }
   }
 
   // ── Check magic link token in URL ──
@@ -1978,6 +2140,7 @@
       admin_tenants: 'if(typeof initAdminTenants==="function")initAdminTenants(container,api,user);',
       admin_dashboards: 'if(typeof initAdminDashboards==="function")initAdminDashboards(container,api,user);',
       admin_connections: 'if(typeof initAdminConnections==="function")initAdminConnections(container,api,user);',
+      admin_integrations: 'if(typeof initAdminIntegrations==="function")initAdminIntegrations(container,api,user);',
       admin_roles: 'if(typeof initAdminRoles==="function")initAdminRoles(container,api,user);',
       admin_email: 'if(typeof initAdminEmail==="function")initAdminEmail(container,api,user);',
       admin_bundles: 'if(typeof initAdminBundles==="function")initAdminBundles(container,api,user);',
@@ -2047,6 +2210,7 @@
 
   // ── Init ──
   function init() {
+    checkOauthReturnParams();
     if (checkUrlToken()) return;
     api.refresh().then(function(ok) {
       if (ok) {

@@ -222,6 +222,48 @@ describe('n8n-bridge', () => {
     expect(claims.access_token).toBe('oauth-access-token-value');
   });
 
+  it('carries auth_method when the tenant connected via OAuth', async () => {
+    const { mintBridgeJwt, verifyBridgeJwtForTest } = await importBridge();
+    const { jwt: token } = mintBridgeJwt({
+      tenantId: 'tenant-x',
+      integration: 'housecall_pro',
+      accessToken: 'oauth-access-token',
+      authMethod: 'oauth',
+      via: 'authed_render',
+      secret: SECRET,
+    });
+    const claims = verifyBridgeJwtForTest(token, SECRET);
+    expect(claims.access_token).toBe('oauth-access-token');
+    expect(claims.auth_method).toBe('oauth');
+  });
+
+  it('carries auth_method=api_key when the tenant pasted a static key', async () => {
+    const { mintBridgeJwt, verifyBridgeJwtForTest } = await importBridge();
+    const { jwt: token } = mintBridgeJwt({
+      tenantId: 'tenant-x',
+      integration: 'housecall_pro',
+      accessToken: 'static-api-key',
+      authMethod: 'api_key',
+      via: 'authed_render',
+      secret: SECRET,
+    });
+    const claims = verifyBridgeJwtForTest(token, SECRET);
+    expect(claims.access_token).toBe('static-api-key');
+    expect(claims.auth_method).toBe('api_key');
+  });
+
+  it('auth_method absent when unset (non-OAuth, non-API-key integrations)', async () => {
+    const { mintBridgeJwt, verifyBridgeJwtForTest } = await importBridge();
+    const { jwt: token } = mintBridgeJwt({
+      tenantId: 'tenant-x',
+      integration: 'custom',
+      via: 'authed_render',
+      secret: SECRET,
+    });
+    const claims = verifyBridgeJwtForTest(token, SECRET) as Record<string, unknown>;
+    expect(claims.auth_method).toBeUndefined();
+  });
+
   it('generates a unique jti per call', async () => {
     const { mintBridgeJwt } = await importBridge();
     const a = mintBridgeJwt({ tenantId: 't', integration: 'i', via: 'authed_render', secret: SECRET });

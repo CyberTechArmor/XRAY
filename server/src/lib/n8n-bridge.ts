@@ -57,9 +57,15 @@ export interface BridgeJwtInput {
   userRole?: string | null;
   isPlatformAdmin?: boolean | null;
 
-  // Step-4 (OAuth) forward field. Absent today; n8n reads it when set
-  // and falls back to its own OAuth credential when not.
+  // Step-4 (OAuth / API-key). access_token carries whichever credential
+  // the tenant has connected with: OAuth access token (refreshed by the
+  // scheduler) or a static API key. auth_method tells n8n which flavor
+  // it is so workflows can present it with the right header scheme
+  // (Bearer vs X-API-Key vs provider-specific). Both are absent on
+  // public_share and on dashboards whose integration has no OAuth / API
+  // key support configured.
   accessToken?: string | null;
+  authMethod?: 'oauth' | 'api_key' | null;
 }
 
 export interface BridgeJwtResult {
@@ -118,6 +124,7 @@ export function mintBridgeJwt(input: BridgeJwtInput): BridgeJwtResult {
   if (typeof input.isPlatformAdmin === 'boolean') payload.is_platform_admin = input.isPlatformAdmin;
 
   setIfPresent(payload, 'access_token', input.accessToken);
+  setIfPresent(payload, 'auth_method', input.authMethod);
 
   const token = jwt.sign(payload, input.secret, {
     algorithm: 'HS256',

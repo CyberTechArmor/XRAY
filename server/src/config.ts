@@ -15,6 +15,20 @@ function getEnvInt(key: string, fallback: number): number {
   return val ? parseInt(val, 10) : fallback;
 }
 
+// Accepts PEM either as raw multi-line (actual newlines in the env var —
+// works with docker-compose env_file) or as base64-encoded single-line
+// (simpler to put on a single shell line). We normalize to raw PEM so
+// jsonwebtoken / node:crypto ingest it directly.
+function normalizePem(raw: string): string {
+  if (!raw) return '';
+  if (raw.includes('-----BEGIN')) return raw;
+  try {
+    const decoded = Buffer.from(raw, 'base64').toString('utf8');
+    if (decoded.includes('-----BEGIN')) return decoded;
+  } catch {}
+  return raw;
+}
+
 export const config = {
   port: getEnvInt('PORT', 3000),
   nodeEnv: getEnv('NODE_ENV', 'development'),
@@ -36,6 +50,42 @@ export const config = {
     issuer: 'xray',
     audience: 'n8n',
     expirySeconds: 60,
+  },
+  pipelineJwt: {
+    // Second JWT XRay mints on every render, signed RS256 with a
+    // platform-wide keypair. Audience is the future pipeline DB whose
+    // pipeline.authorize(token) SECURITY DEFINER function will verify
+    // signatures with the public key. Private key lives only here.
+    // Absent key = graceful skip (logged once at startup); render sites
+    // don't mint this JWT until the key is provisioned.
+    // See .claude/pipeline-hardening-notes.md Model J for the full design.
+    issuer: 'xray',
+    audience: 'xray-pipeline',
+    expirySeconds: 60,
+    privateKey: normalizePem(getEnv('XRAY_PIPELINE_JWT_PRIVATE_KEY')),
+    publicKey: normalizePem(getEnv('XRAY_PIPELINE_JWT_PUBLIC_KEY')),
+  },
+  oauth: {
+    // Platform-wide callback URL. One URL handles every provider;
+    // per-flow state travels in a signed state JWT. Admins paste this
+    // same URL into each provider's developer console when registering
+    // XRay as an OAuth app.
+    // Resolution order:
+    //   1. XRAY_OAUTH_REDIRECT_URI (explicit override)
+    //   2. ORIGIN / APP_URL + '/api/oauth/callback'
+    //   3. WebAuthn origin + '/api/oauth/callback' (dev fallback)
+    redirectUri: (() => {
+      const explicit = getEnv('XRAY_OAUTH_REDIRECT_URI');
+      if (explicit) return explicit;
+      const origin =
+        getEnv('ORIGIN') ||
+        getEnv('APP_URL') ||
+        getEnv('WEBAUTHN_ORIGIN', 'http://localhost:3000');
+      return origin.replace(/\/+$/, '') + '/api/oauth/callback';
+    })(),
+    // State JWT lifetime. Ten minutes gives the user time to complete
+    // provider consent without the window being abusably long.
+    stateExpirySeconds: 600,
   },
   stripeWebhookSecret: getEnv('STRIPE_WEBHOOK_SECRET'),
   webauthn: {

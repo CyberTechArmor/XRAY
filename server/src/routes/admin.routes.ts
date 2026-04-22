@@ -19,6 +19,8 @@ import {
 } from '../lib/validation';
 import * as adminService from '../services/admin.service';
 import * as auditService from '../services/audit.service';
+import * as integrationService from '../services/integration.service';
+import { config } from '../config';
 
 const router = Router();
 
@@ -730,6 +732,61 @@ router.post('/import', async (req, res, next) => {
       data: result,
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Integrations (OAuth providers + API-key providers) ─────────────────────
+// Backs the "Integrations" admin tab. platform.integrations catalog CRUD.
+
+router.get('/integrations', async (_req, res, next) => {
+  try {
+    const rows = await integrationService.listAllIntegrations();
+    // Surface the redirect URI so the admin UI can show it next to each
+    // provider's config ("Register this URL with HouseCall Pro"). Same
+    // value for every provider — platform-wide callback.
+    res.json({
+      ok: true,
+      data: rows,
+      meta: { oauth_redirect_uri: config.oauth.redirectUri },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/integrations/:id', async (req, res, next) => {
+  try {
+    const row = await integrationService.getIntegration(req.params.id);
+    res.json({ ok: true, data: row, meta: { oauth_redirect_uri: config.oauth.redirectUri } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/integrations', async (req, res, next) => {
+  try {
+    const row = await integrationService.createIntegration(req.body, req.user!.sub);
+    res.status(201).json({ ok: true, data: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/integrations/:id', async (req, res, next) => {
+  try {
+    const row = await integrationService.updateIntegration(req.params.id, req.body, req.user!.sub);
+    res.json({ ok: true, data: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/integrations/:id', async (req, res, next) => {
+  try {
+    await integrationService.deleteIntegration(req.params.id, req.user!.sub);
+    res.json({ ok: true, data: { message: 'Integration deleted' } });
   } catch (err) {
     next(err);
   }
