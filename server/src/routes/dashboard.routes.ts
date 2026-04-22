@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticateJWT } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
 import { validateBody, dashboardAccessSchema, embedCreateSchema } from '../lib/validation';
-import { decryptJsonField, decryptSecret } from '../lib/encrypted-column';
+import { decryptSecret } from '../lib/encrypted-column';
 import { mintBridgeJwt } from '../lib/n8n-bridge';
 import * as dashboardService from '../services/dashboard.service';
 import * as aiService from '../services/ai.service';
@@ -140,7 +140,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       // possible). bridge_secret stays on the dashboards row.
       const baseSelect = `
         SELECT d.id, d.tenant_id, d.name AS dashboard_name, d.status AS dashboard_status,
-               d.fetch_url, d.fetch_method, d.fetch_headers, d.fetch_body, d.fetch_query_params,
+               d.fetch_url, d.fetch_method, d.fetch_body, d.fetch_query_params,
                d.view_html, d.view_css, d.view_js, d.template_id, d.integration, d.params,
                d.bridge_secret, d.is_public,
                t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
@@ -195,82 +195,86 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       });
     }
 
-    // Proxy fetch to n8n with retry. Two auth modes:
-    //  1. Bridge (integration set) — mint an HS256 JWT per render and send
-    //     it as Authorization: Bearer. fetch_headers is ignored on this
-    //     path; step 3 drops the column once every dashboard is cut over.
-    //  2. Legacy (integration null/empty) — decrypt fetch_headers and
-    //     forward as-is. This is the original behavior.
-    let parsedHeaders: Record<string, string>;
-    if (dashboard.integration) {
-      const bridgeSecret = decryptSecret(
-        dashboard.bridge_secret,
-        `dashboards:bridge_secret:${dashboard.id}`
-      );
-      if (!bridgeSecret) {
-        return res.status(500).json({
-          ok: false,
-          error: {
-            code: 'BRIDGE_SECRET_MISSING',
-            message: 'This dashboard has an integration but no bridge signing secret. Set one in the dashboard builder.',
-          },
-        });
-      }
-      // `via` distinguishes a tenant user rendering their own dashboard
-      // (authed_render) from a platform admin rendering someone else's
-      // (admin_impersonation). An admin with no home tenant (tid null)
-      // is always impersonating when they render, so the null-safe
-      // compare falls through correctly.
-      const actingVia: 'authed_render' | 'admin_impersonation' =
-        req.user!.is_platform_admin && dashboard.tenant_id !== req.user!.tid
-          ? 'admin_impersonation'
-          : 'authed_render';
-      const minted = mintBridgeJwt({
-        tenantId: dashboard.tenant_id,
-        tenantSlug: dashboard.tenant_slug,
-        tenantName: dashboard.tenant_name,
-        tenantStatus: dashboard.tenant_status,
-        warehouseHost: dashboard.warehouse_host,
-        dashboardId: dashboard.id,
-        dashboardName: dashboard.dashboard_name,
-        dashboardStatus: dashboard.dashboard_status,
-        isPublic: dashboard.is_public,
-        templateId: dashboard.template_id || null,
-        integration: dashboard.integration,
-        params: (dashboard.params as Record<string, unknown>) || {},
-        userId: req.user!.sub,
-        userEmail: dashboard.user_email,
-        userName: dashboard.user_name,
-        userRole: dashboard.user_role,
-        isPlatformAdmin: !!req.user!.is_platform_admin,
-        via: actingVia,
-        secret: bridgeSecret,
-        // access_token stays absent until step 4 wires OAuth lookup.
-      });
-      parsedHeaders = { Authorization: `Bearer ${minted.jwt}` };
-      // Audit-log the mint so a leaked token can be traced back to
-      // (tenant, user, dashboard). Fire-and-forget, matches the existing
-      // audit pattern elsewhere in this file. `via` mirrors the JWT
-      // claim so the audit row is self-contained for SOC 2 review.
-      auditService.log({
-        tenantId: dashboard.tenant_id,
-        userId: req.user!.sub,
-        action: 'dashboard.bridge_mint',
-        resourceType: 'dashboard',
-        resourceId: dashboard.id,
-        metadata: {
-          jti: minted.jti,
-          integration: dashboard.integration,
-          template_id: dashboard.template_id || null,
-          via: actingVia,
+    // Proxy fetch to n8n through the JWT bridge: mint an HS256 token per
+    // render and send it as Authorization: Bearer. The legacy
+    // fetch_headers path was dropped in step 3 (migration 020); every
+    // dashboard with a fetch_url must now carry an `integration` +
+    // encrypted `bridge_secret`. The cutover-safety check in the step-3
+    // kickoff guarantees status='active' rows satisfy this before
+    // migration 020 applies, and the SELECT above gates on
+    // status='active'. A row that reaches here without integration set
+    // is a config error, not a legacy path — surface it as 500.
+    if (!dashboard.integration) {
+      return res.status(500).json({
+        ok: false,
+        error: {
+          code: 'BRIDGE_INTEGRATION_MISSING',
+          message: 'This dashboard has a fetch_url but no integration configured. Set Integration + Bridge signing secret in the dashboard builder.',
         },
       });
-    } else {
-      parsedHeaders = decryptJsonField(
-        dashboard.fetch_headers,
-        `dashboards:fetch_headers:${dashboard.id}`
-      ) as Record<string, string>;
     }
+    const bridgeSecret = decryptSecret(
+      dashboard.bridge_secret,
+      `dashboards:bridge_secret:${dashboard.id}`
+    );
+    if (!bridgeSecret) {
+      return res.status(500).json({
+        ok: false,
+        error: {
+          code: 'BRIDGE_SECRET_MISSING',
+          message: 'This dashboard has an integration but no bridge signing secret. Set one in the dashboard builder.',
+        },
+      });
+    }
+    // `via` distinguishes a tenant user rendering their own dashboard
+    // (authed_render) from a platform admin rendering someone else's
+    // (admin_impersonation). An admin with no home tenant (tid null)
+    // is always impersonating when they render, so the null-safe
+    // compare falls through correctly.
+    const actingVia: 'authed_render' | 'admin_impersonation' =
+      req.user!.is_platform_admin && dashboard.tenant_id !== req.user!.tid
+        ? 'admin_impersonation'
+        : 'authed_render';
+    const minted = mintBridgeJwt({
+      tenantId: dashboard.tenant_id,
+      tenantSlug: dashboard.tenant_slug,
+      tenantName: dashboard.tenant_name,
+      tenantStatus: dashboard.tenant_status,
+      warehouseHost: dashboard.warehouse_host,
+      dashboardId: dashboard.id,
+      dashboardName: dashboard.dashboard_name,
+      dashboardStatus: dashboard.dashboard_status,
+      isPublic: dashboard.is_public,
+      templateId: dashboard.template_id || null,
+      integration: dashboard.integration,
+      params: (dashboard.params as Record<string, unknown>) || {},
+      userId: req.user!.sub,
+      userEmail: dashboard.user_email,
+      userName: dashboard.user_name,
+      userRole: dashboard.user_role,
+      isPlatformAdmin: !!req.user!.is_platform_admin,
+      via: actingVia,
+      secret: bridgeSecret,
+      // access_token stays absent until step 4 wires OAuth lookup.
+    });
+    const parsedHeaders: Record<string, string> = { Authorization: `Bearer ${minted.jwt}` };
+    // Audit-log the mint so a leaked token can be traced back to
+    // (tenant, user, dashboard). Fire-and-forget, matches the existing
+    // audit pattern elsewhere in this file. `via` mirrors the JWT
+    // claim so the audit row is self-contained for SOC 2 review.
+    auditService.log({
+      tenantId: dashboard.tenant_id,
+      userId: req.user!.sub,
+      action: 'dashboard.bridge_mint',
+      resourceType: 'dashboard',
+      resourceId: dashboard.id,
+      metadata: {
+        jti: minted.jti,
+        integration: dashboard.integration,
+        template_id: dashboard.template_id || null,
+        via: actingVia,
+      },
+    });
 
     // Build fetch URL with query params
     let fetchUrl = dashboard.fetch_url;
