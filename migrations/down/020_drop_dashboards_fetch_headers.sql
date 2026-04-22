@@ -1,0 +1,22 @@
+-- Migration 020 — down. Re-adds `platform.dashboards.fetch_headers` as a
+-- nullable JSONB column with no default and no guardrail trigger.
+--
+-- Intentional: the guardrail trigger and function from migration 017
+-- (`enforce_enc_dashboards_fetch_headers` +
+-- `platform.require_enc_dashboards_fetch_headers`) are NOT recreated.
+-- By the time this down migration is plausible to run, every render site
+-- writes through the JWT bridge and no code path produces values for
+-- this column — so a trigger that rejects unencrypted writes would
+-- reject only rows inserted by a human during manual rollback, which is
+-- not what we want.
+--
+-- Restoring legacy data requires reinstating the trigger manually and
+-- hand-encrypting any values under the `enc:v1:` envelope. There is no
+-- automated path to that rollback — by design, since step 3 is the
+-- commitment to the JWT path.
+--
+-- Lives under migrations/down/ so deploy.sh/update.sh/install.sh —
+-- which glob migrations/*.sql non-recursively — do not execute it as
+-- part of every deploy.
+
+ALTER TABLE platform.dashboards ADD COLUMN IF NOT EXISTS fetch_headers JSONB;
