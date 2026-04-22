@@ -130,9 +130,21 @@ STRIPE_WEBHOOK_SECRET=""
 VAPID_PUBLIC_KEY=""
 VAPID_PRIVATE_KEY=""
 
+# Pipeline JWT keypair (RS256). Platform-wide; signs the data-access
+# token destined for the future pipeline DB. Stored as single-line
+# base64 so .env parsing stays simple; server decodes at boot. Matches
+# migration of Model J in .claude/pipeline-hardening-notes.md.
+PIPELINE_JWT_DIR=$(mktemp -d)
+openssl genrsa -out "$PIPELINE_JWT_DIR/private.pem" 2048 >/dev/null 2>&1
+openssl rsa -in "$PIPELINE_JWT_DIR/private.pem" -pubout -out "$PIPELINE_JWT_DIR/public.pem" >/dev/null 2>&1
+PIPELINE_JWT_PRIVATE_KEY=$(base64 -w0 < "$PIPELINE_JWT_DIR/private.pem")
+PIPELINE_JWT_PUBLIC_KEY=$(base64 -w0 < "$PIPELINE_JWT_DIR/public.pem")
+rm -rf "$PIPELINE_JWT_DIR"
+
 ok "JWT secret generated (64 chars)"
 ok "Encryption key generated (256-bit hex)"
 ok "Database password generated (32 chars)"
+ok "Pipeline JWT RS256 keypair generated (2048-bit)"
 
 # ── Step 5: .env File ──────────────────────────────────────
 step 5 "Writing .env file"
@@ -157,6 +169,19 @@ DB_PASSWORD=${DB_PASSWORD}
 # ─── Authentication ───
 JWT_SECRET=${JWT_SECRET}
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
+
+# ─── Pipeline JWT (RS256 keypair for xray-pipeline audience) ───
+# Platform-wide keypair. Private key signs the pipeline data-access JWT;
+# the public key will ship to the pipeline DB later (Model J). Base64
+# encoded — server decodes at boot.
+XRAY_PIPELINE_JWT_PRIVATE_KEY=${PIPELINE_JWT_PRIVATE_KEY}
+XRAY_PIPELINE_JWT_PUBLIC_KEY=${PIPELINE_JWT_PUBLIC_KEY}
+
+# ─── OAuth callback URL ───
+# Provider registrations (HouseCall Pro, QuickBooks, etc.) must point
+# at this URL. Derived from APP_URL by default; override if XRay lives
+# behind a different domain for the OAuth callback path specifically.
+XRAY_OAUTH_REDIRECT_URI=https://${DOMAIN}/api/oauth/callback
 
 # ─── WebAuthn ───
 RP_NAME=XRay BI
