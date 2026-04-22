@@ -73,11 +73,12 @@ export const dashboardCreateSchema = z.object({
   viewJs: z.string().max(500_000).optional(),
   fetchUrl: z.string().url().max(2000).optional(),
   fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
-  fetchHeaders: z.record(z.string()).optional().nullable(),
   fetchBody: z.any().optional().nullable(),
   fetchQueryParams: z.record(z.string()).optional().nullable(),
   tileImageUrl: z.string().url().max(2000).optional().nullable(),
-  // n8n JWT bridge config. Non-empty `integration` flips the render path.
+  // n8n JWT bridge config. `integration` must be non-empty whenever
+  // `fetchUrl` is set — the legacy fetch_headers path was dropped in
+  // step 3 (migration 020).
   templateId: z.string().max(200).optional().nullable(),
   integration: z.string().max(100).optional().nullable(),
   params: z.record(z.any()).optional().nullable(),
@@ -95,11 +96,12 @@ export const dashboardUpdateSchema = z.object({
   status: z.enum(['draft', 'active', 'archived', 'disabled']).optional(),
   fetchUrl: z.string().url().max(2000).optional().nullable(),
   fetchMethod: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
-  fetchHeaders: z.record(z.string()).optional(),
   fetchBody: z.any().optional(),
   fetchQueryParams: z.record(z.string()).optional().nullable(),
   tileImageUrl: z.string().url().max(2000).optional().nullable(),
-  // n8n JWT bridge config. Empty string clears back to the legacy path.
+  // n8n JWT bridge config. Empty string clears integration; the render
+  // path errors on any dashboard with fetch_url but no integration
+  // (legacy fetch_headers path was dropped in step 3).
   templateId: z.string().max(200).optional().nullable(),
   integration: z.string().max(100).optional().nullable(),
   params: z.record(z.any()).optional().nullable(),
