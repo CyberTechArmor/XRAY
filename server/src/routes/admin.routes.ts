@@ -325,7 +325,7 @@ router.patch('/connections/:id', async (req, res, next) => {
 // POST /dashboards/:id/fetch - proxy fetch dashboard content from connection
 router.post('/dashboards/:id/fetch', async (req, res, next) => {
   try {
-    const result = await adminService.fetchDashboardContent(req.params.id);
+    const result = await adminService.fetchDashboardContent(req.params.id, req.user?.sub);
     res.json({
       ok: true,
       data: result,

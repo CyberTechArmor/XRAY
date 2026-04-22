@@ -134,22 +134,31 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
         await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [req.user!.tid]);
       }
       // Platform admin can render any dashboard regardless of tenant.
-      // Select tenant_id too — bridge JWT uses it as `sub`, and platform
-      // admin renders otherwise wouldn't know which tenant to mint for.
+      // JOIN platform.tenants for the tenant_* JWT claims. JOIN users+roles
+      // for user_* claims. LEFT JOIN on users so a platform admin whose
+      // row no longer exists in the target tenant still renders (rare but
+      // possible). bridge_secret stays on the dashboards row.
+      const baseSelect = `
+        SELECT d.id, d.tenant_id, d.name AS dashboard_name, d.status AS dashboard_status,
+               d.fetch_url, d.fetch_method, d.fetch_headers, d.fetch_body, d.fetch_query_params,
+               d.view_html, d.view_css, d.view_js, d.template_id, d.integration, d.params,
+               d.bridge_secret, d.is_public,
+               t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
+               t.warehouse_host,
+               u.email AS user_email, u.name AS user_name,
+               r.slug AS user_role
+          FROM platform.dashboards d
+          JOIN platform.tenants t ON t.id = d.tenant_id
+          LEFT JOIN platform.users u ON u.id = $2
+          LEFT JOIN platform.roles r ON r.id = u.role_id`;
       const query = req.user!.is_platform_admin
         ? {
-            text: `SELECT id, tenant_id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
-                    view_html, view_css, view_js, template_id, integration, params, bridge_secret
-             FROM platform.dashboards
-             WHERE id = $1 AND status = 'active'`,
-            values: [req.params.id],
+            text: `${baseSelect} WHERE d.id = $1 AND d.status = 'active'`,
+            values: [req.params.id, req.user!.sub],
           }
         : {
-            text: `SELECT id, tenant_id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
-                    view_html, view_css, view_js, template_id, integration, params, bridge_secret
-             FROM platform.dashboards
-             WHERE id = $1 AND tenant_id = $2 AND status = 'active'`,
-            values: [req.params.id, req.user!.tid],
+            text: `${baseSelect} WHERE d.id = $1 AND d.tenant_id = $3 AND d.status = 'active'`,
+            values: [req.params.id, req.user!.sub, req.user!.tid],
           };
       const result = await client.query(query);
       if (result.rows[0]) {
@@ -209,10 +218,23 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       }
       const minted = mintBridgeJwt({
         tenantId: dashboard.tenant_id,
-        userId: req.user!.sub,
+        tenantSlug: dashboard.tenant_slug,
+        tenantName: dashboard.tenant_name,
+        tenantStatus: dashboard.tenant_status,
+        warehouseHost: dashboard.warehouse_host,
+        dashboardId: dashboard.id,
+        dashboardName: dashboard.dashboard_name,
+        dashboardStatus: dashboard.dashboard_status,
+        isPublic: dashboard.is_public,
         templateId: dashboard.template_id || null,
         integration: dashboard.integration,
         params: (dashboard.params as Record<string, unknown>) || {},
+        userId: req.user!.sub,
+        userEmail: dashboard.user_email,
+        userName: dashboard.user_name,
+        userRole: dashboard.user_role,
+        isPlatformAdmin: !!req.user!.is_platform_admin,
+        via: 'authed_render',
         secret: bridgeSecret,
         // access_token stays absent until step 4 wires OAuth lookup.
       });

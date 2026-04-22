@@ -456,21 +456,33 @@ export async function deleteConnectionTemplate(templateId: string) {
 
 // ─── Dashboard Proxy (fetch from n8n) ────────────────────
 
-export async function fetchDashboardContent(dashboardId: string) {
+export async function fetchDashboardContent(dashboardId: string, adminUserId?: string) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    // JOIN tenants for tenant_* labels. LEFT JOIN users+roles on the acting
+    // admin — platform admins don't belong to the target tenant, so this
+    // is decoupled from d.tenant_id. adminUserId is optional to stay
+    // backwards-compatible with any internal caller that doesn't have one.
     const result = await client.query(
-      `SELECT id, tenant_id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, status,
-              template_id, integration, params, bridge_secret
-       FROM platform.dashboards WHERE id = $1`,
-      [dashboardId]
+      `SELECT d.id, d.tenant_id, d.name AS dashboard_name, d.status AS dashboard_status,
+              d.fetch_url, d.fetch_method, d.fetch_headers, d.fetch_body, d.fetch_query_params,
+              d.template_id, d.integration, d.params, d.bridge_secret, d.is_public,
+              t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
+              t.warehouse_host,
+              u.email AS user_email, u.name AS user_name,
+              r.slug AS user_role
+         FROM platform.dashboards d
+         JOIN platform.tenants t ON t.id = d.tenant_id
+         LEFT JOIN platform.users u ON u.id = $2
+         LEFT JOIN platform.roles r ON r.id = u.role_id
+        WHERE d.id = $1`,
+      [dashboardId, adminUserId ?? null]
     );
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
     const dash = result.rows[0];
     if (!dash.fetch_url) throw new AppError(400, 'NO_CONNECTION', 'Dashboard has no connection URL configured');
 
-    // Same branching as the authed render path. Admin preview has no
-    // end-user context — mint with user_id absent.
+    // Same branching as the authed render path.
     let headers: Record<string, string>;
     if (dash.integration) {
       const bridgeSecret = decryptSecret(dash.bridge_secret, `dashboards:bridge_secret:${dash.id}`);
@@ -483,15 +495,32 @@ export async function fetchDashboardContent(dashboardId: string) {
       }
       const minted = mintBridgeJwt({
         tenantId: dash.tenant_id,
-        userId: null,
+        tenantSlug: dash.tenant_slug,
+        tenantName: dash.tenant_name,
+        tenantStatus: dash.tenant_status,
+        warehouseHost: dash.warehouse_host,
+        dashboardId: dash.id,
+        dashboardName: dash.dashboard_name,
+        dashboardStatus: dash.dashboard_status,
+        isPublic: dash.is_public,
         templateId: dash.template_id || null,
         integration: dash.integration,
         params: (dash.params as Record<string, unknown>) || {},
+        userId: adminUserId || null,
+        userEmail: dash.user_email,
+        userName: dash.user_name,
+        userRole: dash.user_role,
+        // Any caller of fetchDashboardContent is gated by
+        // requirePermission('platform.admin'), so the acting user IS a
+        // platform admin by construction. No per-request lookup needed.
+        isPlatformAdmin: adminUserId ? true : null,
+        via: 'admin_preview',
         secret: bridgeSecret,
       });
       headers = { Authorization: `Bearer ${minted.jwt}` };
       auditService.log({
         tenantId: dash.tenant_id,
+        userId: adminUserId,
         action: 'dashboard.bridge_mint',
         resourceType: 'dashboard',
         resourceId: dash.id,

@@ -480,6 +480,25 @@ export async function getPublicDashboard(
   });
 }
 
+// Tenant labels loaded alongside a public-share render. Kept separate
+// from getPublicDashboard so that function's other callers (share.routes
+// issuing a plain GET) don't start joining for no reason.
+async function fetchTenantLabels(tenantId: string): Promise<{
+  slug: string | null;
+  name: string | null;
+  status: string | null;
+  warehouse_host: string | null;
+} | null> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const r = await client.query(
+      'SELECT slug, name, status, warehouse_host FROM platform.tenants WHERE id = $1',
+      [tenantId]
+    );
+    return r.rows[0] || null;
+  });
+}
+
 export async function renderPublicDashboard(
   publicToken: string
 ): Promise<{ html: string; css: string; js: string; name: string }> {
@@ -516,12 +535,22 @@ export async function renderPublicDashboard(
         'This dashboard has an integration but no bridge signing secret.'
       );
     }
+    const tenantLabels = await fetchTenantLabels(dashboard.tenant_id);
     const minted = mintBridgeJwt({
       tenantId: dashboard.tenant_id,
-      userId: null,
+      tenantSlug: tenantLabels?.slug ?? null,
+      tenantName: tenantLabels?.name ?? null,
+      tenantStatus: tenantLabels?.status ?? null,
+      warehouseHost: tenantLabels?.warehouse_host ?? null,
+      dashboardId: dashboard.id,
+      dashboardName: dashboard.name,
+      dashboardStatus: dashboard.status,
+      isPublic: dashboard.is_public,
+      // user_* intentionally absent on public_share — no end-user context.
       templateId: dashboard.template_id || null,
       integration: dashboard.integration,
       params: (dashboard.params as Record<string, unknown>) || {},
+      via: 'public_share',
       secret: bridgeSecret,
     });
     headers = { Authorization: `Bearer ${minted.jwt}` };
