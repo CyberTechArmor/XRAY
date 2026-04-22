@@ -83,54 +83,12 @@ else
   warn "Nginx config or template not found — skipping"
 fi
 
-# ── Step 4: Rebuild and restart backend ──
-echo "  [4/7] Rebuilding backend..."
-if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
-  cd "$SCRIPT_DIR"
-  docker compose build --no-cache 2>&1 | tail -5 && ok "Backend rebuilt" || warn "Docker build failed"
-  docker compose up -d 2>/dev/null && ok "Backend restarted" || warn "Docker restart failed"
-else
-  warn "No docker-compose.yml found — skipping backend rebuild"
-fi
-
-# ── Step 4b: Ensure VAPID keys exist in .env ──
-if [ -f "$SCRIPT_DIR/.env" ]; then
-  if ! grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
-    echo "  [4b] Generating VAPID keys for push notifications..."
-    SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
-    if [ -n "$SERVER_CONTAINER" ]; then
-      VAPID_JSON=$(docker exec "$SERVER_CONTAINER" npx web-push generate-vapid-keys --json 2>/dev/null || echo "")
-      if [ -n "$VAPID_JSON" ]; then
-        VAPID_PUB=$(echo "$VAPID_JSON" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4)
-        VAPID_PRV=$(echo "$VAPID_JSON" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4)
-        if [ -n "$VAPID_PUB" ] && [ -n "$VAPID_PRV" ]; then
-          ADMIN_EMAIL_VAL=$(grep -oP '^ADMIN_EMAIL=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "admin@localhost")
-          cat >> "$SCRIPT_DIR/.env" <<VAPIDEOF
-
-# ─── Web Push (VAPID) — for MEET call mobile notifications ───
-VAPID_PUBLIC_KEY=${VAPID_PUB}
-VAPID_PRIVATE_KEY=${VAPID_PRV}
-VAPID_SUBJECT=mailto:${ADMIN_EMAIL_VAL}
-VAPIDEOF
-          ok "VAPID keys added to .env (push notifications enabled)"
-          # Restart server to pick up new env vars
-          docker compose restart server >/dev/null 2>&1 && ok "Server restarted with VAPID keys" || true
-        else
-          warn "Could not parse VAPID keys — push notifications will be disabled"
-        fi
-      else
-        warn "Could not generate VAPID keys — push notifications will be disabled"
-      fi
-    else
-      warn "Server container not running — skipping VAPID key generation"
-    fi
-  else
-    ok "VAPID keys already configured"
-  fi
-fi
-
-# ── Step 5: Run database migrations ──
-echo "  [5/7] Running database migrations..."
+# ── Step 4: Run database migrations BEFORE rebuilding server ──
+# Additive-only schema changes go here so the NEW code boots against a
+# DB that already has the new columns/tables. Running migrations after
+# the rebuild would create a window where new code SELECTs columns the
+# old DB doesn't have yet → render calls 500.
+echo "  [4/7] Running database migrations..."
 PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null || echo "")
 if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
   # Wait for postgres to be ready
@@ -175,12 +133,59 @@ else
   warn "Skipping migrations (no postgres container or migrations/ dir)"
 fi
 
-# ── Step 5b: Backfill encrypted credentials (migration 017 companion) ──
+# ── Step 5: Rebuild and restart backend ──
+# Ordered AFTER migrations so the new code boots into a schema that
+# already has any new columns it SELECTs.
+echo "  [5/7] Rebuilding backend..."
+if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
+  cd "$SCRIPT_DIR"
+  docker compose build --no-cache 2>&1 | tail -5 && ok "Backend rebuilt" || warn "Docker build failed"
+  docker compose up -d 2>/dev/null && ok "Backend restarted" || warn "Docker restart failed"
+else
+  warn "No docker-compose.yml found — skipping backend rebuild"
+fi
+
+# ── Step 5b: Ensure VAPID keys exist in .env ──
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  if ! grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
+    echo "  [5b] Generating VAPID keys for push notifications..."
+    SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
+    if [ -n "$SERVER_CONTAINER" ]; then
+      VAPID_JSON=$(docker exec "$SERVER_CONTAINER" npx web-push generate-vapid-keys --json 2>/dev/null || echo "")
+      if [ -n "$VAPID_JSON" ]; then
+        VAPID_PUB=$(echo "$VAPID_JSON" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4)
+        VAPID_PRV=$(echo "$VAPID_JSON" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4)
+        if [ -n "$VAPID_PUB" ] && [ -n "$VAPID_PRV" ]; then
+          ADMIN_EMAIL_VAL=$(grep -oP '^ADMIN_EMAIL=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "admin@localhost")
+          cat >> "$SCRIPT_DIR/.env" <<VAPIDEOF
+
+# ─── Web Push (VAPID) — for MEET call mobile notifications ───
+VAPID_PUBLIC_KEY=${VAPID_PUB}
+VAPID_PRIVATE_KEY=${VAPID_PRV}
+VAPID_SUBJECT=mailto:${ADMIN_EMAIL_VAL}
+VAPIDEOF
+          ok "VAPID keys added to .env (push notifications enabled)"
+          docker compose restart server >/dev/null 2>&1 && ok "Server restarted with VAPID keys" || true
+        else
+          warn "Could not parse VAPID keys — push notifications will be disabled"
+        fi
+      else
+        warn "Could not generate VAPID keys — push notifications will be disabled"
+      fi
+    else
+      warn "Server container not running — skipping VAPID key generation"
+    fi
+  else
+    ok "VAPID keys already configured"
+  fi
+fi
+
+# ── Step 6: Backfill encrypted credentials (migration 017 companion) ──
 # Idempotent. Rewrites any plaintext rows in webhooks.secret,
 # connections.connection_details, and dashboards.fetch_headers as enc:v1
 # envelopes. Skips already-encrypted rows. Harmless on fresh DBs with
 # no plaintext rows. See CONTEXT.md.
-echo "  [5b] Running credential backfill..."
+echo "  [6/7] Running credential backfill..."
 SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
 if [ -n "$SERVER_CONTAINER" ]; then
   if docker compose exec -T server test -f dist/scripts/backfill-encrypt-credentials.js 2>/dev/null; then
@@ -198,7 +203,7 @@ else
   warn "Server container not running — skipping backfill"
 fi
 
-# ── Step 6: Reload nginx ──
+# ── Step 7: Reload nginx ──
 echo "  [7/7] Reloading nginx..."
 if command -v nginx &>/dev/null; then
   nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && ok "Nginx reloaded" || warn "Nginx reload failed"

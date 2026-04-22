@@ -27,6 +27,16 @@ export const config = {
     }
     return key;
   })(),
+  n8nBridge: {
+    // Per-dashboard signing secret model — no platform-wide env var.
+    // The secret is stored on platform.dashboards.bridge_secret
+    // (encrypted at rest) and passed explicitly to mintBridgeJwt().
+    // iss/aud/exp are platform-wide contract; no reason to make them
+    // per-dashboard configurable.
+    issuer: 'xray',
+    audience: 'n8n',
+    expirySeconds: 60,
+  },
   stripeWebhookSecret: getEnv('STRIPE_WEBHOOK_SECRET'),
   webauthn: {
     rpName: getEnv('WEBAUTHN_RP_NAME', 'XRay BI'),

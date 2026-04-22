@@ -1,11 +1,40 @@
 import { withClient, withTransaction } from '../db/connection';
 import { generateToken, hashToken } from '../lib/crypto';
-import { decryptJsonField } from '../lib/encrypted-column';
+import { decryptJsonField, decryptSecret } from '../lib/encrypted-column';
+import { mintBridgeJwt } from '../lib/n8n-bridge';
+import * as auditService from './audit.service';
 import { AppError } from '../middleware/error-handler';
 
-function decryptDashboardRow<T extends { id: string; fetch_headers?: unknown }>(row: T): T {
+// Internal-only. Fetches the raw `enc:v1:` ciphertext of a dashboard's
+// bridge signing secret. Never call this from an API handler; only the
+// three render call sites (authed / public-share / admin-preview) need
+// the secret, and they pass it straight into mintBridgeJwt.
+export async function fetchBridgeSecretCiphertext(dashboardId: string): Promise<string | null> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'SELECT bridge_secret FROM platform.dashboards WHERE id = $1',
+      [dashboardId]
+    );
+    if (result.rows.length === 0) return null;
+    return (result.rows[0].bridge_secret as string | null) || null;
+  });
+}
+
+function decryptDashboardRow<T extends { id: string; fetch_headers?: unknown; bridge_secret?: unknown }>(row: T): T {
   if (row && row.fetch_headers !== undefined) {
     row.fetch_headers = decryptJsonField(row.fetch_headers, `dashboards:fetch_headers:${row.id}`);
+  }
+  // bridge_secret ciphertext (or plaintext) must never reach the API
+  // response. Surface a boolean so the admin UI can show "secret set"
+  // without exposing the value. Public share / render responses don't
+  // include the dashboard row at all (they return rendered HTML), but
+  // this keeps the contract uniform across every call site that runs
+  // through the decryptor.
+  if (row && 'bridge_secret' in (row as object)) {
+    (row as Record<string, unknown>).bridge_secret_set =
+      typeof row.bridge_secret === 'string' && row.bridge_secret !== '';
+    delete (row as Record<string, unknown>).bridge_secret;
   }
   return row;
 }
@@ -27,6 +56,15 @@ interface Dashboard {
   is_public: boolean;
   public_token: string | null;
   status: string;
+  template_id: string | null;
+  integration: string | null;
+  params: Record<string, unknown> | null;
+  // bridge_secret is stored on the row encrypted under `enc:v1:`.
+  // The read path decrypts on demand (see renderPublicDashboard); we
+  // deliberately do NOT decrypt it in the listing/detail decryptor
+  // because the API response for GET /dashboards/:id must never leak
+  // the plaintext secret to the client.
+  bridge_secret: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -456,9 +494,53 @@ export async function renderPublicDashboard(
     };
   }
 
-  // Proxy fetch for dynamic dashboards. fetch_headers is already plaintext
-  // here — getPublicDashboard decrypts on the way out.
-  const headers = (dashboard.fetch_headers || {}) as Record<string, string>;
+  // Proxy fetch for dynamic dashboards. Two auth modes:
+  //  1. Bridge (integration set) — mint an HS256 JWT per render. The
+  //     share context has no user, so the user_id claim is absent.
+  //  2. Legacy (integration null) — forward the (already-decrypted)
+  //     fetch_headers as-is.
+  let headers: Record<string, string>;
+  if (dashboard.integration) {
+    // decryptDashboardRow redacts bridge_secret from the row — fetch
+    // the ciphertext via the internal helper to keep the "never leak"
+    // invariant honest.
+    const bridgeCipher = await fetchBridgeSecretCiphertext(dashboard.id);
+    const bridgeSecret = decryptSecret(
+      bridgeCipher,
+      `dashboards:bridge_secret:${dashboard.id}`
+    );
+    if (!bridgeSecret) {
+      throw new AppError(
+        500,
+        'BRIDGE_SECRET_MISSING',
+        'This dashboard has an integration but no bridge signing secret.'
+      );
+    }
+    const minted = mintBridgeJwt({
+      tenantId: dashboard.tenant_id,
+      userId: null,
+      templateId: dashboard.template_id || null,
+      integration: dashboard.integration,
+      params: (dashboard.params as Record<string, unknown>) || {},
+      secret: bridgeSecret,
+    });
+    headers = { Authorization: `Bearer ${minted.jwt}` };
+    auditService.log({
+      tenantId: dashboard.tenant_id,
+      action: 'dashboard.bridge_mint',
+      resourceType: 'dashboard',
+      resourceId: dashboard.id,
+      metadata: {
+        jti: minted.jti,
+        integration: dashboard.integration,
+        template_id: dashboard.template_id || null,
+        via: 'public_share',
+        public_token_prefix: publicToken.slice(0, 8),
+      },
+    });
+  } else {
+    headers = (dashboard.fetch_headers || {}) as Record<string, string>;
+  }
   const fetchOpts: RequestInit = {
     method: dashboard.fetch_method || 'GET',
     headers: { 'Content-Type': 'application/json', ...headers },

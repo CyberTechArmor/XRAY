@@ -31,10 +31,11 @@ for d in ai; do
 done
 chown -R www-data:www-data /var/www/xray 2>/dev/null || true
 
-echo "=== [2/5] Rebuilding and restarting server container ==="
-docker compose up -d --build server
-
-echo "=== [3/5] Running database migrations ==="
+echo "=== [2/5] Running database migrations ==="
+# Ordered BEFORE the rebuild so the new code boots into a schema that
+# already has any new columns it SELECTs. Running migrations after the
+# rebuild creates a race where render calls 500 until the last migration
+# lands.
 PG_CONTAINER=$(docker compose ps -q postgres)
 if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
   # Wait for postgres to be ready
@@ -55,6 +56,9 @@ if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
 else
   echo "  WARNING: postgres container not found, skipping migrations"
 fi
+
+echo "=== [3/5] Rebuilding and restarting server container ==="
+docker compose up -d --build server
 
 echo "=== [4/5] Running credential backfill ==="
 SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
