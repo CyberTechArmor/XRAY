@@ -1978,6 +1978,7 @@
       admin_tenants: 'if(typeof initAdminTenants==="function")initAdminTenants(container,api,user);',
       admin_dashboards: 'if(typeof initAdminDashboards==="function")initAdminDashboards(container,api,user);',
       admin_connections: 'if(typeof initAdminConnections==="function")initAdminConnections(container,api,user);',
+      admin_integrations: 'if(typeof initAdminIntegrations==="function")initAdminIntegrations(container,api,user);',
       admin_roles: 'if(typeof initAdminRoles==="function")initAdminRoles(container,api,user);',
       admin_email: 'if(typeof initAdminEmail==="function")initAdminEmail(container,api,user);',
       admin_bundles: 'if(typeof initAdminBundles==="function")initAdminBundles(container,api,user);',
