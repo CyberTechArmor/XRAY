@@ -571,20 +571,52 @@ check.
 
 ### Deploy order on the VPS
 
-`update.sh` handles this end-to-end (migrations-before-rebuild ordering
-is the post-step-2 fix). Manual equivalent for step 3:
+Step 3 exposed a deploy-order race the step-2 "migrations before
+rebuild" fix didn't anticipate: migration 020 is **destructive** (DROP
+COLUMN), and dropping the column while the old container still served
+traffic caused every /render call to 500 for the duration of the
+`docker compose build --no-cache` window (~60–120s). The fix is a
+two-stage migration convention, introduced in step 3 alongside the
+drop:
 
-1. Deploy the new server code. Renders JWT-only; no more legacy branch.
-   A misconfigured dashboard (fetch_url without integration) will now
-   error at render instead of proxying through legacy headers — run the
-   cutover-safety queries *before* this deploy step to catch it.
-2. Apply migration 020. Trigger + function + column all drop in one
-   transaction. Idempotent: `DROP ... IF EXISTS` / `DROP COLUMN IF EXISTS`.
+- **`migrations/*.sql` — pre-rebuild (additive only).** `ADD COLUMN`,
+  new tables, triggers on new columns. Runs BEFORE the container
+  rebuild so the new code boots into a schema that already has the
+  columns it SELECTs.
+- **`migrations/post-rebuild/*.sql` — post-rebuild (destructive).**
+  `DROP COLUMN`, `DROP TABLE`, anything that breaks the old image's
+  SELECTs. Runs AFTER the container is rebuilt and swapped, so the
+  old code has stopped serving traffic before the columns it depends
+  on disappear.
+- **`migrations/down/*.sql` — never auto-run.** Rollback scripts only.
+  Non-recursive `migrations/*.sql` glob already skipped this
+  directory; `post-rebuild/` is skipped the same way.
 
-Order matters: a DB that still has the column but server code that no
-longer SELECTs it is fine. The reverse (column dropped, old code still
-SELECTing it) would throw at render. Deploy server code first, then
-migrate.
+`install.sh`, `update.sh`, and `deploy.sh` all implement this:
+
+- `install.sh` step 9 runs both stages in order within one step (on
+  a fresh install the container is already up, so both stages are
+  safe to run back-to-back).
+- `update.sh` step 4 runs the pre-rebuild stage; step 5 rebuilds;
+  new step 5c runs the post-rebuild stage; step 6 runs the
+  credentials backfill.
+- `deploy.sh` mirrors the `update.sh` split.
+
+Manual equivalent for step 3 (no scripts):
+
+1. Apply additive migrations from `migrations/*.sql` (no-ops on
+   step 3 since 018/019 are already applied on the VPS).
+2. Rebuild and swap the server container (`docker compose build
+   --no-cache && docker compose up -d`). New code boots; old code
+   stops serving traffic.
+3. Apply `migrations/post-rebuild/020_drop_dashboards_fetch_headers.sql`.
+   Trigger + function + column drop in one transaction. Idempotent:
+   `DROP ... IF EXISTS` / `DROP COLUMN IF EXISTS`.
+
+Future destructive migrations (step 6's RLS rework is a candidate)
+belong in `migrations/post-rebuild/`. Future additive migrations
+(step 4's RS256 keypair surfaces, step 4's OAuth-token cache if it
+lands as a table) stay in `migrations/*.sql`.
 
 ### Env changes
 

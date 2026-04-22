@@ -65,6 +65,14 @@ left for step 4 to assume:
   under `enc:v1:`. That's where OAuth refresh tokens currently live.
   Step 4 does NOT change the column — just reads through it with
   `decryptSecret`.
+- **Two-stage migration convention is live.** `migrations/*.sql` is for
+  additive changes (runs pre-rebuild); `migrations/post-rebuild/*.sql`
+  is for destructive changes (runs post-rebuild). Step 4's migrations
+  are expected to be purely additive (OAuth token caching columns,
+  maybe an `oauth_tokens` table), so default them to
+  `migrations/*.sql`. If step 4 ends up renaming or dropping anything
+  — unlikely — route those into `post-rebuild/`. See CONTEXT.md's
+  step-3 "Deploy order on the VPS" section for the full rationale.
 
 ## Design commitments that apply to step 4
 
