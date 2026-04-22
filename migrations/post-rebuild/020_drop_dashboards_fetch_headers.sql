@@ -2,6 +2,16 @@
 -- and its migration-017 guardrail trigger. First destructive migration in
 -- the VPS-bridge arc.
 --
+-- Deploy stage: lives under `migrations/post-rebuild/` so deploy scripts
+-- apply it AFTER the server container is rebuilt and swapped onto the new
+-- code. Running it BEFORE the rebuild would break the still-running old
+-- container (old code SELECTs d.fetch_headers in every render path —
+-- dropping the column while old code is live causes `column
+-- "fetch_headers" does not exist` 500s for the duration of the build
+-- window). Additive migrations (new column, new trigger) still live under
+-- `migrations/*.sql` and run pre-rebuild, because the inverse is true for
+-- them (new code SELECTs new columns so the column must exist first).
+--
 -- Precondition (enforced by the operator before this migration applies):
 -- every active dashboard with a `fetch_url` has been opted onto the JWT
 -- bridge (non-empty `integration` + encrypted `bridge_secret`). The two
