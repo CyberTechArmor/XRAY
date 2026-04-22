@@ -73,6 +73,21 @@ left for step 4 to assume:
   `migrations/*.sql`. If step 4 ends up renaming or dropping anything
   — unlikely — route those into `post-rebuild/`. See CONTEXT.md's
   step-3 "Deploy order on the VPS" section for the full rationale.
+- **Admin builder bridge-secret UX has a contract you shouldn't break.**
+  Three small commits landed during the step-3 cutover window (see
+  CONTEXT.md "Admin UI fixes that landed during the cutover window"):
+  (1) client omits `bridgeSecret` from the PATCH payload when the
+  input is empty — server-side `updateDashboard` relies on that
+  omission to mean "keep the stored secret"; do not regress this by
+  always sending the field. (2) Status text + placeholder on edit
+  explain that stored secrets aren't sent back — if step 4 adds new
+  credential-like fields (OAuth client secret? webhook HMAC?), mirror
+  the same pattern (`<field>_set: boolean` from the server,
+  "Secured" button state on the client, omit-when-empty payload
+  semantics). (3) The `--success` CSS var (#22c55e) is reused by the
+  Secured button state; keep that var if you add similar UI.
+- **Bundle version is `2026-04-22-023`.** Bump when you change the
+  bundle so caches invalidate.
 
 ## Design commitments that apply to step 4
 
@@ -139,10 +154,23 @@ Identical to prior sessions:
    the VPS that tenants who *have* integrations wired up in
    `platform.connections` have live OAuth connections — otherwise
    the new render error surface will fire the moment code deploys.
+   Preflight query:
+   ```sql
+   SELECT DISTINCT d.integration, c.source_type, count(DISTINCT d.tenant_id) AS tenants
+     FROM platform.dashboards d
+     LEFT JOIN platform.connections c
+       ON c.tenant_id = d.tenant_id
+      AND c.source_type = d.integration
+    WHERE d.integration IS NOT NULL AND d.integration <> ''
+    GROUP BY 1,2;
+   ```
+   Rows where `source_type IS NULL` are dashboards whose integration
+   has no matching tenant connection — surface before shipping.
 3. Plan → wait for approval → implement in small commits.
 4. Acceptance checks:
-   - `npm test` green (25 specs baseline; expect new specs for
-     access-token population and data-access token mint).
+   - `npm test` green (25 specs baseline from step 3; expect new
+     specs for access-token population, the OAuth token cache, and
+     data-access token mint).
    - `npm run build` clean.
    - A JWT-path dashboard renders end-to-end; the n8n workflow sees
      `$json.access_token` and uses it to call the integration.

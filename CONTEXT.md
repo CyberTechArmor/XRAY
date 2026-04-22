@@ -665,6 +665,42 @@ None. No new env vars, no new npm deps, no docker-compose changes.
   / `view_js` / `name` only — is still out of scope for the bridge
   arc; fix before embed tokens land in the wild.
 
+### Admin UI fixes that landed during the cutover window
+
+Three small admin-builder polish commits after the main step-3
+shipment, surfaced by the VPS operator while onboarding the eight
+remaining legacy dashboards onto the JWT path. None of them touch the
+server; all three are in `frontend/bundles/general.json`.
+
+- **`45a40e1` — fix `BRIDGE_SECRET_REQUIRED` on edit.** Pre-existing
+  bug from step 2: the admin builder always sent `bridgeSecret: ""` in
+  the PATCH payload. `updateDashboard`'s consistency check treats `""`
+  as "clear the secret" and fired `BRIDGE_SECRET_REQUIRED` whenever
+  integration was still set. The UI's "Leave blank to keep" promise
+  wasn't wired to the payload builder. Fix: omit `bridgeSecret` from
+  the payload when the input is empty and integration is still set;
+  send explicit `""` only when integration is being cleared too; send
+  the typed/Generated value when rotating. Surfaces in step 3 because
+  step 3 forces every dashboard through this exact edit path during
+  cutover remediation.
+- **`98b0409` — clarify that stored secrets aren't revealable.**
+  Status text on edit now explicitly says "Secret is stored (not shown
+  here for security — the server never sends it back)." Input
+  placeholder on edit becomes "Leave blank to keep the stored secret —
+  Generate / paste to rotate." Show button no-ops on empty input so
+  clicks don't look broken.
+- **`ea059ea` — three-state Show/Hide/Secured button.** Closure flag
+  `bsStoredSet` + `refreshBsButton()` helper render the button as
+  green "Secured" (uses existing `--success` var) when `bridge_secret_set`
+  is true and the input is empty. Hover flips label to "⊘ Cannot
+  show" to reinforce the invariant. Input listener keeps state in
+  sync when the admin types then clears.
+
+Bundle version progression across step 3: `2026-04-22-020` (initial
+shipment — form-field removal) → `2026-04-22-021` (payload fix) →
+`2026-04-22-022` (status/placeholder/Show text) → `2026-04-22-023`
+(Secured button). Current is `2026-04-22-023`.
+
 ### Verify on VPS after deploy
 
 ```sql
