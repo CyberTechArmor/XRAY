@@ -20,6 +20,7 @@ import {
 import * as adminService from '../services/admin.service';
 import * as auditService from '../services/audit.service';
 import * as integrationService from '../services/integration.service';
+import * as fanOutService from '../services/fan-out.service';
 import { config } from '../config';
 
 const router = Router();
@@ -742,14 +743,23 @@ router.post('/import', async (req, res, next) => {
 
 router.get('/integrations', async (_req, res, next) => {
   try {
-    const rows = await integrationService.listAllIntegrations();
+    const [rows, lastFanOut] = await Promise.all([
+      integrationService.listAllIntegrations(),
+      fanOutService.listLastFanOutByIntegration(),
+    ]);
     // Surface the redirect URI so the admin UI can show it next to each
     // provider's config ("Register this URL with HouseCall Pro"). Same
     // value for every provider — platform-wide callback.
+    // fan_out_last is keyed by integration id — admin UI merges onto
+    // each row to render the "Last fan-out: N dispatched, M skipped"
+    // status line.
     res.json({
       ok: true,
       data: rows,
-      meta: { oauth_redirect_uri: config.oauth.redirectUri },
+      meta: {
+        oauth_redirect_uri: config.oauth.redirectUri,
+        fan_out_last: lastFanOut,
+      },
     });
   } catch (err) {
     next(err);

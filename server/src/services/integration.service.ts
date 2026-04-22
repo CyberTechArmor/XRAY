@@ -36,17 +36,28 @@ export interface IntegrationRow {
   extra_authorize_params: Record<string, unknown>;
   api_key_header_name: string | null;
   api_key_instructions: string | null;
+  // Fan-out config (migration 023). fan_out_secret follows the same
+  // "show once, never echo back" contract as client_secret — the column
+  // is stripped from API responses and replaced with fan_out_secret_set.
+  fan_out_secret?: string | null;
+  fan_out_secret_set?: boolean;
+  fan_out_parallelism?: number;
   created_at: string;
   updated_at: string;
 }
 
-function redactIntegrationRow<T extends { id: string; client_secret?: unknown }>(
-  row: T
-): T {
+function redactIntegrationRow<
+  T extends { id: string; client_secret?: unknown; fan_out_secret?: unknown },
+>(row: T): T {
   if ('client_secret' in (row as object)) {
     (row as Record<string, unknown>).client_secret_set =
       typeof row.client_secret === 'string' && row.client_secret !== '';
     delete (row as Record<string, unknown>).client_secret;
+  }
+  if ('fan_out_secret' in (row as object)) {
+    (row as Record<string, unknown>).fan_out_secret_set =
+      typeof row.fan_out_secret === 'string' && row.fan_out_secret !== '';
+    delete (row as Record<string, unknown>).fan_out_secret;
   }
   return row;
 }
@@ -90,6 +101,7 @@ export async function listAllIntegrations(): Promise<IntegrationRow[]> {
               auth_url, token_url, client_id, client_secret,
               scopes, extra_authorize_params,
               api_key_header_name, api_key_instructions,
+              fan_out_secret, fan_out_parallelism,
               created_at, updated_at
          FROM platform.integrations
          ORDER BY display_name ASC`
@@ -127,6 +139,10 @@ export interface IntegrationCreateInput {
   extraAuthorizeParams?: Record<string, unknown>;
   apiKeyHeaderName?: string;
   apiKeyInstructions?: string;
+  // Fan-out config (migration 023). Optional — integrations don't need
+  // a fan-out secret until they actually get called from n8n.
+  fanOutSecret?: string;
+  fanOutParallelism?: number;
 }
 
 export async function createIntegration(
@@ -140,8 +156,9 @@ export async function createIntegration(
       `INSERT INTO platform.integrations
          (slug, display_name, icon_url, status, supports_oauth, supports_api_key,
           auth_url, token_url, client_id, client_secret, scopes, extra_authorize_params,
-          api_key_header_name, api_key_instructions)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          api_key_header_name, api_key_instructions,
+          fan_out_secret, fan_out_parallelism)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING *`,
       [
         input.slug,
@@ -158,6 +175,8 @@ export async function createIntegration(
         input.extraAuthorizeParams || {},
         input.apiKeyHeaderName || null,
         input.apiKeyInstructions || null,
+        encryptSecret(input.fanOutSecret || null),
+        input.fanOutParallelism ?? 5,
       ]
     );
     const row = result.rows[0];
@@ -206,6 +225,11 @@ export async function updateIntegration(
       updates.apiKeyHeaderName ?? existing.api_key_header_name ?? undefined,
     apiKeyInstructions:
       updates.apiKeyInstructions ?? existing.api_key_instructions ?? undefined,
+    // fan_out_secret is never echoed back on `existing`; undefined keeps
+    // the stored value untouched. Presence + non-empty is a write-intent
+    // signal, same as client_secret.
+    fanOutSecret: updates.fanOutSecret,
+    fanOutParallelism: updates.fanOutParallelism ?? existing.fan_out_parallelism,
   };
   validateIntegrationConfig(merged);
 
@@ -243,6 +267,26 @@ export async function updateIntegration(
       addField('api_key_header_name', updates.apiKeyHeaderName || null);
     if (updates.apiKeyInstructions !== undefined)
       addField('api_key_instructions', updates.apiKeyInstructions || null);
+    if (updates.fanOutSecret !== undefined) {
+      // Matches the client_secret contract: explicit '' clears the
+      // stored value; undefined (handled above by the key-not-present
+      // branch) leaves it untouched.
+      addField('fan_out_secret', updates.fanOutSecret || null, true);
+    }
+    if (updates.fanOutParallelism !== undefined) {
+      if (
+        !Number.isInteger(updates.fanOutParallelism) ||
+        updates.fanOutParallelism < 1 ||
+        updates.fanOutParallelism > 50
+      ) {
+        throw new AppError(
+          400,
+          'INVALID_FAN_OUT_PARALLELISM',
+          'fan_out_parallelism must be an integer between 1 and 50'
+        );
+      }
+      addField('fan_out_parallelism', updates.fanOutParallelism);
+    }
 
     if (fields.length === 0) {
       // No-op update — return current row rather than 400. Admin UI
