@@ -1,6 +1,6 @@
 import { withClient, withTransaction } from '../db/connection';
 import { generateToken, hashToken } from '../lib/crypto';
-import { decryptJsonField, decryptSecret } from '../lib/encrypted-column';
+import { decryptSecret } from '../lib/encrypted-column';
 import { mintBridgeJwt } from '../lib/n8n-bridge';
 import * as auditService from './audit.service';
 import { AppError } from '../middleware/error-handler';
@@ -21,10 +21,7 @@ export async function fetchBridgeSecretCiphertext(dashboardId: string): Promise<
   });
 }
 
-function decryptDashboardRow<T extends { id: string; fetch_headers?: unknown; bridge_secret?: unknown }>(row: T): T {
-  if (row && row.fetch_headers !== undefined) {
-    row.fetch_headers = decryptJsonField(row.fetch_headers, `dashboards:fetch_headers:${row.id}`);
-  }
+function decryptDashboardRow<T extends { id: string; bridge_secret?: unknown }>(row: T): T {
   // bridge_secret ciphertext (or plaintext) must never reach the API
   // response. Surface a boolean so the admin UI can show "secret set"
   // without exposing the value. Public share / render responses don't
@@ -49,7 +46,6 @@ interface Dashboard {
   view_js: string | null;
   fetch_url: string | null;
   fetch_method: string | null;
-  fetch_headers: Record<string, string> | null;
   fetch_body: unknown;
   tile_image_url: string | null;
   last_viewed_at: string | null;
@@ -513,63 +509,65 @@ export async function renderPublicDashboard(
     };
   }
 
-  // Proxy fetch for dynamic dashboards. Two auth modes:
-  //  1. Bridge (integration set) — mint an HS256 JWT per render. The
-  //     share context has no user, so the user_id claim is absent.
-  //  2. Legacy (integration null) — forward the (already-decrypted)
-  //     fetch_headers as-is.
-  let headers: Record<string, string>;
-  if (dashboard.integration) {
-    // decryptDashboardRow redacts bridge_secret from the row — fetch
-    // the ciphertext via the internal helper to keep the "never leak"
-    // invariant honest.
-    const bridgeCipher = await fetchBridgeSecretCiphertext(dashboard.id);
-    const bridgeSecret = decryptSecret(
-      bridgeCipher,
-      `dashboards:bridge_secret:${dashboard.id}`
+  // Proxy fetch for dynamic dashboards through the JWT bridge. The
+  // legacy fetch_headers path was dropped in step 3 (migration 020);
+  // the share context has no user, so user_* claims are absent. A row
+  // with a fetch_url but no integration is a config error post-cutover
+  // — surface as 500.
+  if (!dashboard.integration) {
+    throw new AppError(
+      500,
+      'BRIDGE_INTEGRATION_MISSING',
+      'This dashboard has a fetch_url but no integration configured.'
     );
-    if (!bridgeSecret) {
-      throw new AppError(
-        500,
-        'BRIDGE_SECRET_MISSING',
-        'This dashboard has an integration but no bridge signing secret.'
-      );
-    }
-    const tenantLabels = await fetchTenantLabels(dashboard.tenant_id);
-    const minted = mintBridgeJwt({
-      tenantId: dashboard.tenant_id,
-      tenantSlug: tenantLabels?.slug ?? null,
-      tenantName: tenantLabels?.name ?? null,
-      tenantStatus: tenantLabels?.status ?? null,
-      warehouseHost: tenantLabels?.warehouse_host ?? null,
-      dashboardId: dashboard.id,
-      dashboardName: dashboard.name,
-      dashboardStatus: dashboard.status,
-      isPublic: dashboard.is_public,
-      // user_* intentionally absent on public_share — no end-user context.
-      templateId: dashboard.template_id || null,
-      integration: dashboard.integration,
-      params: (dashboard.params as Record<string, unknown>) || {},
-      via: 'public_share',
-      secret: bridgeSecret,
-    });
-    headers = { Authorization: `Bearer ${minted.jwt}` };
-    auditService.log({
-      tenantId: dashboard.tenant_id,
-      action: 'dashboard.bridge_mint',
-      resourceType: 'dashboard',
-      resourceId: dashboard.id,
-      metadata: {
-        jti: minted.jti,
-        integration: dashboard.integration,
-        template_id: dashboard.template_id || null,
-        via: 'public_share',
-        public_token_prefix: publicToken.slice(0, 8),
-      },
-    });
-  } else {
-    headers = (dashboard.fetch_headers || {}) as Record<string, string>;
   }
+  // decryptDashboardRow redacts bridge_secret from the row — fetch
+  // the ciphertext via the internal helper to keep the "never leak"
+  // invariant honest.
+  const bridgeCipher = await fetchBridgeSecretCiphertext(dashboard.id);
+  const bridgeSecret = decryptSecret(
+    bridgeCipher,
+    `dashboards:bridge_secret:${dashboard.id}`
+  );
+  if (!bridgeSecret) {
+    throw new AppError(
+      500,
+      'BRIDGE_SECRET_MISSING',
+      'This dashboard has an integration but no bridge signing secret.'
+    );
+  }
+  const tenantLabels = await fetchTenantLabels(dashboard.tenant_id);
+  const minted = mintBridgeJwt({
+    tenantId: dashboard.tenant_id,
+    tenantSlug: tenantLabels?.slug ?? null,
+    tenantName: tenantLabels?.name ?? null,
+    tenantStatus: tenantLabels?.status ?? null,
+    warehouseHost: tenantLabels?.warehouse_host ?? null,
+    dashboardId: dashboard.id,
+    dashboardName: dashboard.name,
+    dashboardStatus: dashboard.status,
+    isPublic: dashboard.is_public,
+    // user_* intentionally absent on public_share — no end-user context.
+    templateId: dashboard.template_id || null,
+    integration: dashboard.integration,
+    params: (dashboard.params as Record<string, unknown>) || {},
+    via: 'public_share',
+    secret: bridgeSecret,
+  });
+  const headers: Record<string, string> = { Authorization: `Bearer ${minted.jwt}` };
+  auditService.log({
+    tenantId: dashboard.tenant_id,
+    action: 'dashboard.bridge_mint',
+    resourceType: 'dashboard',
+    resourceId: dashboard.id,
+    metadata: {
+      jti: minted.jti,
+      integration: dashboard.integration,
+      template_id: dashboard.template_id || null,
+      via: 'public_share',
+      public_token_prefix: publicToken.slice(0, 8),
+    },
+  });
   const fetchOpts: RequestInit = {
     method: dashboard.fetch_method || 'GET',
     headers: { 'Content-Type': 'application/json', ...headers },

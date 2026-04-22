@@ -10,7 +10,7 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   set -a; source "$SCRIPT_DIR/.env"; set +a
 fi
 
-echo "=== [1/5] Deploying frontend files to /var/www/xray ==="
+echo "=== [1/6] Deploying frontend files to /var/www/xray ==="
 mkdir -p /var/www/xray/bundles
 for f in index.html app.css app.js landing.css landing.js manifest.json sw.js icon.svg icon-192.png icon-512.png share.html; do
   if [ -f "$SCRIPT_DIR/frontend/$f" ]; then
@@ -31,12 +31,27 @@ for d in ai; do
 done
 chown -R www-data:www-data /var/www/xray 2>/dev/null || true
 
-echo "=== [2/5] Running database migrations ==="
-# Ordered BEFORE the rebuild so the new code boots into a schema that
-# already has any new columns it SELECTs. Running migrations after the
-# rebuild creates a race where render calls 500 until the last migration
-# lands.
+echo "=== [2/6] Running pre-rebuild migrations ==="
+# Pre-rebuild: additive schema changes only (ADD COLUMN, new tables, new
+# triggers on new columns). New code needs the new columns present
+# before it boots, so these run BEFORE the rebuild.
+# Destructive changes (DROP COLUMN etc) live in migrations/post-rebuild/
+# and run AFTER the rebuild — see step [4/6].
 PG_CONTAINER=$(docker compose ps -q postgres)
+run_migrations_dir() {
+  local dir="$1"; local label="$2"
+  [ -d "$dir" ] || return 0
+  [ -n "$PG_CONTAINER" ] || { echo "  WARNING: postgres container not found, skipping $label"; return 0; }
+  for migration in "$dir"/*.sql; do
+    [ -f "$migration" ] || continue
+    local mname
+    mname=$(basename "$migration")
+    echo "  running $label/$mname..."
+    docker cp "$migration" "$PG_CONTAINER:/tmp/$mname"
+    docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$mname" 2>&1 | grep -E "^(CREATE|ALTER|INSERT|DROP|ERROR)" | head -5
+  done
+}
+
 if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
   # Wait for postgres to be ready
   for i in $(seq 1 15); do
@@ -46,21 +61,21 @@ if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
     sleep 1
   done
 
-  for migration in "$SCRIPT_DIR"/migrations/*.sql; do
-    [ -f "$migration" ] || continue
-    MNAME=$(basename "$migration")
-    echo "  running $MNAME..."
-    docker cp "$migration" "$PG_CONTAINER:/tmp/$MNAME"
-    docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$MNAME" 2>&1 | grep -E "^(CREATE|ALTER|INSERT|ERROR)" | head -5
-  done
+  run_migrations_dir "$SCRIPT_DIR/migrations" "pre-rebuild"
 else
   echo "  WARNING: postgres container not found, skipping migrations"
 fi
 
-echo "=== [3/5] Rebuilding and restarting server container ==="
+echo "=== [3/6] Rebuilding and restarting server container ==="
 docker compose up -d --build server
 
-echo "=== [4/5] Running credential backfill ==="
+echo "=== [4/6] Running post-rebuild migrations ==="
+# Destructive schema changes (DROP COLUMN etc). Safe only after the new
+# container is serving requests, because no code path in the new image
+# references the dropped columns.
+run_migrations_dir "$SCRIPT_DIR/migrations/post-rebuild" "post-rebuild"
+
+echo "=== [5/6] Running credential backfill ==="
 SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
 if [ -n "$SERVER_CONTAINER" ]; then
   if docker compose exec -T server test -f dist/scripts/backfill-encrypt-credentials.js 2>/dev/null; then
@@ -72,7 +87,7 @@ else
   echo "  WARNING: server container not running, skipping backfill"
 fi
 
-echo "=== [5/5] Reloading nginx ==="
+echo "=== [6/6] Reloading nginx ==="
 nginx -t && systemctl reload nginx
 
 echo ""

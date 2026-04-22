@@ -377,9 +377,37 @@ else
 fi
 
 # ── Step 9: Run database migrations ──────────────────────
+# Migrations run in two stages:
+#   1. migrations/*.sql — additive schema changes. Safe to run at any
+#      time because adding a column/table doesn't break existing code.
+#   2. migrations/post-rebuild/*.sql — destructive changes (DROP COLUMN
+#      etc). These would break the still-running old container on an
+#      update, so on install.sh they run AFTER the container is up too,
+#      for consistency with update.sh's ordering.
+# On a fresh install the container is already up (step 8), so both
+# stages execute in order within this step.
 step 9 "Running database migrations"
 
 PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null)
+run_migrations() {
+  local dir="$1"; local label="$2"
+  [ -d "$dir" ] || return 0
+  local count=0
+  for migration in "$dir"/*.sql; do
+    [ -f "$migration" ] || continue
+    local mname
+    mname=$(basename "$migration")
+    info "Running $label/$mname..."
+    docker cp "$migration" "$PG_CONTAINER:/tmp/$mname"
+    if docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$mname" >/dev/null 2>&1; then
+      count=$((count + 1))
+    else
+      warn "Migration $label/$mname had errors (may already be applied)"
+    fi
+  done
+  ok "$count $label migration(s) applied"
+}
+
 if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
   # Wait for postgres to be ready
   for i in $(seq 1 15); do
@@ -389,19 +417,8 @@ if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
     sleep 1
   done
 
-  MIGRATION_COUNT=0
-  for migration in "$SCRIPT_DIR"/migrations/*.sql; do
-    [ -f "$migration" ] || continue
-    MNAME=$(basename "$migration")
-    info "Running $MNAME..."
-    docker cp "$migration" "$PG_CONTAINER:/tmp/$MNAME"
-    if docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$MNAME" >/dev/null 2>&1; then
-      MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
-    else
-      warn "Migration $MNAME had errors (may already be applied)"
-    fi
-  done
-  ok "$MIGRATION_COUNT migration(s) applied"
+  run_migrations "$SCRIPT_DIR/migrations" "pre-rebuild"
+  run_migrations "$SCRIPT_DIR/migrations/post-rebuild" "post-rebuild"
 else
   warn "Could not run migrations (postgres container not found or no migrations/)"
 fi

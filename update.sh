@@ -83,13 +83,52 @@ else
   warn "Nginx config or template not found — skipping"
 fi
 
-# ── Step 4: Run database migrations BEFORE rebuilding server ──
-# Additive-only schema changes go here so the NEW code boots against a
-# DB that already has the new columns/tables. Running migrations after
-# the rebuild would create a window where new code SELECTs columns the
-# old DB doesn't have yet → render calls 500.
-echo "  [4/7] Running database migrations..."
+# ── Migration helper ──
+# Applies every *.sql in a given directory with error detection. Shared
+# between the pre-rebuild and post-rebuild stages below.
 PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null || echo "")
+apply_migrations_from() {
+  local dir="$1"; local stage_label="$2"
+  [ -d "$dir" ] || return 0
+  [ -n "$PG_CONTAINER" ] || { warn "Skipping $stage_label migrations (no postgres container)"; return 0; }
+  local count=0 failed=0
+  for migration in "$dir"/*.sql; do
+    [ -f "$migration" ] || continue
+    local mname
+    mname=$(basename "$migration")
+    docker cp "$migration" "$PG_CONTAINER:/tmp/$mname"
+    local out
+    out=$(docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$mname" 2>&1) && {
+      count=$((count + 1))
+    } || {
+      # Benign "already exists" errors are expected when re-applying. Surface
+      # anything else so broken migrations don't get swallowed.
+      local real_errors
+      real_errors=$(echo "$out" | grep -iE "(ERROR|FATAL)" | grep -viE "already exists|duplicate" || true)
+      if [ -n "$real_errors" ]; then
+        failed=$((failed + 1))
+        warn "migration $stage_label/$mname: $(echo "$real_errors" | head -3)"
+      else
+        count=$((count + 1))
+      fi
+    }
+  done
+  if [ "$failed" -gt 0 ]; then
+    warn "$failed $stage_label migration(s) had errors — review output above"
+  fi
+  ok "$count $stage_label migration(s) applied"
+}
+
+# ── Step 4: Pre-rebuild migrations ──
+# Additive-only schema changes (new columns, new tables, new triggers
+# that guard new columns). Running these FIRST means the NEW code boots
+# against a DB that already has the columns it SELECTs — avoids a window
+# where new code 500s on missing columns.
+# Destructive migrations (DROP COLUMN, DROP TABLE) belong in
+# migrations/post-rebuild/ and run in a later step for the mirror-image
+# reason: dropping a column while the OLD container still serves traffic
+# makes the old code 500 until the rebuild swaps.
+echo "  [4/7] Running pre-rebuild migrations..."
 if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
   # Wait for postgres to be ready
   for i in $(seq 1 10); do
@@ -98,44 +137,16 @@ if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
     fi
     sleep 1
   done
-
-  MIGRATION_COUNT=0
-  MIGRATION_FAILED=0
-  for migration in "$SCRIPT_DIR"/migrations/*.sql; do
-    [ -f "$migration" ] || continue
-    MNAME=$(basename "$migration")
-    docker cp "$migration" "$PG_CONTAINER:/tmp/$MNAME"
-    # Run on ON_ERROR_STOP so partial application is detected. Capture stderr
-    # so the user can see what broke instead of the old silent-fail behavior.
-    OUT=$(docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$MNAME" 2>&1) && {
-      MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
-    } || {
-      # Benign "already exists" errors are expected when re-applying. Surface
-      # anything else so broken migrations don't get swallowed. The previous
-      # implementation chained `grep -q | grep -v` — but -q writes no output,
-      # so the second grep always saw empty stdin and the condition always
-      # evaluated false, silently masking real migration errors.
-      REAL_ERRORS=$(echo "$OUT" | grep -iE "(ERROR|FATAL)" | grep -viE "already exists|duplicate" || true)
-      if [ -n "$REAL_ERRORS" ]; then
-        MIGRATION_FAILED=$((MIGRATION_FAILED + 1))
-        warn "migration $MNAME: $(echo "$REAL_ERRORS" | head -3)"
-      else
-        # Idempotent re-apply — treat as success
-        MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
-      fi
-    }
-  done
-  if [ "$MIGRATION_FAILED" -gt 0 ]; then
-    warn "$MIGRATION_FAILED migration(s) had errors — review output above"
-  fi
-  ok "$MIGRATION_COUNT migration(s) applied"
+  apply_migrations_from "$SCRIPT_DIR/migrations" "pre-rebuild"
 else
   warn "Skipping migrations (no postgres container or migrations/ dir)"
 fi
 
 # ── Step 5: Rebuild and restart backend ──
-# Ordered AFTER migrations so the new code boots into a schema that
-# already has any new columns it SELECTs.
+# Ordered AFTER pre-rebuild migrations so the new code boots into a
+# schema that already has any new columns it SELECTs, and BEFORE the
+# post-rebuild migrations so destructive changes only land after the old
+# code stops serving traffic.
 echo "  [5/7] Rebuilding backend..."
 if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
   cd "$SCRIPT_DIR"
@@ -144,6 +155,12 @@ if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
 else
   warn "No docker-compose.yml found — skipping backend rebuild"
 fi
+
+# ── Step 5c: Post-rebuild migrations ──
+# Destructive schema changes. Safe to run now because the new container
+# is up and no code path in the new image SELECTs the dropped columns.
+echo "  [5c] Running post-rebuild migrations..."
+apply_migrations_from "$SCRIPT_DIR/migrations/post-rebuild" "post-rebuild"
 
 # ── Step 5b: Ensure VAPID keys exist in .env ──
 if [ -f "$SCRIPT_DIR/.env" ]; then
@@ -181,10 +198,11 @@ VAPIDEOF
 fi
 
 # ── Step 6: Backfill encrypted credentials (migration 017 companion) ──
-# Idempotent. Rewrites any plaintext rows in webhooks.secret,
-# connections.connection_details, and dashboards.fetch_headers as enc:v1
-# envelopes. Skips already-encrypted rows. Harmless on fresh DBs with
-# no plaintext rows. See CONTEXT.md.
+# Idempotent. Rewrites any plaintext rows in webhooks.secret and
+# connections.connection_details as enc:v1 envelopes. Skips
+# already-encrypted rows. Harmless on fresh DBs with no plaintext rows.
+# (The dashboards.fetch_headers entry was removed in step 3 alongside
+# migration 020.) See CONTEXT.md.
 echo "  [6/7] Running credential backfill..."
 SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
 if [ -n "$SERVER_CONTAINER" ]; then

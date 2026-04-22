@@ -478,6 +478,226 @@ SELECT created_at, user_id, tenant_id, metadata->>'jti' AS jti
 
 ---
 
-## Step 3 — Next up: schema refactor + dashboard-template cutover
+## Step 3 — Schema refactor: drop fetch_headers, collapse render paths (shipped)
 
-See `.claude/step-3-kickoff.md` for details.
+First destructive migration in the bridge arc. By step 3 every dashboard
+on the VPS is already carrying an `integration` + encrypted
+`bridge_secret` (steps 2 + the JWT-labels interlude), so the legacy
+`fetch_headers` headers path and its admin-UI form fields are dead weight.
+Step 3 removes them.
+
+### What changed
+
+- `migrations/020_drop_dashboards_fetch_headers.sql` (+ down) —
+  `DROP TRIGGER enforce_enc_dashboards_fetch_headers`, `DROP FUNCTION
+  platform.require_enc_dashboards_fetch_headers`, `ALTER TABLE
+  platform.dashboards DROP COLUMN fetch_headers`. Down re-adds the
+  column as nullable JSONB with **no** trigger — by the time a rollback
+  is plausible, no code path produces enc-envelope values for it, and a
+  guardrail that rejects unencrypted writes would only block manual
+  recovery. The two other migration-017 triggers
+  (`enforce_enc_webhooks_secret`,
+  `enforce_enc_connections_details`) stay in place.
+- `server/src/routes/dashboard.routes.ts` — authed render SELECT drops
+  `d.fetch_headers`. Legacy `else { fetch_headers }` branch gone. New
+  invariant: a dashboard with `fetch_url` but no `integration` errors
+  with `BRIDGE_INTEGRATION_MISSING` (500). Cutover-safety guarantees
+  this never fires on `status='active'`. JOIN shape, `via` compute
+  (`authed_render` vs `admin_impersonation`), and the full
+  `mintBridgeJwt` call (tenant_*, dashboard_*, user_*, isPlatformAdmin,
+  params, per-site `via`) unchanged. `decryptJsonField` import dropped.
+- `server/src/services/dashboard.service.ts` — same collapse in
+  `renderPublicDashboard`. `Dashboard` interface loses `fetch_headers`.
+  `decryptDashboardRow` no longer decrypts `fetch_headers`; still
+  redacts `bridge_secret`. `fetchTenantLabels` + `fetchBridgeSecretCiphertext`
+  + `via: 'public_share'` all preserved verbatim. `decryptJsonField`
+  import dropped.
+- `server/src/services/admin.service.ts` — `fetchDashboardContent`
+  (admin preview) collapses onto the JWT-only path with
+  `via: 'admin_preview'`. `createDashboard` / `updateDashboard` drop
+  the `fetchHeaders` parameter + the `fetch_headers` INSERT/UPDATE
+  column. `encryptJsonField` / `decryptJsonField` imports dropped
+  (helpers themselves stay; `connection_templates` uses the text form
+  and future columns may still want the JSONB variant).
+- `server/src/lib/validation.ts` — `fetchHeaders` removed from
+  `dashboardCreateSchema` / `dashboardUpdateSchema`.
+  `connectionTemplateCreateSchema.fetchHeaders` stays — template-authoring
+  is a separate write surface for `platform.connection_templates`.
+- `server/src/services/portability.service.ts` — `fetch_headers` removed
+  from the dashboards import column whitelist. Older exports that still
+  carry the field are silently ignored at import time.
+- `server/src/scripts/backfill-encrypt-credentials.ts` — dropped the
+  `backfillJsonb('dashboards.fetch_headers', ...)` call and the
+  `encryptJsonField` import + `isEncryptedJsonb` helper. The two
+  remaining TEXT backfills (webhooks.secret, connections.connection_details)
+  are unchanged.
+- `frontend/bundles/general.json` — `views.admin_builder`:
+  - HTML: removed the `Auth Bearer Token` field (`#build-auth-token`)
+    and the `Headers (JSON)` textarea (`#build-headers`). Reworded the
+    n8n Bridge card blurb — no legacy path to contrast with now.
+  - JS: removed the save handler's Headers parse + `authToken`→header
+    merge, the edit loader's "extract auth token from fetch_headers"
+    block, the template-apply's `fetch_headers`→`#build-headers` line,
+    and `fetchHeaders: headers` from the dashboards create/update
+    payload. Save-as-template no longer sends `fetchHeaders` or
+    `fetchQueryParams` (the latter was a closure leak referring to an
+    outer-scope var that no longer exists after this cleanup).
+  - Bundle version bumped to `2026-04-22-020`.
+
+### Cutover-safety check (operator runs on VPS, before migration 020 applies)
+
+Both queries must return zero rows. Rerun after any remediation and
+before letting `update.sh` apply migration 020:
+
+```sql
+-- Active dashboards still on the legacy headers path:
+SELECT id, tenant_id, name
+  FROM platform.dashboards
+ WHERE status = 'active'
+   AND (integration IS NULL OR integration = '')
+   AND fetch_url IS NOT NULL;
+
+-- Integration set without a bridge_secret (pre-019 drift):
+SELECT id, tenant_id, name
+  FROM platform.dashboards
+ WHERE integration IS NOT NULL AND integration <> ''
+   AND (bridge_secret IS NULL OR bridge_secret = '');
+```
+
+If either returns rows, opt the stragglers in via the admin UI's n8n
+Bridge card (set Integration + Generate a signing secret) before
+deploying. Do **not** silently archive production rows to pass the
+check.
+
+### Deploy order on the VPS
+
+Step 3 exposed a deploy-order race the step-2 "migrations before
+rebuild" fix didn't anticipate: migration 020 is **destructive** (DROP
+COLUMN), and dropping the column while the old container still served
+traffic caused every /render call to 500 for the duration of the
+`docker compose build --no-cache` window (~60–120s). The fix is a
+two-stage migration convention, introduced in step 3 alongside the
+drop:
+
+- **`migrations/*.sql` — pre-rebuild (additive only).** `ADD COLUMN`,
+  new tables, triggers on new columns. Runs BEFORE the container
+  rebuild so the new code boots into a schema that already has the
+  columns it SELECTs.
+- **`migrations/post-rebuild/*.sql` — post-rebuild (destructive).**
+  `DROP COLUMN`, `DROP TABLE`, anything that breaks the old image's
+  SELECTs. Runs AFTER the container is rebuilt and swapped, so the
+  old code has stopped serving traffic before the columns it depends
+  on disappear.
+- **`migrations/down/*.sql` — never auto-run.** Rollback scripts only.
+  Non-recursive `migrations/*.sql` glob already skipped this
+  directory; `post-rebuild/` is skipped the same way.
+
+`install.sh`, `update.sh`, and `deploy.sh` all implement this:
+
+- `install.sh` step 9 runs both stages in order within one step (on
+  a fresh install the container is already up, so both stages are
+  safe to run back-to-back).
+- `update.sh` step 4 runs the pre-rebuild stage; step 5 rebuilds;
+  new step 5c runs the post-rebuild stage; step 6 runs the
+  credentials backfill.
+- `deploy.sh` mirrors the `update.sh` split.
+
+Manual equivalent for step 3 (no scripts):
+
+1. Apply additive migrations from `migrations/*.sql` (no-ops on
+   step 3 since 018/019 are already applied on the VPS).
+2. Rebuild and swap the server container (`docker compose build
+   --no-cache && docker compose up -d`). New code boots; old code
+   stops serving traffic.
+3. Apply `migrations/post-rebuild/020_drop_dashboards_fetch_headers.sql`.
+   Trigger + function + column drop in one transaction. Idempotent:
+   `DROP ... IF EXISTS` / `DROP COLUMN IF EXISTS`.
+
+Future destructive migrations (step 6's RLS rework is a candidate)
+belong in `migrations/post-rebuild/`. Future additive migrations
+(step 4's RS256 keypair surfaces, step 4's OAuth-token cache if it
+lands as a table) stay in `migrations/*.sql`.
+
+### Env changes
+
+None. No new env vars, no new npm deps, no docker-compose changes.
+
+### Schema changes
+
+- One column dropped: `platform.dashboards.fetch_headers`.
+- One trigger dropped: `enforce_enc_dashboards_fetch_headers`.
+- One function dropped: `platform.require_enc_dashboards_fetch_headers`.
+- `platform.connection_templates.fetch_headers` retained on purpose —
+  templates are authoring prototypes, not a live render write surface.
+  `init.sql` is NOT updated (migrations are source of truth post-init;
+  same convention as steps 1 and 2).
+
+### What was explicitly left in place
+
+- **`encrypted-column.ts` plaintext-read fallback.** Still emitting per-row
+  WARNs on plaintext-detected decrypts for `webhooks.secret` +
+  `connections.connection_details`. Independent cleanup once VPS logs
+  show zero WARNs across a few days.
+- **`connection_templates.fetch_headers` column.** Builder no longer
+  populates it (new templates get empty `'{}'`), but the column +
+  validation entry + portability column list all stay. If template
+  authoring ever wants a headers field again, add it to the builder
+  rather than resurrecting the legacy dashboards path.
+- **`dashboards.fetch_body`.** JWT-path dashboards still POST bodies
+  for templated workflows — column stays.
+- **RLS is still decorative** (documented under step 1, unchanged).
+- **`withClient` → `withTenantContext` migration.** Still step 6.
+- **Global `dashboard_templates` table.** `template_id` stays opaque
+  TEXT — post-step-5 concern.
+- **`bridge_secret` redaction in `decryptDashboardRow`.** Preserved
+  on both admin and tenant code paths.
+
+### Known follow-ups not done this session
+
+- **`access_token` claim** still always absent. Step 4 (OAuth lookup)
+  populates it from `platform.connections.connection_details`.
+- **RS256 data-access token** for the pipeline DB is step 4's
+  piggyback per `.claude/pipeline-hardening-notes.md` (Model J).
+- **Plaintext-read fallback retirement** still pending.
+- **Embed endpoint projection** (pre-existing, flagged under step 1):
+  `GET /api/embed/:token` still returns the whole dashboard row
+  including `fetch_url`. Tighter projection — `view_html` / `view_css`
+  / `view_js` / `name` only — is still out of scope for the bridge
+  arc; fix before embed tokens land in the wild.
+
+### Verify on VPS after deploy
+
+```sql
+-- Column gone
+\d platform.dashboards
+-- Should NOT list fetch_headers.
+
+-- Trigger gone (plus its two siblings that STAY)
+SELECT trigger_name FROM information_schema.triggers
+ WHERE trigger_name LIKE 'enforce_enc_%'
+ ORDER BY trigger_name;
+-- Expect exactly: enforce_enc_connections_details, enforce_enc_webhooks_secret
+
+-- Function gone
+SELECT proname FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'platform' AND p.proname = 'require_enc_dashboards_fetch_headers';
+-- Should return zero rows.
+
+-- Bridge mint audit rows — via should only ever be one of the four
+-- values now. Post-cutover there is no "undocumented" via.
+SELECT metadata->>'via' AS via, count(*)
+  FROM platform.audit_log
+ WHERE action = 'dashboard.bridge_mint'
+   AND created_at > now() - interval '1 day'
+ GROUP BY 1 ORDER BY 2 DESC;
+```
+
+Then render a JWT-path dashboard end-to-end in the UI to confirm the
+Authorization header reaches n8n and the response comes back rendered.
+
+---
+
+## Step 4 — Next up: OAuth access_token population + RS256 keypair
+
+See `.claude/step-4-kickoff.md` for details.
