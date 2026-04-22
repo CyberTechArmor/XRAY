@@ -5,7 +5,6 @@ beforeAll(() => {
   process.env.DATABASE_URL ||= 'postgres://stub';
   process.env.JWT_SECRET ||= 'test-jwt-secret';
   process.env.ENCRYPTION_KEY ||= 'a'.repeat(64);
-  process.env.N8N_BRIDGE_JWT_SECRET ||= 'b'.repeat(48);
 });
 
 async function importLib() {

@@ -81,6 +81,9 @@ export const dashboardCreateSchema = z.object({
   templateId: z.string().max(200).optional().nullable(),
   integration: z.string().max(100).optional().nullable(),
   params: z.record(z.any()).optional().nullable(),
+  // Per-dashboard HS256 signing secret. Required whenever integration
+  // is non-empty. Encrypted at rest under the `enc:v1:` envelope.
+  bridgeSecret: z.string().min(16).max(2000).optional().nullable(),
 });
 
 export const dashboardUpdateSchema = z.object({
@@ -100,6 +103,9 @@ export const dashboardUpdateSchema = z.object({
   templateId: z.string().max(200).optional().nullable(),
   integration: z.string().max(100).optional().nullable(),
   params: z.record(z.any()).optional().nullable(),
+  // Per-dashboard HS256 signing secret. Empty string clears it (only
+  // meaningful when integration is also being cleared in the same call).
+  bridgeSecret: z.string().max(2000).optional().nullable(),
 });
 
 export const connectionTemplateCreateSchema = z.object({

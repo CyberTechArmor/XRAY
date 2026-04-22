@@ -28,16 +28,11 @@ export const config = {
     return key;
   })(),
   n8nBridge: {
-    // HS256 secret shared with n8n. Must match the "JWT Auth" credential
-    // configured on every webhook that accepts XRay renders. Rotating this
-    // value requires updating both sides in the same window.
-    jwtSecret: (() => {
-      const key = getEnvRequired('N8N_BRIDGE_JWT_SECRET');
-      if (key.length < 32) {
-        throw new Error('N8N_BRIDGE_JWT_SECRET must be at least 32 characters');
-      }
-      return key;
-    })(),
+    // Per-dashboard signing secret model — no platform-wide env var.
+    // The secret is stored on platform.dashboards.bridge_secret
+    // (encrypted at rest) and passed explicitly to mintBridgeJwt().
+    // iss/aud/exp are platform-wide contract; no reason to make them
+    // per-dashboard configurable.
     issuer: 'xray',
     audience: 'n8n',
     expirySeconds: 60,
