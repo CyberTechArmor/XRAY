@@ -1178,6 +1178,29 @@
   }
   window.__xrayGetIntegrations = __xrayFetchIntegrations;
 
+  // Pure helper: maps a /my-integrations response + the current select
+  // value into an ordered option list for the dashboard builder's
+  // Integration dropdown. Always leads with 'Custom (no auth)'. Preserves
+  // an existing value that no longer has a matching catalog row so saves
+  // don't silently wipe the slug (render path already degrades gracefully
+  // for unknown slugs).
+  // NOTE: Mirrored in server/src/lib/builder-integrations.test.ts —
+  // keep that spec in sync if this logic changes.
+  window.__xrayBuildIntegrationOptions = function(integrations, currentValue) {
+    var out = [{ value: '', label: 'Custom (no auth)' }];
+    if (Array.isArray(integrations)) {
+      for (var i = 0; i < integrations.length; i++) {
+        var it = integrations[i];
+        if (!it || !it.slug) continue;
+        out.push({ value: it.slug, label: it.display_name || it.slug });
+      }
+    }
+    if (currentValue && !out.some(function(o) { return o.value === currentValue; })) {
+      out.push({ value: currentValue, label: currentValue + ' (not in catalog)', preserved: true });
+    }
+    return out;
+  };
+
   // Pill status string for a given integration slug, keyed off the
   // cache. Returns one of: 'connected', 'needs_reconnect',
   // 'not_connected', 'unknown'. Views use this to render pills.
