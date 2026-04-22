@@ -2,6 +2,12 @@ import { Router } from 'express';
 import { authenticateJWT } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
 import * as connectionService from '../services/connection.service';
+import * as integrationService from '../services/integration.service';
+import { withClient } from '../db/connection';
+import { encryptSecret } from '../lib/encrypted-column';
+import { mintOAuthState, buildAuthorizeUrl } from '../lib/oauth-state';
+import { config } from '../config';
+import * as auditService from '../services/audit.service';
 import { z } from 'zod';
 import { validateBody } from '../lib/validation';
 
@@ -9,7 +15,237 @@ const commentSchema = z.object({
   content: z.string().min(1).max(10000),
 });
 
+const apiKeySchema = z.object({
+  apiKey: z.string().min(1).max(4000),
+});
+
 const router = Router();
+
+// ─── OAuth + API-key connection flows ──────────────────────────────────────
+
+// Kicks off the OAuth authorization-code flow. Returns the provider's
+// authorize URL; the frontend does a full-page redirect (popups are too
+// fragile given provider X-Frame-Options). Per-flow state travels in a
+// signed state JWT so we can remain stateless on the callback.
+router.get(
+  '/oauth/:slug/authorize',
+  authenticateJWT,
+  async (req, res, next) => {
+    try {
+      const integration = await integrationService.getIntegrationWithSecret(req.params.slug);
+      if (!integration) {
+        return res.status(404).json({
+          ok: false,
+          error: { code: 'INTEGRATION_NOT_FOUND', message: 'Integration not found' },
+        });
+      }
+      if (integration.status !== 'active') {
+        return res.status(409).json({
+          ok: false,
+          error: {
+            code: 'INTEGRATION_NOT_ACTIVE',
+            message: 'This integration is not active yet.',
+          },
+        });
+      }
+      if (!integration.supports_oauth) {
+        return res.status(409).json({
+          ok: false,
+          error: {
+            code: 'OAUTH_NOT_SUPPORTED',
+            message: 'This integration does not offer OAuth; use the API key path instead.',
+          },
+        });
+      }
+      if (!integration.auth_url || !integration.client_id) {
+        return res.status(500).json({
+          ok: false,
+          error: {
+            code: 'INTEGRATION_CONFIG_INCOMPLETE',
+            message: 'Platform admin has not finished configuring this integration.',
+          },
+        });
+      }
+
+      const state = mintOAuthState({
+        tenantId: req.user!.tid,
+        integrationId: integration.id,
+        userId: req.user!.sub,
+      });
+      const authorizeUrl = buildAuthorizeUrl({
+        authUrl: integration.auth_url,
+        clientId: integration.client_id,
+        redirectUri: config.oauth.redirectUri,
+        scopes: integration.scopes ?? null,
+        state,
+        extraParams: integration.extra_authorize_params || {},
+      });
+      // Return the URL rather than 302 redirecting — the frontend owns
+      // the navigation so it can decide between full-page redirect and
+      // same-tab behavior per its modal UX.
+      res.json({ ok: true, data: { authorize_url: authorizeUrl } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// API-key connect. Tenant has pasted the provider-issued API key into
+// the Connect modal's API Key card; we encrypt and store it on the
+// connections row, setting auth_method='api_key'. Upsert semantics
+// match the OAuth callback: update-if-exists, otherwise insert.
+router.post(
+  '/api-key/:slug',
+  authenticateJWT,
+  async (req, res, next) => {
+    try {
+      const data = validateBody(apiKeySchema, req.body);
+      const integration = await integrationService.getIntegrationWithSecret(req.params.slug);
+      if (!integration) {
+        return res.status(404).json({
+          ok: false,
+          error: { code: 'INTEGRATION_NOT_FOUND', message: 'Integration not found' },
+        });
+      }
+      if (integration.status !== 'active') {
+        return res.status(409).json({
+          ok: false,
+          error: { code: 'INTEGRATION_NOT_ACTIVE', message: 'This integration is not active yet.' },
+        });
+      }
+      if (!integration.supports_api_key) {
+        return res.status(409).json({
+          ok: false,
+          error: {
+            code: 'API_KEY_NOT_SUPPORTED',
+            message: 'This integration does not accept API keys; use OAuth instead.',
+          },
+        });
+      }
+
+      const tenantId = req.user!.tid;
+      await withClient(async (client) => {
+        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        const existing = await client.query(
+          `SELECT id FROM platform.connections
+            WHERE tenant_id = $1 AND (integration_id = $2 OR source_type = $3)
+            LIMIT 1`,
+          [tenantId, integration.id, integration.slug]
+        );
+        if (existing.rows.length > 0) {
+          await client.query(
+            `UPDATE platform.connections
+                SET integration_id = $2,
+                    auth_method = 'api_key',
+                    api_key = $3,
+                    oauth_refresh_token = NULL,
+                    oauth_access_token = NULL,
+                    oauth_access_token_expires_at = NULL,
+                    oauth_last_refreshed_at = NULL,
+                    oauth_refresh_failed_count = 0,
+                    oauth_last_error = NULL,
+                    status = 'active',
+                    updated_at = now()
+              WHERE id = $1`,
+            [existing.rows[0].id, integration.id, encryptSecret(data.apiKey)]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO platform.connections
+               (tenant_id, name, source_type, integration_id, auth_method, api_key, status)
+             VALUES ($1, $2, $3, $4, 'api_key', $5, 'active')`,
+            [
+              tenantId,
+              integration.display_name,
+              integration.slug,
+              integration.id,
+              encryptSecret(data.apiKey),
+            ]
+          );
+        }
+      });
+
+      auditService.log({
+        tenantId,
+        userId: req.user!.sub,
+        action: 'connection.api_key_connected',
+        resourceType: 'connection',
+        resourceId: integration.id,
+        metadata: { integration_slug: integration.slug },
+      });
+
+      res.json({ ok: true, data: { slug: integration.slug, auth_method: 'api_key' } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Disconnect. Clears the OAuth/API-key state on the tenant's connection
+// row but keeps the row so historical dashboards still reference it.
+// Tenant re-connecting later just writes fresh credentials.
+router.post(
+  '/disconnect/:slug',
+  authenticateJWT,
+  async (req, res, next) => {
+    try {
+      const integration = await integrationService.getIntegrationWithSecret(req.params.slug);
+      if (!integration) {
+        return res.status(404).json({
+          ok: false,
+          error: { code: 'INTEGRATION_NOT_FOUND', message: 'Integration not found' },
+        });
+      }
+      const tenantId = req.user!.tid;
+      await withClient(async (client) => {
+        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        await client.query(
+          `UPDATE platform.connections
+              SET oauth_refresh_token = NULL,
+                  oauth_access_token = NULL,
+                  oauth_access_token_expires_at = NULL,
+                  oauth_last_refreshed_at = NULL,
+                  oauth_refresh_failed_count = 0,
+                  oauth_last_error = NULL,
+                  api_key = NULL,
+                  status = 'pending',
+                  updated_at = now()
+            WHERE tenant_id = $1 AND integration_id = $2`,
+          [tenantId, integration.id]
+        );
+      });
+      auditService.log({
+        tenantId,
+        userId: req.user!.sub,
+        action: 'connection.disconnected',
+        resourceType: 'connection',
+        resourceId: integration.id,
+        metadata: { integration_slug: integration.slug },
+      });
+      res.json({ ok: true, data: { slug: integration.slug } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// My Integrations list — visible only to tenant owner + platform admin.
+// Returns each active integration plus the tenant's current connection
+// state so the frontend can render status pills.
+router.get('/my-integrations', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      return res.status(403).json({
+        ok: false,
+        error: { code: 'FORBIDDEN', message: 'Only the owner or platform admin can view integrations' },
+      });
+    }
+    const rows = await integrationService.listActiveForTenant(req.user!.tid);
+    res.json({ ok: true, data: rows });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // GET / - list connections (JWT, connections.view)
 router.get('/', authenticateJWT, requirePermission('connections.view'), async (req, res, next) => {

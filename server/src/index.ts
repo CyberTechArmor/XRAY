@@ -32,7 +32,10 @@ import inboxRoutes from './routes/inbox.routes';
 import replayRoutes from './routes/replay.routes';
 import aiRoutes from './routes/ai.routes';
 import adminAiRoutes from './routes/admin.ai.routes';
+import oauthRoutes from './routes/oauth.routes';
 import { finalizeStaleActiveSessions } from './services/replay.service';
+import { startScheduler as startOauthScheduler } from './lib/oauth-scheduler';
+import { warnIfUnconfigured as warnIfPipelineJwtUnconfigured } from './lib/pipeline-jwt';
 // Upload routes loaded lazily to avoid crash if multer not installed
 let uploadRoutes: any;
 try {
@@ -102,6 +105,7 @@ app.use('/api/inbox', inboxRoutes);
 app.use('/api/v1/replay', replayRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/admin/ai', adminAiRoutes);
+app.use('/api/oauth', oauthRoutes);
 if (uploadRoutes) app.use('/api/uploads', uploadRoutes);
 
 // Serve frontend static files (fallback when nginx is not in front)
@@ -256,6 +260,14 @@ async function start() {
         console.error('[Replay] Stale session cleanup error:', err);
       });
     }, 2 * 60 * 1000);
+
+    // OAuth token refresh scheduler: 5-min tick keeps tenant access
+    // tokens fresh so render paths become a pure DB read. Boot after
+    // the server is listening so the first tick doesn't race anything
+    // upstream. warnIfPipelineJwtUnconfigured surfaces the absent-keypair
+    // state once so ops see it in logs without boot-breaking.
+    warnIfPipelineJwtUnconfigured();
+    startOauthScheduler();
 
   } catch (err) {
     console.error('Failed to start server:', err);
