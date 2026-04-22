@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticateJWT } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
 import { validateBody, dashboardAccessSchema, embedCreateSchema } from '../lib/validation';
-import { decryptJsonField } from '../lib/encrypted-column';
+import { decryptJsonField, decryptSecret } from '../lib/encrypted-column';
 import { mintBridgeJwt } from '../lib/n8n-bridge';
 import * as dashboardService from '../services/dashboard.service';
 import * as aiService from '../services/ai.service';
@@ -139,14 +139,14 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       const query = req.user!.is_platform_admin
         ? {
             text: `SELECT id, tenant_id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
-                    view_html, view_css, view_js, template_id, integration, params
+                    view_html, view_css, view_js, template_id, integration, params, bridge_secret
              FROM platform.dashboards
              WHERE id = $1 AND status = 'active'`,
             values: [req.params.id],
           }
         : {
             text: `SELECT id, tenant_id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params,
-                    view_html, view_css, view_js, template_id, integration, params
+                    view_html, view_css, view_js, template_id, integration, params, bridge_secret
              FROM platform.dashboards
              WHERE id = $1 AND tenant_id = $2 AND status = 'active'`,
             values: [req.params.id, req.user!.tid],
@@ -194,12 +194,26 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     //     forward as-is. This is the original behavior.
     let parsedHeaders: Record<string, string>;
     if (dashboard.integration) {
+      const bridgeSecret = decryptSecret(
+        dashboard.bridge_secret,
+        `dashboards:bridge_secret:${dashboard.id}`
+      );
+      if (!bridgeSecret) {
+        return res.status(500).json({
+          ok: false,
+          error: {
+            code: 'BRIDGE_SECRET_MISSING',
+            message: 'This dashboard has an integration but no bridge signing secret. Set one in the dashboard builder.',
+          },
+        });
+      }
       const minted = mintBridgeJwt({
         tenantId: dashboard.tenant_id,
         userId: req.user!.sub,
         templateId: dashboard.template_id || null,
         integration: dashboard.integration,
         params: (dashboard.params as Record<string, unknown>) || {},
+        secret: bridgeSecret,
         // access_token stays absent until step 4 wires OAuth lookup.
       });
       parsedHeaders = { Authorization: `Bearer ${minted.jwt}` };

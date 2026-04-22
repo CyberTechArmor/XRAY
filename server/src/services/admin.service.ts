@@ -13,9 +13,17 @@ function decryptConnectionRow<T extends { id: string; connection_details?: strin
   return row;
 }
 
-function decryptDashboardRow<T extends { id: string; fetch_headers?: unknown }>(row: T): T {
+function decryptDashboardRow<T extends { id: string; fetch_headers?: unknown; bridge_secret?: unknown }>(row: T): T {
   if (row.fetch_headers !== undefined) {
     row.fetch_headers = decryptJsonField(row.fetch_headers, `dashboards:fetch_headers:${row.id}`);
+  }
+  // Never return the signing-secret ciphertext or plaintext to the
+  // client. Surface a boolean so the admin UI can show "secret is set"
+  // without exposing the value.
+  if ('bridge_secret' in (row as object)) {
+    (row as Record<string, unknown>).bridge_secret_set =
+      typeof row.bridge_secret === 'string' && row.bridge_secret !== '';
+    delete (row as Record<string, unknown>).bridge_secret;
   }
   return row;
 }
@@ -258,12 +266,24 @@ export async function createDashboard(input: {
   fetchQueryParams?: Record<string, string> | null;
   tileImageUrl?: string | null;
   templateId?: string | null; integration?: string | null; params?: Record<string, unknown> | null;
+  bridgeSecret?: string | null;
 }) {
+  // If the caller is attaching an integration, the row MUST carry a
+  // bridge_secret — otherwise the render path has nothing to sign with.
+  // The admin UI's "Generate" button fills this field client-side; the
+  // server only enforces presence.
+  if (input.integration && !input.bridgeSecret) {
+    throw new AppError(
+      400,
+      'BRIDGE_SECRET_REQUIRED',
+      'Bridge signing secret is required when integration is set. Use the Generate button in the builder or paste a value.'
+    );
+  }
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, tile_image_url, template_id, integration, params)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *`,
+      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, tile_image_url, template_id, integration, params, bridge_secret)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
       [
         input.tenantId, input.name, input.description || null,
         input.status || 'draft',
@@ -276,6 +296,7 @@ export async function createDashboard(input: {
         input.templateId || null,
         input.integration || null,
         JSON.stringify(input.params || {}),
+        encryptSecret(input.bridgeSecret || null),
       ]
     );
     const dash = result.rows[0];
@@ -287,6 +308,39 @@ export async function createDashboard(input: {
 export async function updateDashboard(dashboardId: string, updates: Record<string, unknown>) {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+
+    // Bridge-secret consistency check. Fetch current state so we can
+    // reason about the resulting row: if integration will be non-empty
+    // post-update, bridge_secret must also be non-empty post-update —
+    // either already on the row or supplied in this patch.
+    const current = await client.query(
+      'SELECT integration, bridge_secret FROM platform.dashboards WHERE id = $1',
+      [dashboardId]
+    );
+    if (current.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Dashboard not found');
+    const currentRow = current.rows[0] as { integration: string | null; bridge_secret: string | null };
+
+    const integrationUpdate = updates.integration;
+    const bridgeSecretUpdate = updates.bridgeSecret;
+    const nextIntegration =
+      integrationUpdate === undefined
+        ? currentRow.integration
+        : (integrationUpdate === '' ? null : (integrationUpdate as string | null));
+    // nextBridgeSecret represents "will the row have a usable secret
+    // after this update". Null/empty in the patch is a clear. Undefined
+    // means "unchanged — fall back to whatever's on the row".
+    const nextBridgeSecretSupplied =
+      bridgeSecretUpdate !== undefined
+        ? (bridgeSecretUpdate ? String(bridgeSecretUpdate) : null)
+        : (currentRow.bridge_secret ? 'unchanged' : null);
+    if (nextIntegration && !nextBridgeSecretSupplied) {
+      throw new AppError(
+        400,
+        'BRIDGE_SECRET_REQUIRED',
+        'Bridge signing secret is required when integration is set. Use the Generate button in the builder or paste a value.'
+      );
+    }
+
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -298,6 +352,7 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       fetchQueryParams: 'fetch_query_params',
       tileImageUrl: 'tile_image_url',
       templateId: 'template_id', integration: 'integration', params: 'params',
+      bridgeSecret: 'bridge_secret',
     };
     for (const [key, value] of Object.entries(updates)) {
       const col = allowedKeys[key];
@@ -317,6 +372,13 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
           // which puts the dashboard back onto the legacy fetch_headers
           // path.
           values.push(value === '' ? null : value);
+        } else if (col === 'bridge_secret') {
+          // Encrypt under the same enc:v1: envelope the trigger enforces.
+          // Empty string clears the secret (only meaningful when
+          // integration is also being cleared in the same call; the
+          // consistency check above guards that).
+          const v = value === '' ? null : (value as string);
+          values.push(encryptSecret(v));
         } else {
           values.push(value);
         }
@@ -399,7 +461,7 @@ export async function fetchDashboardContent(dashboardId: string) {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
       `SELECT id, tenant_id, fetch_url, fetch_method, fetch_headers, fetch_body, fetch_query_params, status,
-              template_id, integration, params
+              template_id, integration, params, bridge_secret
        FROM platform.dashboards WHERE id = $1`,
       [dashboardId]
     );
@@ -411,12 +473,21 @@ export async function fetchDashboardContent(dashboardId: string) {
     // end-user context — mint with user_id absent.
     let headers: Record<string, string>;
     if (dash.integration) {
+      const bridgeSecret = decryptSecret(dash.bridge_secret, `dashboards:bridge_secret:${dash.id}`);
+      if (!bridgeSecret) {
+        throw new AppError(
+          500,
+          'BRIDGE_SECRET_MISSING',
+          'This dashboard has an integration but no bridge signing secret.'
+        );
+      }
       const minted = mintBridgeJwt({
         tenantId: dash.tenant_id,
         userId: null,
         templateId: dash.template_id || null,
         integration: dash.integration,
         params: (dash.params as Record<string, unknown>) || {},
+        secret: bridgeSecret,
       });
       headers = { Authorization: `Bearer ${minted.jwt}` };
       auditService.log({
