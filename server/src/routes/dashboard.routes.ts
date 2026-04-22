@@ -216,6 +216,15 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           },
         });
       }
+      // `via` distinguishes a tenant user rendering their own dashboard
+      // (authed_render) from a platform admin rendering someone else's
+      // (admin_impersonation). An admin with no home tenant (tid null)
+      // is always impersonating when they render, so the null-safe
+      // compare falls through correctly.
+      const actingVia: 'authed_render' | 'admin_impersonation' =
+        req.user!.is_platform_admin && dashboard.tenant_id !== req.user!.tid
+          ? 'admin_impersonation'
+          : 'authed_render';
       const minted = mintBridgeJwt({
         tenantId: dashboard.tenant_id,
         tenantSlug: dashboard.tenant_slug,
@@ -234,14 +243,15 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
         userName: dashboard.user_name,
         userRole: dashboard.user_role,
         isPlatformAdmin: !!req.user!.is_platform_admin,
-        via: 'authed_render',
+        via: actingVia,
         secret: bridgeSecret,
         // access_token stays absent until step 4 wires OAuth lookup.
       });
       parsedHeaders = { Authorization: `Bearer ${minted.jwt}` };
       // Audit-log the mint so a leaked token can be traced back to
       // (tenant, user, dashboard). Fire-and-forget, matches the existing
-      // audit pattern elsewhere in this file.
+      // audit pattern elsewhere in this file. `via` mirrors the JWT
+      // claim so the audit row is self-contained for SOC 2 review.
       auditService.log({
         tenantId: dashboard.tenant_id,
         userId: req.user!.sub,
@@ -252,7 +262,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           jti: minted.jti,
           integration: dashboard.integration,
           template_id: dashboard.template_id || null,
-          via: 'authed_render',
+          via: actingVia,
         },
       });
     } else {

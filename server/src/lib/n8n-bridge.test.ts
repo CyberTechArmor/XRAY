@@ -113,6 +113,29 @@ describe('n8n-bridge', () => {
     expect(claims.is_public).toBe(true);
   });
 
+  it('admin_impersonation keeps user_* from the platform admin and target tenant in sub', async () => {
+    const { mintBridgeJwt, verifyBridgeJwtForTest } = await importBridge();
+    const { jwt: token } = mintBridgeJwt({
+      tenantId: 'target-tenant-uuid',
+      tenantSlug: 'acme',
+      dashboardId: 'd-1',
+      userId: 'platform-admin-uuid',
+      userEmail: 'admin@xray.test',
+      userRole: 'platform_admin',
+      isPlatformAdmin: true,
+      integration: 'housecall_pro',
+      via: 'admin_impersonation',
+      secret: SECRET,
+    });
+    const claims = verifyBridgeJwtForTest(token, SECRET);
+    expect(claims.via).toBe('admin_impersonation');
+    expect(claims.sub).toBe('target-tenant-uuid');
+    expect(claims.tenant_id).toBe('target-tenant-uuid');
+    expect(claims.tenant_slug).toBe('acme');
+    expect(claims.user_id).toBe('platform-admin-uuid');
+    expect(claims.is_platform_admin).toBe(true);
+  });
+
   it('admin_preview carries user_* from the acting admin', async () => {
     const { mintBridgeJwt, verifyBridgeJwtForTest } = await importBridge();
     const { jwt: token } = mintBridgeJwt({

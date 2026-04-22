@@ -19,7 +19,11 @@ import { config } from '../config';
 //
 // Absent vs null: unset optional fields are omitted from the payload
 // entirely. Keeps n8n-side validation from seeing false-signal nulls.
-export type BridgeVia = 'authed_render' | 'public_share' | 'admin_preview';
+export type BridgeVia =
+  | 'authed_render'
+  | 'admin_impersonation'
+  | 'public_share'
+  | 'admin_preview';
 
 export interface BridgeJwtInput {
   // Required core.
