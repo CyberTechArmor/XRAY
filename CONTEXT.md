@@ -156,99 +156,151 @@ backfill is complete and it's safe to retire the fallback later.
 
 ### What changed
 
-- `server/src/lib/n8n-bridge.ts` — new. `mintBridgeJwt({ tenantId, userId?,
-  templateId?, integration, accessToken?, params? })` signs an HS256 token
-  with `iss='xray'`, `aud='n8n'`, `sub=tenant_id`, `jti=UUID`, `iat`/`exp`
-  (60 s lifetime), plus `user_id`, `template_id`, `integration`,
-  `access_token`, `params`. Unset optional claims are **absent**, not
-  empty — keeps n8n-side validation from seeing false-signal nulls.
-- `server/src/lib/n8n-bridge.test.ts` — 6 vitest specs. Claim shape,
+- `server/src/lib/n8n-bridge.ts` — new. `mintBridgeJwt({ tenantId,
+  integration, secret, userId?, templateId?, accessToken?, params? })`
+  signs an HS256 token with `iss='xray'`, `aud='n8n'`, `sub=tenant_id`,
+  `jti=UUID`, `iat`/`exp` (60 s lifetime), plus `user_id`,
+  `template_id`, `integration`, `access_token`, `params`. Unset optional
+  claims are **absent**, not empty — keeps n8n-side validation from
+  seeing false-signal nulls. Also exports `generateBridgeSecret()`
+  (48 bytes of `randomBytes` → base64url) used by the admin UI's
+  Generate button.
+- `server/src/lib/n8n-bridge.test.ts` — 7 vitest specs. Claim shape,
   absent-vs-present optionals, `jti` uniqueness, input validation,
-  wrong-secret rejection.
-- `server/src/config.ts` — new `config.n8nBridge` block. Reads
-  `N8N_BRIDGE_JWT_SECRET` (min 32 chars) with the same at-boot throw
-  pattern as `ENCRYPTION_KEY`.
+  cross-secret rejection (per-dashboard isolation), generator shape.
+- `server/src/config.ts` — new `config.n8nBridge` block: platform-wide
+  `issuer: 'xray'`, `audience: 'n8n'`, `expirySeconds: 60`. **No env
+  var** — the signing secret is per-dashboard (see migration 019).
 - `server/src/routes/dashboard.routes.ts` — authed `POST /:id/render`
   branches on `dashboards.integration`:
-  - non-null → mint JWT, send as `Authorization: Bearer`, audit
+  - non-null → decrypt the dashboard's `bridge_secret`, mint JWT with
+    that secret, send as `Authorization: Bearer`, audit
     `dashboard.bridge_mint` with metadata `{ jti, integration,
-    template_id, via: 'authed_render' }`.
+    template_id, via: 'authed_render' }`. Returns `500
+    BRIDGE_SECRET_MISSING` if the row has `integration` but no
+    `bridge_secret`.
   - null → legacy `fetch_headers` path, unchanged.
-  Also SELECTs `tenant_id` (needed for `sub`) and the three new columns.
+  SELECT list expanded to include `tenant_id`, `template_id`,
+  `integration`, `params`, `bridge_secret`.
 - `server/src/services/dashboard.service.ts` — same branching in
-  `renderPublicDashboard`. Public-share mints with `user_id` absent
-  and audit metadata `via: 'public_share'` plus the first 8 chars of
-  the share token for trace triangulation.
-- `server/src/services/admin.service.ts` — `fetchDashboardContent`
-  (admin preview) branches the same way with `via: 'admin_preview'`.
-  `createDashboard` / `updateDashboard` accept `templateId` /
-  `integration` / `params`; empty strings on the first two clear back
-  to NULL (back to the legacy path). `params` coerces null/undefined
-  to `'{}'` to respect the NOT NULL default.
+  `renderPublicDashboard`. `user_id` claim absent for public share.
+  Audit metadata records `via: 'public_share'` plus the first 8 chars
+  of the share token for triangulation. New internal helper
+  `fetchBridgeSecretCiphertext(dashboardId)` — decryptor strips
+  `bridge_secret` from rows by default, so render sites re-fetch the
+  ciphertext with this helper and decrypt inline. Guarantees the
+  admin/share GET responses can never leak the secret.
+- `server/src/services/admin.service.ts` —
+  - `fetchDashboardContent` (admin preview) branches the same way with
+    `via: 'admin_preview'`.
+  - `createDashboard` accepts `templateId`, `integration`, `params`,
+    `bridgeSecret`. Throws `BRIDGE_SECRET_REQUIRED` if `integration`
+    is set but `bridgeSecret` is empty. Encrypts the secret before
+    insert.
+  - `updateDashboard` extended to accept `bridgeSecret`. New
+    consistency check: if the post-update row will carry a non-empty
+    `integration`, it must also have a non-empty `bridge_secret` —
+    either on the existing row or supplied in the patch. Empty string
+    on either clears back to the legacy path.
+  - `decryptDashboardRow` strips `bridge_secret` from every returned
+    row and surfaces `bridge_secret_set: boolean` instead. Ciphertext
+    and plaintext never reach the API response.
 - `server/src/lib/validation.ts` — `dashboardCreateSchema` /
-  `dashboardUpdateSchema` extended with the three optional fields.
+  `dashboardUpdateSchema` extended with `templateId`, `integration`,
+  `params`, `bridgeSecret`.
 - `server/src/services/portability.service.ts` — export/import column
-  list extended so the three new columns round-trip.
+  list extended with `template_id`, `integration`, `params`,
+  `bridge_secret` so round-trips preserve bridge config (ciphertext
+  stays encrypted on export).
 - `frontend/bundles/general.json` — admin dashboard builder gets a new
   **n8n Bridge (JWT auth)** card between Connection and Appearance.
-  Three inputs: Integration, Template ID, Params (JSON). Load/save
-  paths wired.
+  Fields: Integration, Template ID, Params (JSON), **Bridge signing
+  secret** (masked password input + Generate + Show/Hide). Generate
+  uses `window.crypto.getRandomValues` for base64url on the client so
+  the plaintext never round-trips through the server until save.
+  Client-side guard refuses to save when Integration is set but no
+  secret is stored and none entered. Load path reads
+  `bridge_secret_set` (boolean) and displays status text; never asks
+  the server for the plaintext.
 - `migrations/018_dashboards_bridge_config.sql` (+ companion under
-  `down/`) — adds `template_id TEXT`, `integration TEXT`,
-  `params JSONB NOT NULL DEFAULT '{}'`. Additive, idempotent (`IF NOT
-  EXISTS`). No encryption trigger — routing data, not credentials.
-- `install.sh` — generates `N8N_BRIDGE_JWT_SECRET` (64 chars, matches
-  `JWT_SECRET` rules) and writes to `.env`.
-- `update.sh` — step 3c (new, before rebuild) appends the var to
-  existing `.env` files if missing, so the rebuilt container boots
-  cleanly.
+  `down/`) — adds `template_id TEXT`, `integration TEXT`, `params
+  JSONB NOT NULL DEFAULT '{}'`. Additive, idempotent. No encryption
+  trigger — routing data, not credentials.
+- `migrations/019_dashboard_bridge_secret.sql` (+ down) — adds
+  `bridge_secret TEXT` and the `enforce_enc_dashboards_bridge_secret`
+  trigger (same `enc:v1:` envelope contract as migration 017).
+  Rejects plaintext writes at the DB layer.
+- **Deploy scripts reordered so migrations run BEFORE the server
+  rebuild.** `update.sh` and `deploy.sh` used to rebuild the container
+  first and migrate after — that window let new code SELECT columns
+  the DB didn't have yet. Fix: additive-DDL migrations go before the
+  rebuild; the backfill stays after (it needs the server container).
 
 ### Env changes
 
-- **New required var:** `N8N_BRIDGE_JWT_SECRET`, minimum 32 chars. Must
-  match the secret configured on every n8n webhook's "JWT Auth"
-  credential that accepts XRay renders. Rotate on both sides in the
-  same window; a mismatch breaks every bridge-path dashboard.
+- **No new env vars.** The bridge secret is per-dashboard (migration
+  019), stored encrypted on `platform.dashboards.bridge_secret`.
 - Required in every environment that boots the server:
-  `DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, `N8N_BRIDGE_JWT_SECRET`.
+  `DATABASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`.
 
 ### Schema changes
 
-- Three additive columns on `platform.dashboards`:
+- Four additive columns on `platform.dashboards`:
   `template_id TEXT`, `integration TEXT`, `params JSONB NOT NULL
-  DEFAULT '{}'::jsonb`. Existing rows need no backfill — the JSONB
-  default covers them, and the two TEXT columns are nullable.
+  DEFAULT '{}'::jsonb`, `bridge_secret TEXT`.
+- One new trigger + function:
+  `enforce_enc_dashboards_bridge_secret` guards `bridge_secret` under
+  the same `enc:v1:` contract as migration 017.
+- Existing rows need no backfill. The JSONB default covers `params`,
+  the TEXT columns are nullable, and legacy dashboards (no
+  `integration`) continue on the `fetch_headers` path untouched.
 - `init.sql` was NOT updated (same convention as step 1; numbered
   migrations are source of truth post-init).
 
+### Secret model — why per-dashboard
+
+A single platform-wide signing secret meant one leak compromised every
+integration across every tenant. Per-dashboard means:
+
+- The blast radius of a leaked secret is exactly one dashboard.
+- Rotating one dashboard's secret doesn't coordinate a maintenance
+  window across every n8n workflow.
+- Each n8n workflow owns its own "JWT Auth" credential — matches n8n's
+  native credential-per-workflow model.
+- The future "global dashboard template + per-tenant attribution" model
+  extends naturally: each template row owns its own secret, each
+  tenant-dashboard inherits or overrides per row.
+
 ### How n8n validates (the other side of the contract)
 
-1. Configure an n8n credential of type "JWT Auth": algorithm HS256,
-   secret = `N8N_BRIDGE_JWT_SECRET`.
-2. On the Webhook node, set Authentication → JWT Auth → that credential.
-   n8n verifies signature + `exp` automatically.
-3. In a downstream Set/Code node: assert `$json.iss === 'xray'`,
+One-time setup **per dashboard / per workflow**:
+
+1. In XRay's dashboard builder, click Generate on the Bridge signing
+   secret field (or paste one you already minted elsewhere). Copy the
+   value. Click Show to reveal it.
+2. In n8n, create a credential of type "JWT Auth": algorithm HS256,
+   secret = the value you just copied. Name it after the dashboard
+   (e.g. `XRay Bridge — HCP Technician`).
+3. On the Webhook node for that workflow, set Authentication → JWT
+   Auth → that credential. n8n verifies signature + `exp` automatically.
+4. In a downstream Set/Code node: assert `$json.iss === 'xray'`,
    `$json.aud === 'n8n'`, extract `sub` (tenant_id), `user_id`,
    `template_id`, `integration`, `access_token`, `params`. Route on
    `integration` or `template_id`.
-4. Log `jti` on the n8n side so a leaked token's trail exists on both
+5. Log `jti` on the n8n side so a leaked token's trail exists on both
    systems.
 
 ### Opting a dashboard onto the JWT path
 
-Admin UI: populate the **Integration** field on the dashboard builder.
-Empty value → legacy `fetch_headers` path. Non-empty → JWT path.
-`Auth Bearer Token` and `Headers` above the bridge card are ignored for
-JWT-path dashboards.
+Admin UI: populate the **Integration** field AND set a **Bridge
+signing secret** on the dashboard builder. Generate auto-fills a
+48-byte base64url value; Paste works too. Save fails with a clear
+error if Integration is set without a secret. Empty Integration =
+legacy `fetch_headers` path.
 
-SQL opt-in (for batch cutover or ops work):
-```sql
-UPDATE platform.dashboards
-   SET integration = 'housecall_pro',
-       template_id = 'tmpl_technician_daily',
-       params = '{"window_days": 30}'::jsonb
- WHERE id = $1;
-```
+SQL opt-in for batch work is discouraged because the secret has to
+be encrypted under the `enc:v1:` envelope before it hits the DB.
+The admin UI is the supported entry point.
 
 ### Known follow-ups not done this session
 
@@ -261,37 +313,36 @@ UPDATE platform.dashboards
   per-integration token from `platform.connections.connection_details`
   and passes it through.
 - **"Dashboards defined once, tenants auto-inherit via connection
-  source_type"** is a post-step-5 concern. `integration` + `template_id`
-  as opaque strings are the hooks for that future refactor — no
-  redesign needed on the bridge side when it lands.
+  source_type"** is a post-step-5 concern. `integration`, `template_id`,
+  and `bridge_secret` are all per-row today; global-template modeling
+  is a separate redesign.
 - **`dashboards.fetch_body` encryption** — moot. The JWT travels in
   the Authorization header, never in the body. `fetch_body` stays
-  available for legacy payloads; its contents are not credentials.
+  available for legacy payloads.
 - **RLS is still decorative** (documented under step 1). Unchanged by
-  step 2 — the render paths still gate via explicit `WHERE
-  tenant_id = $1`. Step 6 fixes.
+  step 2.
 - **Plaintext-read fallback in `encrypted-column.ts`** still in place.
-  Unrelated cleanup, a future session.
 
 ### Verify on VPS after deploy
 
-```
-# Env var is set in the container.
-docker compose exec server env | grep N8N_BRIDGE_JWT_SECRET
+```sql
+-- Migration 019 trigger is installed.
+SELECT trigger_name FROM information_schema.triggers
+ WHERE trigger_name='enforce_enc_dashboards_bridge_secret';
 
-# At least one opted-in dashboard exists (flip one for smoke test).
-psql $DATABASE_URL -c \
-  "UPDATE platform.dashboards SET integration='housecall_pro'
-     WHERE id='<dashboard-uuid>' RETURNING id, integration, template_id;"
+-- Every non-null bridge_secret matches the envelope. Zero rows = clean.
+SELECT id FROM platform.dashboards
+ WHERE bridge_secret IS NOT NULL AND bridge_secret <> ''
+   AND bridge_secret NOT LIKE 'enc:v1:%';
 
-# Render it — expect Authorization: Bearer <jwt> to hit the n8n webhook.
-# Check audit_log for the mint trace:
-psql $DATABASE_URL -c \
-  "SELECT created_at, action, resource_id, metadata->>'jti' AS jti,
-          metadata->>'integration' AS integration, metadata->>'via' AS via
-     FROM platform.audit_log
-    WHERE action='dashboard.bridge_mint'
-    ORDER BY created_at DESC LIMIT 5;"
+-- Audit-log the mint trace after a render:
+SELECT created_at, action, resource_id,
+       metadata->>'jti' AS jti,
+       metadata->>'integration' AS integration,
+       metadata->>'via' AS via
+  FROM platform.audit_log
+ WHERE action='dashboard.bridge_mint'
+ ORDER BY created_at DESC LIMIT 5;
 ```
 
 ---
