@@ -424,6 +424,124 @@ export async function getBillingStatus(tenantId: string): Promise<{
   return base;
 }
 
+// Schedule a subscription to end at the current period's expiry. Access
+// is preserved until `current_period_end`; Stripe fires
+// `customer.subscription.updated` with cancel_at_period_end=true, which
+// the webhook path already broadcasts to connected tenant users.
+export async function cancelSubscriptionAtPeriodEnd(
+  tenantId: string,
+  subscriptionId: string
+): Promise<{ id: string; cancelAtPeriodEnd: boolean; currentPeriodEnd: string | null }> {
+  const stripe = await getStripeClient();
+  const sub = await stripe.subscriptions.retrieve(subscriptionId);
+
+  // Guard: subscription must belong to this tenant's Stripe customer.
+  const tenant = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query('SELECT stripe_customer_id FROM platform.tenants WHERE id = $1', [tenantId]);
+    return result.rows[0];
+  });
+  const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer?.id;
+  if (!tenant?.stripe_customer_id || tenant.stripe_customer_id !== customerId) {
+    throw new AppError(403, 'SUBSCRIPTION_NOT_OWNED', 'This subscription does not belong to your tenant.');
+  }
+
+  const updated = await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
+
+  auditService.log({
+    tenantId,
+    action: 'billing.subscription_cancel_scheduled',
+    resourceType: 'billing',
+    metadata: { subscription_id: subscriptionId },
+  });
+
+  return {
+    id: updated.id,
+    cancelAtPeriodEnd: updated.cancel_at_period_end,
+    currentPeriodEnd: updated.current_period_end ? new Date(updated.current_period_end * 1000).toISOString() : null,
+  };
+}
+
+// Undo a scheduled cancellation. Subscription continues renewing as
+// normal. `customer.subscription.updated` fires from Stripe, webhook
+// broadcasts the state change.
+export async function resumeSubscription(
+  tenantId: string,
+  subscriptionId: string
+): Promise<{ id: string; cancelAtPeriodEnd: boolean; currentPeriodEnd: string | null }> {
+  const stripe = await getStripeClient();
+  const sub = await stripe.subscriptions.retrieve(subscriptionId);
+
+  const tenant = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query('SELECT stripe_customer_id FROM platform.tenants WHERE id = $1', [tenantId]);
+    return result.rows[0];
+  });
+  const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer?.id;
+  if (!tenant?.stripe_customer_id || tenant.stripe_customer_id !== customerId) {
+    throw new AppError(403, 'SUBSCRIPTION_NOT_OWNED', 'This subscription does not belong to your tenant.');
+  }
+
+  const updated = await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: false });
+
+  auditService.log({
+    tenantId,
+    action: 'billing.subscription_resumed',
+    resourceType: 'billing',
+    metadata: { subscription_id: subscriptionId },
+  });
+
+  return {
+    id: updated.id,
+    cancelAtPeriodEnd: updated.cancel_at_period_end,
+    currentPeriodEnd: updated.current_period_end ? new Date(updated.current_period_end * 1000).toISOString() : null,
+  };
+}
+
+// Return the list of products the tenant can subscribe to from their
+// own billing page. (ii-a) sources this from stripe_gate_products —
+// (ii-b) introduces a separate stripe_billing_page_products setting
+// so an admin can surface non-gate products too.
+export async function listSubscribableProducts(): Promise<Array<{
+  id: string;
+  name: string;
+  description: string;
+  priceId: string | null;
+  amount: number | null;
+  currency: string | null;
+  interval: string | null;
+}>> {
+  const gateProductsRaw = await getSetting('stripe_gate_products');
+  if (!gateProductsRaw) return [];
+  let gateProductIds: string[] = [];
+  try { gateProductIds = JSON.parse(gateProductsRaw); } catch { return []; }
+  if (gateProductIds.length === 0) return [];
+
+  const stripe = await getStripeClient();
+  const out: Array<{ id: string; name: string; description: string; priceId: string | null; amount: number | null; currency: string | null; interval: string | null }> = [];
+  for (const pid of gateProductIds) {
+    try {
+      const prod = await stripe.products.retrieve(pid);
+      if (!prod.active) continue;
+      // Grab the default active price so the UI can show "$X/month"
+      const prices = await stripe.prices.list({ product: pid, active: true, limit: 1 });
+      const price = prices.data[0];
+      out.push({
+        id: prod.id,
+        name: prod.name,
+        description: prod.description || '',
+        priceId: price?.id || null,
+        amount: price?.unit_amount ?? null,
+        currency: price?.currency || null,
+        interval: price?.recurring?.interval || null,
+      });
+    } catch {
+      // Skip products Stripe can't return — admin may have left stale IDs
+    }
+  }
+  return out;
+}
+
 export async function createCheckoutSession(
   tenantId: string,
   stripeCustomerId: string | null,

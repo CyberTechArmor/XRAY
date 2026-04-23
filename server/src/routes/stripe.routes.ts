@@ -209,6 +209,52 @@ router.post('/checkout', authenticateJWT, requirePermission('billing.manage'), a
   }
 });
 
+// GET /subscribable - list the products the current tenant can
+// subscribe to from their billing page. Sources from
+// stripe_gate_products today; (ii-b) introduces a separate setting.
+router.get('/subscribable', authenticateJWT, requirePermission('billing.view'), async (req, res, next) => {
+  try {
+    const result = await stripeService.listSubscribableProducts();
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /subscription/:id/cancel - schedule a cancellation at the end
+// of the current period. Access stays until current_period_end. The
+// webhook path broadcasts `billing:updated`.
+router.post('/subscription/:id/cancel', authenticateJWT, requirePermission('billing.manage'), async (req, res, next) => {
+  try {
+    const result = await stripeService.cancelSubscriptionAtPeriodEnd(req.user!.tid, req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /subscription/:id/resume - undo a scheduled cancellation.
+router.post('/subscription/:id/resume', authenticateJWT, requirePermission('billing.manage'), async (req, res, next) => {
+  try {
+    const result = await stripeService.resumeSubscription(req.user!.tid, req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /admin/products - list all Stripe products with gate status (platform admin only)
 router.get('/admin/products', authenticateJWT, async (req, res, next) => {
   try {
