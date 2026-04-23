@@ -3021,8 +3021,13 @@
           // System notification is handled by service worker push — no duplicate here
           // If inbox view is currently open, refresh it
           if (window.__xrayRefreshInboxView) window.__xrayRefreshInboxView();
-        } else if (msg.type === 'dashboard:access-granted' || msg.type === 'dashboard:access-revoked') {
-          // Dashboard visibility changed - notify handler if registered
+        } else if (msg.type === 'dashboard:access-granted' || msg.type === 'dashboard:access-revoked' || msg.type === 'dashboard:share-changed' || msg.type === 'integration:connected' || msg.type === 'integration:disconnected') {
+          // Dashboard list–affecting events. Forward to the bundle's
+          // dashboard_list handler if it's registered. The bundle also
+          // tries to addEventListener directly, but that races with
+          // __xrayWs being open at view-mount time and doesn't survive
+          // token-refresh WS reconnects — this forward is the reliable
+          // path.
           if (window.__xrayDashWsHandler) {
             window.__xrayDashWsHandler(evt);
           }
