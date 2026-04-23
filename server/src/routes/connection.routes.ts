@@ -174,6 +174,11 @@ router.post(
         metadata: { integration_slug: integration.slug },
       });
 
+      try {
+        const { broadcastToTenant } = await import('../ws');
+        broadcastToTenant(tenantId, 'integration:connected', { slug: integration.slug });
+      } catch {}
+
       res.json({ ok: true, data: { slug: integration.slug, auth_method: 'api_key' } });
     } catch (err) {
       next(err);
@@ -222,6 +227,10 @@ router.post(
         resourceId: integration.id,
         metadata: { integration_slug: integration.slug },
       });
+      try {
+        const { broadcastToTenant } = await import('../ws');
+        broadcastToTenant(tenantId, 'integration:disconnected', { slug: integration.slug });
+      } catch {}
       res.json({ ok: true, data: { slug: integration.slug } });
     } catch (err) {
       next(err);

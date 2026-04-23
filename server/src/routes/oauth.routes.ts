@@ -160,6 +160,15 @@ router.get('/callback', async (req: Request, res: Response) => {
     metadata: { integration_slug: integration.slug },
   });
 
+  // Real-time fan-out to every open tab on this tenant so dashboard
+  // lists + My-Integrations strips flip to "Connected" without a manual
+  // reload. Mirrors the broadcastToTenant pattern used by the share-
+  // toggle routes in dashboard.routes.ts.
+  try {
+    const { broadcastToTenant } = await import('../ws');
+    broadcastToTenant(claims.t, 'integration:connected', { slug: integration.slug });
+  } catch {}
+
   return redirectBackToApp(res, { connected: integration.slug });
 });
 
