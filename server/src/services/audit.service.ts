@@ -1,4 +1,4 @@
-import { getPool, withClient } from '../db/connection';
+import { withAdminClient, withTenantContext } from '../db/connection';
 
 interface AuditLogEntry {
   tenantId: string;
@@ -28,10 +28,14 @@ interface PaginatedAuditLog {
 /**
  * Fire-and-forget audit log insertion.
  * Errors are logged but do not propagate.
+ *
+ * Writes run under the tenant's RLS context so audit_log.tenant_isolation
+ * gates the INSERT. Callers that record platform-level events pass the
+ * sentinel UUID 00000000-0000-0000-0000-000000000000; the policy still
+ * matches (setting == column value) so the write lands.
  */
 export function log(entry: AuditLogEntry): void {
-  withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  withTenantContext(entry.tenantId, async (client) => {
     await client.query(
       `INSERT INTO platform.audit_log (tenant_id, user_id, action, resource_type, resource_id, metadata)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -64,10 +68,10 @@ export function log(entry: AuditLogEntry): void {
 
 /**
  * Platform-wide audit query (for super admin).
+ * Cross-tenant by design; admin bypass.
  */
 export async function queryAll(params: Omit<AuditQueryParams, 'tenantId'> & { tenantId?: string }): Promise<PaginatedAuditLog> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const page = params.page || 1;
     const limit = Math.min(params.limit || 50, 200);
     const offset = (page - 1) * limit;
@@ -126,9 +130,11 @@ export async function queryAll(params: Omit<AuditQueryParams, 'tenantId'> & { te
   });
 }
 
+/**
+ * Per-tenant audit query. tenantId is required; RLS gates the read.
+ */
 export async function query(params: AuditQueryParams): Promise<PaginatedAuditLog> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withTenantContext(params.tenantId, async (client) => {
     const page = params.page || 1;
     const limit = Math.min(params.limit || 50, 200);
     const offset = (page - 1) * limit;
