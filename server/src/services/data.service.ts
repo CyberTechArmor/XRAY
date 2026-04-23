@@ -1,4 +1,4 @@
-import { withClient } from '../db/connection';
+import { withTenantContext } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 
 const CADENCE_INTERVALS: Record<string, number> = {
@@ -17,11 +17,7 @@ export async function queryDashboardSource(
   tenantId: string,
   userId: string
 ): Promise<{ data: Record<string, unknown>[]; source: Record<string, unknown> }> {
-  return withClient(async (client) => {
-    // Set tenant context for RLS (parameterized via SELECT to avoid interpolation)
-    await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
-    await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
-
+  return withTenantContext(tenantId, async (client) => {
     // Look up the dashboard source
     const sourceResult = await client.query(
       `SELECT ds.* FROM platform.dashboard_sources ds
