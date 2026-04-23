@@ -594,6 +594,77 @@ export async function makePrivate(
   });
 }
 
+// Rotate the public share token: issue a new random token while keeping
+// the is_public state intact. Security use case — if a shared URL has
+// leaked, the tenant can invalidate the old link without having to
+// revoke + recreate + re-toggle-to-public by hand. Returns the new
+// token so the caller can build a fresh share_url and surface it in
+// the modal. Returns the previous token too so the caller can clear
+// the share cache for both.
+export async function rotatePublic(
+  dashboardId: string,
+  tenantId: string
+): Promise<{ public_token: string; is_public: boolean; previous_token: string | null }> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const scopeRow = await client.query(
+      'SELECT scope FROM platform.dashboards WHERE id = $1',
+      [dashboardId]
+    );
+    if (scopeRow.rows.length === 0) {
+      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+    }
+    const scope: 'tenant' | 'global' = scopeRow.rows[0].scope;
+    const newToken = generateToken(16);
+    if (scope === 'global') {
+      const before = await client.query(
+        `SELECT public_token, is_public FROM platform.dashboard_shares
+          WHERE dashboard_id = $1 AND tenant_id = $2`,
+        [dashboardId, tenantId]
+      );
+      if (before.rows.length === 0) {
+        throw new AppError(404, 'SHARE_LINK_MISSING', 'No share link to rotate for this tenant. Create one first.');
+      }
+      const previousToken = before.rows[0].public_token as string;
+      await client.query(
+        `UPDATE platform.dashboard_shares
+            SET public_token = $1, updated_at = now()
+          WHERE dashboard_id = $2 AND tenant_id = $3`,
+        [newToken, dashboardId, tenantId]
+      );
+      return {
+        public_token: newToken,
+        is_public: !!before.rows[0].is_public,
+        previous_token: previousToken,
+      };
+    }
+    // Tenant-scope: rotate dashboards.public_token in place, keeping
+    // is_public. Fails loudly if no existing token so callers don't
+    // accidentally create a fresh link via rotate (POST /:id/share is
+    // the creation path).
+    const before = await client.query(
+      `SELECT public_token, is_public FROM platform.dashboards
+        WHERE id = $1 AND tenant_id = $2`,
+      [dashboardId, tenantId]
+    );
+    if (before.rows.length === 0 || !before.rows[0].public_token) {
+      throw new AppError(404, 'SHARE_LINK_MISSING', 'No share link to rotate. Create one first.');
+    }
+    const previousToken = before.rows[0].public_token as string;
+    await client.query(
+      `UPDATE platform.dashboards
+          SET public_token = $1, updated_at = now()
+        WHERE id = $2 AND tenant_id = $3`,
+      [newToken, dashboardId, tenantId]
+    );
+    return {
+      public_token: newToken,
+      is_public: !!before.rows[0].is_public,
+      previous_token: previousToken,
+    };
+  });
+}
+
 export async function getPublicDashboard(
   publicToken: string
 ): Promise<Dashboard & { sharing_tenant_id?: string }> {
