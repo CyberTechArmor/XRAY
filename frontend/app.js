@@ -693,8 +693,8 @@
           '});' +
         '};' +
 
-        '$("#btn-ai-clear-key").onclick = function() {' +
-          'if (!confirm("Clear the API key? AI will stop working until a new key is provided.")) return;' +
+        '$("#btn-ai-clear-key").onclick = async function() {' +
+          'if (!(await window.__xrayConfirm("Clear the API key? AI will stop working until a new key is provided.", { danger: true, okLabel: "Clear" }))) return;' +
           'this.disabled = true;' +
           'api.patch("/api/admin/ai/settings/api-key", { api_key: null }).then(function(r) {' +
             '$("#btn-ai-clear-key").disabled = false;' +
@@ -1154,6 +1154,84 @@
     setTimeout(function() { el.remove(); }, 4000);
   }
   window.__xrayToast = toast;
+
+  // ── Alert / Confirm modals ──
+  // In-app replacements for browser alert() / confirm(). Both return
+  // Promises so existing `if (!confirm(...)) return;` call sites
+  // convert to `if (!(await __xrayConfirm(...))) return;` cleanly.
+  // Styling reuses the app's .modal-overlay/.modal rules (app.css:65+).
+  function __xrayOpenDialog(opts) {
+    opts = opts || {};
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.zIndex = '10500'; // above other modals so it's always interactive
+    var modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    var escHtml = function(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    };
+    var titleHtml = opts.title ? '<div class="modal-head"><div class="modal-title">' + escHtml(opts.title) + '</div></div>' : '';
+    var msgHtml = '<div class="modal-body" style="white-space:pre-wrap;line-height:1.5">' + escHtml(opts.message || '') + '</div>';
+    var okClass = 'btn primary' + (opts.danger ? ' danger' : '');
+    var okLabel = escHtml(opts.okLabel || 'OK');
+    var cancelBtn = opts.showCancel
+      ? '<button type="button" class="btn" data-x-cancel>' + escHtml(opts.cancelLabel || 'Cancel') + '</button>'
+      : '';
+    var footHtml = '<div class="modal-foot">' + cancelBtn + '<button type="button" class="' + okClass + '" data-x-ok>' + okLabel + '</button></div>';
+    modal.innerHTML = titleHtml + msgHtml + footHtml;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    return new Promise(function(resolve) {
+      var resolved = false;
+      function close(value) {
+        if (resolved) return;
+        resolved = true;
+        document.removeEventListener('keydown', onKey);
+        try { overlay.remove(); } catch (e) {}
+        resolve(value);
+      }
+      function onKey(e) {
+        if (e.key === 'Escape') { e.preventDefault(); close(opts.showCancel ? false : undefined); }
+        else if (e.key === 'Enter') { e.preventDefault(); close(opts.showCancel ? true : undefined); }
+      }
+      document.addEventListener('keydown', onKey);
+      var okBtn = modal.querySelector('[data-x-ok]');
+      var cancelEl = modal.querySelector('[data-x-cancel]');
+      if (okBtn) okBtn.onclick = function() { close(opts.showCancel ? true : undefined); };
+      if (cancelEl) cancelEl.onclick = function() { close(false); };
+      // Click on the overlay background acts as Cancel on confirm, dismiss on alert.
+      overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) close(opts.showCancel ? false : undefined);
+      });
+      // Give the OK button focus so Enter works immediately.
+      try { if (okBtn) okBtn.focus(); } catch (e) {}
+    });
+  }
+  window.__xrayAlert = function(message, opts) {
+    opts = opts || {};
+    return __xrayOpenDialog({
+      message: message,
+      title: opts.title,
+      okLabel: opts.okLabel,
+      showCancel: false,
+    });
+  };
+  window.__xrayConfirm = function(message, opts) {
+    opts = opts || {};
+    return __xrayOpenDialog({
+      message: message,
+      title: opts.title,
+      okLabel: opts.okLabel,
+      cancelLabel: opts.cancelLabel,
+      danger: !!opts.danger,
+      showCancel: true,
+    });
+  };
 
   // ── Connect modal (OAuth / API Key integration connect flow) ──
   // Shared across views. Opened when a tenant user clicks a dashboard
