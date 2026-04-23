@@ -523,7 +523,8 @@ INSERT INTO platform.email_templates (template_key, subject, body_html, body_tex
   '{{inviter_name}} has invited you to join {{tenant_name}} on XRay BI. Visit: {{link}}. Expires in 7 days.',
   ARRAY['inviter_name', 'tenant_name', 'link'],
   'Sent when a team member is invited'
-);
+)
+ON CONFLICT (template_key) DO NOTHING;
 
 -- RLS Policies: platform admin bypass
 CREATE POLICY platform_admin_bypass ON platform.users USING (current_setting('app.is_platform_admin', true)::boolean = true);

@@ -723,6 +723,22 @@ router.patch('/email-templates/:key', async (req, res, next) => {
   }
 });
 
+// POST /email-templates/:key/reset - replace the template body with
+// the current step-5 default (rebranded HTML). Admin-driven; does
+// not run automatically on upgrade.
+router.post('/email-templates/:key/reset', async (req, res, next) => {
+  try {
+    const result = await adminService.resetEmailTemplate(req.params.key);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /email-templates/:key/test - send test email
 router.post('/email-templates/:key/test', async (req, res, next) => {
   try {

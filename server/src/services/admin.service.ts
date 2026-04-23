@@ -1136,6 +1136,47 @@ export async function updateEmailTemplate(templateKey: string, updates: {
   });
 }
 
+// Reset a template's subject + body to the current step-5 default.
+// Used by the admin Email tab's per-template "Reset to default"
+// action; lets operators pick up the rebranded HTML after an
+// upgrade without overwriting their edits automatically.
+export async function resetEmailTemplate(templateKey: string): Promise<Record<string, unknown>> {
+  const { DEFAULT_TEMPLATES } = await import('./email-templates');
+  const tpl = DEFAULT_TEMPLATES.find((t) => t.key === templateKey);
+  if (!tpl) {
+    throw new AppError(404, 'NOT_DEFAULTED', `No default body ships for template '${templateKey}'`);
+  }
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `UPDATE platform.email_templates
+          SET subject = $1, body_html = $2, body_text = $3, variables = $4,
+              description = $5, updated_at = now()
+        WHERE template_key = $6
+        RETURNING *`,
+      [tpl.subject, tpl.html, tpl.text, tpl.variables, tpl.description, templateKey]
+    );
+    if (result.rows.length === 0) {
+      // Not in the DB yet — insert the default row outright.
+      const inserted = await client.query(
+        `INSERT INTO platform.email_templates
+           (template_key, subject, body_html, body_text, variables, description)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [tpl.key, tpl.subject, tpl.html, tpl.text, tpl.variables, tpl.description]
+      );
+      return inserted.rows[0];
+    }
+    auditService.log({
+      tenantId: '00000000-0000-0000-0000-000000000000',
+      action: 'email_template.reset',
+      resourceType: 'email_template',
+      resourceId: templateKey,
+    });
+    return result.rows[0];
+  });
+}
+
 export async function sendTestEmail(templateKey: string, userId: string) {
   const { sendTemplateEmail } = await import('./email.service');
   const user = await withClient(async (client) => {

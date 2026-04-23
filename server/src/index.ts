@@ -247,6 +247,20 @@ async function start() {
       console.error('[migration 016] failed:', err);
     }
 
+    // Seed any missing default email templates. Admin-edited rows are
+    // preserved via ON CONFLICT DO NOTHING on template_key; upgrades
+    // that introduce new templates (passkey_registered, billing_locked,
+    // etc.) pick them up on first boot without requiring a migration.
+    try {
+      const { seedDefaultTemplates } = await import('./services/email-templates');
+      const result = await seedDefaultTemplates();
+      if (result.inserted > 0) {
+        console.log(`[email-templates] seeded ${result.inserted} new default template(s) (${result.skipped} already present)`);
+      }
+    } catch (err) {
+      console.error('[email-templates] seed failed:', err);
+    }
+
     const server = http.createServer(app);
     initWebSocketServer(server);
     server.listen(config.port, () => {
