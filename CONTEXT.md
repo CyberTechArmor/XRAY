@@ -1547,3 +1547,355 @@ for some steps):
    the revoked screen (no client cache, server 404s the old token).
 4. Click "Revoke Link" on a shared dashboard -> same kick behavior
    on any live viewer.
+
+## Step 5 — Tenant onboarding + Stripe polish (shipped)
+
+The "stranger with a credit card" milestone. Step 5 closes the rough
+edges on the paid-tenant capture path so self-serve signup →
+payment → rendered dashboard works end-to-end without operator
+hand-holding. Six commits; zero SQL migrations; no JWT shape
+changes; no touch to oauth-scheduler or the bridge/pipeline/fan-out
+audience set.
+
+### Commit (i) — Signup + setup error states + onboarding checklist
+
+Three concerns on the first-login path:
+
+**Server** (`auth.service.ts`). `normalizeSlug(name)` exported so
+`initiateSignup`, `completeSignup`, and `firstBootSetup` share one
+slug-derivation. Slug collision is now its own 409 error code
+`SLUG_TAKEN` — two distinct display names that collapse to the
+same slug (e.g. "Acme Corp" vs "Acme, Corp!") return a clear error
+instead of a raw unique-constraint 500. Empty slug (all
+punctuation) returns `INVALID_TENANT_NAME`. `verifyCode` and
+`verifyToken` now branch into four outcomes (INVALID_*,
+MAGIC_LINK_EXPIRED, MAGIC_LINK_USED, MAX_ATTEMPTS) so the UI can
+offer an inline re-request button keyed on the code.
+
+**Frontend** (`app.js`). `checkUrlToken` no longer hangs on a
+verify-token failure — it re-shows the landing modal with a
+"Send a new link" button bound to `/api/auth/magic-link`. Signup /
+verify / setup / login button-disable resets moved into `.finally()`
+so a thrown error inside `.then()` can't permanently brick the
+form. Field focus jumps to the offending input on SLUG_TAKEN /
+TENANT_EXISTS / EMAIL_EXISTS.
+
+**Frontend bundle** (dashboard_list, version 2026-04-23-009-step5i).
+Onboarding checklist rendered in place of the bare "No dashboards
+yet" empty state when (a) the tenant has zero dashboards and (b)
+the viewer is owner or platform admin. Three cards: Connect
+integration (scrolls to the existing My-Integrations strip),
+Configure billing (navigateTo billing), Invite a teammate
+(navigateTo team). Dismiss persists in localStorage keyed on
+tenant id.
+
+**Tests**. New `auth.service.test.ts` with 6 `normalizeSlug` specs
+(casing, run-collapsing, trimming, two-names-one-slug, empty
+input, digit preservation).
+
+### Commit (ii-a) — Tenant billing management page
+
+Rewrote the billing view as a real management surface. Card entry
+stays hosted by Stripe — XRay never sees card numbers.
+
+**Backend** (`stripe.service.ts`, `stripe.routes.ts`):
+- `cancelSubscriptionAtPeriodEnd(tenantId, subId)` —
+  `subscriptions.update(cancel_at_period_end: true)` with a guard
+  that the subscription's `customer` matches the tenant's
+  `stripe_customer_id`. Throws `SUBSCRIPTION_NOT_OWNED` otherwise.
+- `resumeSubscription(tenantId, subId)` — `cancel_at_period_end:
+  false`, same ownership guard.
+- `listSubscribableProducts()` — returns the subscribable-product
+  list for the tenant billing page. (ii-a) sources from
+  `stripe_gate_products`; (ii-b) introduces a dedicated
+  `stripe_billing_page_products` setting.
+- New routes: `GET /subscribable`, `POST /subscription/:id/cancel`,
+  `POST /subscription/:id/resume`, all on `billing.manage` (cancel/
+  resume) or `billing.view` (list).
+
+**Frontend bundle** (billing, version 2026-04-23-010-step5iia):
+- Status badge: Active / Active · cancels on DATE / Past due /
+  Canceled / Inactive / Active · Override.
+- Facts strip: plan name, next billing date (or "Ends on" when
+  cancelling), days left in cycle.
+- "Your subscriptions" card: Cancel-subscription button (danger
+  confirm via `__xrayConfirm`) or Resume button when a scheduled
+  cancellation is in-flight.
+- "Available plans" card: Subscribe / Resubscribe buttons that
+  POST `/api/stripe/checkout` and open the Stripe-hosted URL in a
+  new tab. Button hides for products the tenant is already
+  subscribed to (single-subscription enforcement at the UI layer;
+  server also rejects duplicates).
+- "Paid invoices" card: `status==='paid'` rows from `/status`
+  invoices with Download-PDF links.
+- Secondary "Manage payment methods" button: on-demand billing
+  portal session (the previous view hard-coded a static URL).
+- Reloads on `visibilitychange` return (post-checkout) and on
+  `billing:updated` via `window.__xrayBillingChanged`.
+
+### Commit (ii-b) — Admin Stripe product toggles
+
+Two new per-product toggles next to the existing Gate toggle, each
+persisted as its own `platform_settings` key following the
+`stripe_gate_products` JSON-array pattern — no schema change.
+
+**Backend**:
+- `GET /admin/products` returns `isGateProduct`,
+  `isBillingPageProduct`, `isStatusRowProduct` per row. Reads the
+  three settings in parallel.
+- `POST /admin/product-toggles` accepts any subset of `{ gate,
+  billingPage, statusRow }` arrays, persists them, and broadcasts
+  `billing:updated { togglesChanged: true }` to every tenant so
+  their billing page re-fetches `/subscribable` live.
+- `listSubscribableProducts()` now prefers
+  `stripe_billing_page_products`, falls back to
+  `stripe_gate_products` when the new setting is empty so existing
+  installs keep working with zero admin action.
+- Legacy `POST /admin/gate-products` still exists — admin_stripe
+  view falls back to it on failure.
+
+**Frontend bundle** (admin_stripe, version 2026-04-23-011-step5iib):
+- "Gate Products" card renamed to "Products"; 3-column toggle grid
+  per product (Gate / Billing page / Tenant row) with On/Off
+  pills.
+
+### Commit (ii-c) — Multi-subscriber billing fanout + paywall WS close + tests
+
+Fixes a clobbering bug and tightens the existing paywall. Gate wire
+itself unchanged.
+
+**Frontend** (`app.js`):
+- `window.__xrayOnBilling(fn)` subscribe API backed by
+  `__xrayBillingSubscribers` array. The WS `billing:updated` path
+  fans out to every subscriber; legacy `__xrayBillingChanged = fn`
+  still fires for older bundles.
+- `togglesChanged` added to the silent-refresh branch alongside
+  `gateChanged` so (ii-b)'s admin toggle broadcasts don't toast.
+
+**Frontend bundle** (dashboard_list + billing, version
+2026-04-23-012-step5iic):
+- `dashboard_list`: paywall-banner handler extracted to a named
+  `__billingSyncFromWs` that also closes `#sub-required-modal`
+  when hasVision flips true — fixes "paid in another tab, modal
+  still blocking." Registers via `__xrayOnBilling` with
+  MutationObserver unmount cleanup.
+- `billing`: same subscribe + cleanup pattern so the billing view
+  refreshes in parallel with dashboard_list.
+
+**Backend**:
+- Extracted `resolveSubscribableProductIds(billingRaw, gateRaw)` —
+  pure function, no DB or Stripe calls. Tolerates malformed JSON
+  and non-array values (treated as empty).
+
+**Tests**. New `stripe.service.test.ts` with 8 resolver specs
+covering prefer-billing, fall-back-to-gate, both-empty,
+malformed-billing, malformed-both, non-string-entries,
+non-array-value. **127/127 total** (was 119 after (i)).
+
+### Commit (iii) — Admin tenants polish + grant-management UI
+
+Four items on the admin surface, no migration:
+
+**Backend** (`admin.service.ts`):
+- `listAllTenants` returns extra fields: `last_render_at`
+  (`MAX(audit_log.created_at)` where `action='dashboard.opened'`,
+  per tenant — no new audit action), `billing_override` (bool
+  derived from `platform_settings.billing.override.<tenant_id>`),
+  `subscription_status_simple` ('active' | 'inactive' | 'override'
+  per the operator's "real-time gate = two meaningful states"
+  rule).
+- `inviteTenantOwner(...)` wraps `authService.initiateSignup` so
+  completeSignup creates the tenant atomically when the recipient
+  clicks the magic link. Audit-logged as `tenant.owner_invited`.
+  Email uses the existing `signup_verification` template for now;
+  (v) provides the branded replacement.
+- Custom-Globals grant helpers: `listDashboardGrants`,
+  `grantDashboardToTenant` (guards `scope='global' AND integration
+  IS NULL` — throws `NOT_CUSTOM_GLOBAL` on anything else),
+  `revokeDashboardGrant`. All audit as
+  `dashboard.grant_added` / `dashboard.grant_removed`.
+
+**Routes** (`admin.routes.ts`):
+- `POST /invite-tenant-owner`
+- `GET/POST /dashboards/:id/grants`
+- `DELETE /dashboards/:id/grants/:tenantId`
+
+**Frontend bundle** (admin_tenants + admin_dashboards, version
+2026-04-23-013-step5iii):
+- `admin_tenants`: new "Subscription" column (renders only when
+  the admin has configured `stripe_status_tenant_row_products`) +
+  "Last render" column. New "Invite tenant owner" button with a
+  modal (email + optional name + proposed org name). Cell values
+  escHtml'd (prior code rendered tenant.name / slug / owner_email
+  unescaped — quietly fixed).
+- `admin_dashboards`: new "Grants" column. Custom Globals show a
+  "Manage" button that opens a modal with a tenant picker (Add)
+  and a per-grant Remove button (danger confirm). Tenant list
+  cached for session.
+
+**Deferred-from-(iii) items**:
+- Failure-count column on admin tenants row — no render-failure
+  audit action exists today. Follow-up requires threading
+  render-path failures into `audit_log`.
+- Branded `tenant_invitation` email template — ships in (v) as
+  a default in `email-templates.ts` and available via the Reset
+  action.
+
+### Commit (iv) — install.sh fails loud on unhealthy server
+
+Scoped down from the kickoff: operator vetoed integration seeding
+and first-login magic-link bootstrap (the first self-signup is
+already the platform admin — no bootstrap token needed). Only the
+health-check tighten shipped.
+
+**install.sh**:
+- On `/api/health` timeout, exit `1` with a red error line, then
+  dump the last 30 lines of `docker compose logs server` inline
+  so the operator sees the real failure without a follow-up
+  command.
+- New `err()` helper alongside the existing `warn/ok/info/fail`
+  set for style consistency.
+
+### Commit (v) — Email templates (boot-time seed + rebrand + Reset)
+
+**`server/src/services/email-templates.ts`** (new). `DEFAULT_TEMPLATES`
+array with six entries: `signup_verification`, `login_code`,
+`account_recovery`, `invitation`, `passkey_registered` (new
+security notification on new passkey registration),
+`billing_locked` (new subscription-lapsed notice). Consistent dark
+theme HTML wrapper (brand accent color, rounded card layout,
+signing code front-and-center) + plaintext twin per template.
+`seedDefaultTemplates()` upserts missing keys on server boot
+using `ON CONFLICT DO NOTHING` — admin-edited templates are never
+clobbered, and a future XRay release introducing a new key seeds
+automatically without a migration.
+
+**`index.ts`** calls `seedDefaultTemplates()` right before
+`server.listen`. One-line log on new inserts.
+
+**`init.sql`** — adds `ON CONFLICT (template_key) DO NOTHING` to
+the existing INSERT so a re-run doesn't blow up on a unique
+constraint. Legacy template content stays as-is for fresh
+installs; the boot-time seed becomes the single source of truth
+after first boot.
+
+**Admin reset action**:
+- `POST /api/admin/email-templates/:key/reset` —
+  `resetEmailTemplate(key)` overwrites a template's subject / HTML
+  / text / variables / description with the current default. 404
+  `NOT_DEFAULTED` for keys without a default. Audit-logged.
+- `admin_email` view (version 2026-04-23-014-step5v): "Reset to
+  default" button in the template editor footer (danger confirm).
+  On success, editor fields rewrite with the new content and the
+  preview iframe re-renders.
+
+Rationale for opt-in (not force-update) rebrand: forcing new HTML
+would silently discard operator customizations. Explicit Reset
+keeps the new branding available without hidden side effects.
+
+### Commit (vi) — Operator + tenant-owner docs
+
+Two new docs at the repo root:
+
+- `docs/operator.md` — OAuth app registration (HCP, QuickBooks,
+  generic), Stripe setup (API keys, webhook events, restricted-key
+  scopes, the three per-product toggles, billing overrides),
+  fan-out shared-secret flow, email-templates editor and Reset
+  action, troubleshooting for the common cases, upgrade path.
+- `docs/tenant-owner.md` — first-login walkthrough ending at the
+  (i) onboarding checklist; invite teammates + permission cheat
+  sheet; connecting data sources; billing page from (ii-a);
+  dashboards and Custom Globals grants; three-state share button
+  from 4c; troubleshooting.
+
+No code changes in (vi).
+
+### Acceptance
+
+- `npm test` 127/127 green (113 baseline + 6 auth.service + 8
+  stripe.service).
+- `tsc --noEmit` clean on head.
+- Bundle JS sanity-checked with `node --check` on every edit.
+- No SQL migrations added. Additive boot-time seeds in two paths:
+  `seedDefaultTemplates` (idempotent, honors admin edits), and
+  the existing product-toggle settings (JSON arrays in
+  `platform_settings`).
+
+### Env changes
+
+None. No new env vars, no docker-compose changes, no Dockerfile
+changes, no webhook event additions.
+
+### Deploy order on the VPS
+
+Standard `update.sh`:
+- Step 2 copies `frontend/app.js`, `frontend/bundles/general.json`,
+  `docs/operator.md`, `docs/tenant-owner.md`.
+- Step 4 re-runs `migrations/*.sql` (all idempotent; no new
+  migrations in 5).
+- Step 5 rebuilds the server container. Boot seeds
+  `passkey_registered` + `billing_locked` templates automatically.
+
+### What didn't ship (deferred to step 6 or post-step-6)
+
+- **Platform DB hardening** — RLS-is-decorative, `withClient` →
+  `withTenantContext`, plaintext-read fallback retirement. All
+  step 6.
+- **Pipeline DB Model D / J** — still post-step-6.
+- **Legacy `dashboards.view_html/css/js` column retirement** —
+  post-step cleanup.
+- **Failure-count column** on admin tenants — needs a render-failure
+  audit action first.
+- **Integration `needs_reconnect` WS broadcast** (step-4c
+  follow-up) — touches `oauth-scheduler.ts`, which is fenced.
+- **Per-tenant RS256 keys** — out of scope for bridge track.
+- **VAPID / push-notification polish** — never in bridge scope.
+
+### Verify on VPS after deploy
+
+```sql
+-- New default templates seeded on boot:
+SELECT template_key, updated_at FROM platform.email_templates
+ WHERE template_key IN ('passkey_registered', 'billing_locked')
+ ORDER BY template_key;
+
+-- Tenant invite audit trail:
+SELECT created_at, metadata->>'email', metadata->>'proposed_tenant_name'
+  FROM platform.audit_log WHERE action = 'tenant.owner_invited'
+ ORDER BY created_at DESC LIMIT 10;
+
+-- Custom Global grants:
+SELECT g.dashboard_id, g.tenant_id, d.name AS dashboard_name,
+       t.name AS tenant_name, g.created_at
+  FROM platform.dashboard_tenant_grants g
+  JOIN platform.dashboards d ON d.id = g.dashboard_id
+  JOIN platform.tenants t ON t.id = g.tenant_id
+ ORDER BY g.created_at DESC;
+
+-- Per-product toggle settings:
+SELECT key, value FROM platform.platform_settings
+ WHERE key IN ('stripe_gate_products',
+               'stripe_billing_page_products',
+               'stripe_status_tenant_row_products');
+```
+
+Browser-side smoke test:
+
+1. Open `/`, click Start → enter email → magic link arrives
+   (rebranded once admin clicks Reset on `signup_verification`).
+2. Verify → tenant setup form → empty dashboard list renders the
+   onboarding checklist with three cards.
+3. Click "Configure billing" → Billing page shows Subscribe button
+   for the gate product → click → Stripe checkout in new tab →
+   complete → return to XRay → paywall drops within a second
+   (WebSocket unlock).
+4. Click "Cancel subscription" → confirm → Cancel button flips to
+   "Resume subscription"; status badge reads "Active · cancels on
+   DATE". Click Resume → flips back.
+5. As platform admin, open Admin → Tenants. The new tenant shows
+   "Active" in the Subscription column (once the admin toggles
+   "Tenant row" on the primary product) and a timestamp in "Last
+   render" after the tenant opens a dashboard.
+6. Admin → Dashboards → any Custom Global → "Grants" column →
+   Manage → add the new tenant → the tenant's dashboard list
+   surfaces the Global within a WebSocket tick.
