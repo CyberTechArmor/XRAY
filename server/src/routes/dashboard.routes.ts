@@ -605,21 +605,31 @@ router.delete('/:id/access/:uid', authenticateJWT, requirePermission('dashboards
   }
 });
 
-// Helper: resolve the tenant_id for a dashboard (platform admin can access any tenant)
+// Helper: resolve the tenant_id for a dashboard (platform admin can access any tenant).
+// For Global dashboards (tenant_id IS NULL), the caller's own tenant is
+// returned — Globals are shared PER tenant, so share / revoke / etc.
+// operations bind to the acting tenant's row in dashboard_shares.
 async function resolveDashboardTenant(dashboardId: string, user: any): Promise<string> {
   if (!user.is_platform_admin) return user.tid;
   const { withClient } = await import('../db/connection');
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
-      'SELECT tenant_id FROM platform.dashboards WHERE id = $1',
+      'SELECT tenant_id, scope FROM platform.dashboards WHERE id = $1',
       [dashboardId]
     );
     if (result.rows.length === 0) {
       const { AppError } = await import('../middleware/error-handler');
       throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
     }
-    return result.rows[0].tenant_id;
+    const row = result.rows[0];
+    if (row.scope === 'global') {
+      // Platform admin sharing a Global → share as their OWN tenant,
+      // matching how a tenant user would. Falls back to dashboard's
+      // tenant_id (which is NULL for Globals — safe guard).
+      return user.tid || row.tenant_id;
+    }
+    return row.tenant_id;
   });
 }
 
@@ -630,7 +640,7 @@ router.post('/:id/share', authenticateJWT, async (req, res, next) => {
       return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can share dashboards' } });
     }
     const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
-    const result = await dashboardService.makePublic(req.params.id, tenantId);
+    const result = await dashboardService.makePublic(req.params.id, tenantId, req.user!.sub);
     const shareDomain = (await getSetting('platform.share_domain')) || (await getSetting('platform.domain')) || config.webauthn.origin;
     const shareUrl = `${shareDomain.replace(/\/+$/, '')}/share/${result.public_token}`;
 
@@ -661,13 +671,30 @@ router.patch('/:id/share', authenticateJWT, async (req, res, next) => {
       return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can manage sharing' } });
     }
     const { is_public } = req.body;
+    const tenantIdForShare = await resolveDashboardTenant(req.params.id, req.user!);
     const { withClient } = await import('../db/connection');
     await withClient(async (client) => {
       await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-      await client.query(
-        'UPDATE platform.dashboards SET is_public = $1, updated_at = now() WHERE id = $2',
-        [!!is_public, req.params.id]
+      // Branch on scope: Globals carry is_public on dashboard_shares
+      // (per-tenant); Tenant rows keep is_public on dashboards itself.
+      const scopeRow = await client.query(
+        'SELECT scope FROM platform.dashboards WHERE id = $1',
+        [req.params.id]
       );
+      const scope: 'tenant' | 'global' = scopeRow.rows[0]?.scope || 'tenant';
+      if (scope === 'global') {
+        await client.query(
+          `UPDATE platform.dashboard_shares
+              SET is_public = $1, updated_at = now()
+            WHERE dashboard_id = $2 AND tenant_id = $3`,
+          [!!is_public, req.params.id, tenantIdForShare]
+        );
+      } else {
+        await client.query(
+          'UPDATE platform.dashboards SET is_public = $1, updated_at = now() WHERE id = $2',
+          [!!is_public, req.params.id]
+        );
+      }
     });
     // Clear share page cache so toggling takes effect immediately
     try { const { clearShareCache } = await import('./share.routes'); clearShareCache(); } catch {}
