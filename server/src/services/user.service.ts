@@ -1,15 +1,9 @@
-import { withClient, PoolClient } from '../db/connection';
+import { withAdminClient, withTenantContext } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import * as webauthn from '../lib/webauthn';
 
-/** Bypass RLS — these service functions are already guarded by JWT + RBAC middleware */
-async function bypassRLS(client: PoolClient) {
-  await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-}
-
 export async function getUserTenants(userId: string) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     // Get current user's email
     const userResult = await client.query('SELECT email FROM platform.users WHERE id = $1', [userId]);
     if (userResult.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
@@ -36,8 +30,7 @@ export async function getUserTenants(userId: string) {
 }
 
 export async function getProfile(userId: string) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
 
     // Check if new permission columns exist
     const colCheck = await client.query(
@@ -80,8 +73,7 @@ export async function getProfile(userId: string) {
 }
 
 export async function updateProfile(userId: string, updates: { name?: string }) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     if (!updates.name) throw new AppError(400, 'NO_UPDATES', 'No fields to update');
     const result = await client.query(
       `UPDATE platform.users SET name = $1, updated_at = now() WHERE id = $2 RETURNING id, name, email`,
@@ -93,8 +85,7 @@ export async function updateProfile(userId: string, updates: { name?: string }) 
 }
 
 export async function listPasskeys(userId: string) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id, device_name, backed_up, last_used_at, created_at
        FROM platform.user_passkeys WHERE user_id = $1 ORDER BY created_at DESC`,
@@ -105,8 +96,7 @@ export async function listPasskeys(userId: string) {
 }
 
 export async function registerPasskey(userId: string) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const userResult = await client.query(
       'SELECT id, email, name, tenant_id FROM platform.users WHERE id = $1', [userId]
     );
@@ -148,8 +138,7 @@ export async function registerPasskey(userId: string) {
 }
 
 export async function verifyPasskeyRegistration(userId: string, body: unknown) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     // Retrieve the pending challenge for this user
     const challengeResult = await client.query(
       `SELECT id, device_info FROM platform.user_sessions
@@ -204,8 +193,7 @@ export async function verifyPasskeyRegistration(userId: string, body: unknown) {
 }
 
 export async function revokePasskey(userId: string, passkeyId: string) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'DELETE FROM platform.user_passkeys WHERE id = $1 AND user_id = $2 RETURNING id',
       [passkeyId, userId]
@@ -215,8 +203,7 @@ export async function revokePasskey(userId: string, passkeyId: string) {
 }
 
 export async function listSessions(userId: string) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id, device_info, last_active_at, created_at, expires_at
        FROM platform.user_sessions WHERE user_id = $1 ORDER BY last_active_at DESC`,
@@ -227,8 +214,7 @@ export async function listSessions(userId: string) {
 }
 
 export async function revokeSession(userId: string, sessionId: string) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'DELETE FROM platform.user_sessions WHERE id = $1 AND user_id = $2 RETURNING id',
       [sessionId, userId]
@@ -238,8 +224,7 @@ export async function revokeSession(userId: string, sessionId: string) {
 }
 
 export async function listUsers(tenantId: string, query: { page: number; limit: number }) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withTenantContext(tenantId, async (client) => {
     const offset = (query.page - 1) * query.limit;
 
     // Check if new columns exist via information_schema (never fails)
@@ -271,8 +256,7 @@ export async function updateUser(
   userId: string,
   updates: { name?: string; roleId?: string; status?: string; has_admin?: boolean; has_billing?: boolean; has_replay?: boolean }
 ) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withTenantContext(tenantId, async (client) => {
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -300,8 +284,7 @@ export async function updateUser(
 // ── User Settings (stored in preferences JSONB column) ──
 
 export async function getUserSettings(userId: string): Promise<Record<string, unknown>> {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     // Ensure preferences column exists
     await client.query(`
       DO $$ BEGIN
@@ -316,8 +299,7 @@ export async function getUserSettings(userId: string): Promise<Record<string, un
 }
 
 export async function updateUserSettings(userId: string, settings: Record<string, unknown>): Promise<Record<string, unknown>> {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     // Ensure preferences column exists
     await client.query(`
       DO $$ BEGIN
@@ -335,8 +317,7 @@ export async function updateUserSettings(userId: string, settings: Record<string
 }
 
 export async function deleteUser(tenantId: string, userId: string): Promise<void> {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     // Check user exists and belongs to tenant
     const userCheck = await client.query(
       'SELECT id, is_owner FROM platform.users WHERE id = $1 AND tenant_id = $2',
