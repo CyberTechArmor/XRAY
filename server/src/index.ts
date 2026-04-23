@@ -33,6 +33,7 @@ import replayRoutes from './routes/replay.routes';
 import aiRoutes from './routes/ai.routes';
 import adminAiRoutes from './routes/admin.ai.routes';
 import oauthRoutes from './routes/oauth.routes';
+import integrationRoutes from './routes/integration.routes';
 import { finalizeStaleActiveSessions } from './services/replay.service';
 import { startScheduler as startOauthScheduler } from './lib/oauth-scheduler';
 import { warnIfUnconfigured as warnIfPipelineJwtUnconfigured } from './lib/pipeline-jwt';
@@ -106,6 +107,7 @@ app.use('/api/v1/replay', replayRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/admin/ai', adminAiRoutes);
 app.use('/api/oauth', oauthRoutes);
+app.use('/api/integrations', integrationRoutes);
 if (uploadRoutes) app.use('/api/uploads', uploadRoutes);
 
 // Serve frontend static files (fallback when nginx is not in front)

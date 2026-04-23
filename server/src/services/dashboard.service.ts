@@ -110,12 +110,40 @@ export async function listDashboards(
      LEFT JOIN platform.connections c ON c.id = ds.connection_id
      WHERE ds.dashboard_id = d.id) AS connectors`;
 
-    // Platform admin: see ALL dashboards across all tenants
+    // Step 4b: Global dashboards. Non-admin users see a Global iff
+    // their tenant has either (a) an active connection to the
+    // dashboard's integration, or (b) a grant row for Custom Globals.
+    // Platform admins see every Global unconditionally.
+    //
+    // "Eligible global" predicate, reused across both branches:
+    const globalEligibleWhere = `
+      d.scope = 'global' AND d.status = 'active' AND (
+        -- Integration-connected Globals: tenant has an active connection
+        EXISTS (
+          SELECT 1 FROM platform.integrations i2
+           JOIN platform.connections c2
+             ON c2.integration_id = i2.id
+            AND c2.tenant_id = $1
+            AND c2.status = 'active'
+           WHERE i2.slug = d.integration
+        )
+        -- Custom Globals (no integration): opt-in via grant row
+        OR (
+          (d.integration IS NULL OR d.integration = '')
+          AND EXISTS (
+            SELECT 1 FROM platform.dashboard_tenant_grants g
+             WHERE g.dashboard_id = d.id AND g.tenant_id = $1
+          )
+        )
+      )`;
+
+    // Platform admin: see ALL dashboards across all tenants, including
+    // every Global (regardless of rendering-tenant eligibility).
     if (isPlatformAdmin) {
       const result = await client.query(
         `SELECT d.*, t.name as tenant_name, ${viewCountSub}, ${connectorsSub}
          FROM platform.dashboards d
-         JOIN platform.tenants t ON t.id = d.tenant_id
+         LEFT JOIN platform.tenants t ON t.id = d.tenant_id
          ORDER BY d.updated_at DESC`
       );
       return result.rows.map(decryptDashboardRow);
@@ -127,20 +155,27 @@ export async function listDashboards(
       const result = await client.query(
         `SELECT d.*, ${viewCountSub}, ${connectorsSub}
          FROM platform.dashboards d
-         WHERE d.tenant_id = $1
+         WHERE (d.scope = 'tenant' AND d.tenant_id = $1)
+            OR (${globalEligibleWhere})
          ORDER BY d.updated_at DESC`,
         [tenantId]
       );
       return result.rows.map(decryptDashboardRow);
     }
 
-    // Regular users: only dashboards they have explicit access to
+    // Regular users: only dashboards they have explicit access to,
+    // plus eligible Globals (eligibility is a tenant property, so a
+    // manage grant isn't required).
     const result = await client.query(
       `SELECT d.*, ${viewCountSub}, ${connectorsSub}
        FROM platform.dashboards d
-       JOIN platform.dashboard_access da ON da.dashboard_id = d.id
-       WHERE d.tenant_id = $1 AND da.user_id = $2
-         AND d.status IN ('active', 'disabled')
+       LEFT JOIN platform.dashboard_access da
+         ON da.dashboard_id = d.id AND da.user_id = $2
+       WHERE d.status IN ('active', 'disabled')
+         AND (
+           (d.scope = 'tenant' AND d.tenant_id = $1 AND da.user_id IS NOT NULL)
+           OR (${globalEligibleWhere})
+         )
        ORDER BY d.updated_at DESC`,
       [tenantId, userId]
     );
@@ -466,8 +501,12 @@ export async function getPublicDashboard(
     // Share link works as long as the token exists (regardless of is_public flag)
     // is_public only controls whether non-admin users can see/copy the link in the app
     const result = await client.query(
+      // scope='tenant' filter is belt-and-suspenders — migration 025
+      // already CHECKs that Global rows carry public_token=NULL + is_public=false,
+      // so they can't match a share token in practice. Keeping the filter
+      // explicit here means any future CHECK relaxation stays gated.
       `SELECT * FROM platform.dashboards
-       WHERE public_token = $1 AND status = 'active'`,
+       WHERE public_token = $1 AND status = 'active' AND scope = 'tenant'`,
       [publicToken]
     );
     if (result.rows.length === 0) {

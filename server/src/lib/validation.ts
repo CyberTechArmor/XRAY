@@ -64,7 +64,9 @@ export const roleUpdateSchema = z.object({
 });
 
 export const dashboardCreateSchema = z.object({
-  tenantId: uuidSchema,
+  // Nullable: Global dashboards (scope='global') carry tenant_id=null.
+  // admin.service.createDashboard validates scope/tenant consistency.
+  tenantId: uuidSchema.nullable().optional(),
   name: nameSchema,
   description: z.string().max(1000).optional(),
   status: z.enum(['draft', 'active', 'archived', 'disabled']).optional(),
@@ -85,6 +87,10 @@ export const dashboardCreateSchema = z.object({
   // Per-dashboard HS256 signing secret. Required whenever integration
   // is non-empty. Encrypted at rest under the `enc:v1:` envelope.
   bridgeSecret: z.string().min(16).max(2000).optional().nullable(),
+  // Global vs Tenant scope (migration 025). Default 'tenant' preserves
+  // every existing create-dashboard caller. 'global' is admin-only and
+  // requires tenant_id = null (enforced at the service layer).
+  scope: z.enum(['tenant', 'global']).optional(),
 });
 
 export const dashboardUpdateSchema = z.object({
@@ -108,6 +114,8 @@ export const dashboardUpdateSchema = z.object({
   // Per-dashboard HS256 signing secret. Empty string clears it (only
   // meaningful when integration is also being cleared in the same call).
   bridgeSecret: z.string().max(2000).optional().nullable(),
+  // Scope mutation post-create is out of scope for 4b — would require
+  // cache + grant + connection reconciliation. Not exposed on update.
 });
 
 export const connectionTemplateCreateSchema = z.object({

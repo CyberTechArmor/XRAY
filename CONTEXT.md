@@ -935,6 +935,317 @@ SELECT id, oauth_access_token_expires_at, oauth_last_refreshed_at,
 
 ---
 
-## Step 4b — Next up: Global Dashboards redesign
+## Step 4b — Global Dashboards + fan-out + dropdown fix (shipped)
 
-See `.claude/step-4b-kickoff.md` for details.
+Three concerns, one branch, three commits.
+
+### Commit (i) — Builder Integration dropdown: extract helper, fix edit-load
+
+Step-4 loose end per the step-4b kickoff. Step 4 had shipped the
+select-populate + Connect-button wiring already, so the kickoff's "the
+select is unwired" claim was outdated. Two real gaps remained:
+
+- Populate logic was inlined in the bundle with no test coverage.
+  Extracted into `window.__xrayBuildIntegrationOptions` in
+  `frontend/app.js` — one tested place that owns "my-integrations
+  rows + current value → ordered option list with unknown-slug
+  preservation." Bundle now calls it; falls back to a Custom-only
+  sentinel if the helper is absent (pre-app.js-load ordering).
+- Edit-loader bug: opening an existing dashboard set
+  `sel.value = d.integration` programmatically, which doesn't fire
+  `onchange`, so the pill + Connect button stayed hidden until the
+  admin changed and reverted the dropdown. Fix: explicit
+  `updateBuilderIntegrationStatus()` after every programmatic set.
+- HTML rendering of option text hardened against `& < > "` in display
+  names / slugs (previously concatenated raw).
+
+Spec: `server/src/lib/builder-integrations.test.ts` — 8 behaviors,
+mirrored locally; tests run in node without jsdom.
+
+### Commit (ii) — Fan-out endpoint
+
+**Operator statement**: *n8n owns the sync cron; XRay only dispatches
+when called.* XRay stays a single-box deploy with a 5-min OAuth-token
+refresh scheduler; data-sync scheduling is a separate concern that
+n8n handles. `oauth-scheduler.ts` and fan-out coexist.
+
+**Route**: `POST /api/integrations/:slug/fan-out`. Mounted on
+`/api/integrations` (separate from tenant JWT routes). Auth is a
+per-integration shared secret in `Authorization: Bearer <secret>`,
+constant-time compared against `integrations.fan_out_secret`. 401 on
+any mismatch — no slug enumeration.
+
+**Behavior**: loads the integration, then every connected tenant,
+then per-tenant resolves the live access token via the step-4
+resolver, then POSTs once per tenant to the caller-supplied
+`target_url` with a signed envelope JWT
+(`X-XRay-FanOut-Token`, `aud='n8n-fan-out'`, 60s TTL) and an
+`Idempotency-Key: sha256(fan_out_id || tenant_id)` header. Bounded
+parallelism from `integrations.fan_out_parallelism` (1–50, default
+5). Per-target retry: 3 attempts, backoff `[0s, 2s, 4s]`. Returns a
+synchronous summary once the dispatch loop completes:
+`{fan_out_id, dispatched, skipped_needs_reconnect, skipped_inactive,
+skipped_integration_missing, replay}`.
+
+**Idempotency**: caller-supplied `idempotency_key` on the request
+body dedupes at the run level — a matching prior `fan_out_runs` row
+returns its summary with `replay: true` instead of dispatching again.
+
+**Schema (additive, pre-rebuild)**:
+
+- `migrations/023_integrations_fan_out_config.sql` — adds
+  `platform.integrations.fan_out_secret` (enc:v1: trigger extended
+  from migration 021) and `fan_out_parallelism INTEGER DEFAULT 5`.
+  One trigger function, two `BEFORE INSERT OR UPDATE OF` triggers
+  scoped per column (so writes to one column don't re-validate the
+  other).
+- `migrations/024_fan_out_runs.sql` — `platform.fan_out_runs` (one
+  row per dispatch) and `platform.fan_out_deliveries` (one row per
+  tenant per run, status ∈ pending/delivered/failed/skipped). Unique
+  index on `(integration_id, idempotency_key) WHERE idempotency_key
+  IS NOT NULL` for run-level replay. Unique `idempotency_key` on
+  deliveries for per-(run, tenant) dedupe. FK with `ON DELETE
+  CASCADE` on both.
+
+**Server libs**:
+
+- `server/src/lib/fan-out-jwt.ts` — `mintFanOutJwt()`. Distinct
+  audience `n8n-fan-out` from bridge (`n8n`) and pipeline
+  (`xray-pipeline`). Same per-integration secret signs the envelope
+  AND authenticates the inbound call — one credential per integration
+  for n8n to configure (matches step-2's per-credential story).
+- `server/src/services/fan-out.service.ts` — `dispatchFanOut`,
+  `getFanOutSecret`, `compareSecrets`, `deliverEnvelope`,
+  `listLastFanOutByIntegration`. The retry/deliver helper is exported
+  + has test seams (`__setFetcherForTest`, `__setSleeperForTest`) so
+  specs can assert backoff + headers without network.
+
+**Admin surface**: `GET /api/admin/integrations` now returns
+`meta.fan_out_last` keyed by integration id. Admin Integrations modal
+gains a Fan-out section — masked secret + Generate (client-side
+`crypto.getRandomValues`, 48 bytes base64url, shown once) + Show/Hide
++ Secured pill on edit; parallelism input (1–50); read-only URL
+banner showing the endpoint n8n should call. Table gains a "Last
+fan-out" column (`N dispatched, M skipped — <timestamp>` or `—`).
+
+Tests: `fan-out-jwt.test.ts` (11) + `fan-out.service.test.ts` (13).
+Covers claim shape + audience separation + constant-time compare edge
+cases + idempotency-key determinism + retry sequencing + fetcher/
+sleeper seam.
+
+### Commit (iii) — Global dashboards
+
+**Operator definition**: *"Global dashboard means it is replicated
+for all users but utilizes each individual tenant's oauth/custom
+auth."* Practically: one row in `platform.dashboards` renders N times
+— once per tenant with an active connection to the dashboard's
+integration (or an explicit grant for Custom Globals). Each render
+binds the bridge+pipeline JWTs to the **rendering tenant**, not the
+author.
+
+**Schema (additive, pre-rebuild)**:
+
+- `migrations/025_dashboards_global_scope.sql`:
+  - `scope TEXT NOT NULL DEFAULT 'tenant' CHECK ('tenant'|'global')`.
+  - `tenant_id` loses `NOT NULL`.
+  - Cross-column CHECK: tenant → `tenant_id NOT NULL`; global →
+    `tenant_id NULL`.
+  - Belt-and-suspenders CHECK: Globals are never public (no
+    `is_public=true`, no `public_token`).
+- `migrations/026_dashboard_render_cache.sql` —
+  `platform.dashboard_render_cache (dashboard_id, tenant_id,
+  view_html, view_css, view_js, rendered_at)` PK `(dashboard_id,
+  tenant_id)`. Fixes the racy clobber Globals would cause on the
+  legacy `dashboards.view_html` columns.
+- `migrations/027_dashboard_tenant_grants.sql` —
+  `platform.dashboard_tenant_grants (dashboard_id, tenant_id,
+  granted_by, created_at)`. Opt-in access for Custom Globals only;
+  integration-connected Globals use the active connection as the
+  gate.
+
+**Render path (dashboard.routes.ts)**:
+
+- SELECT accepts both scopes. Non-admin users see
+  `scope='tenant' AND tenant_id = $user_tid` OR any
+  `scope='global'` row. Permission gate runs post-SELECT:
+  - integration-set Globals: `resolveAccessTokenForRender` returns
+    `ready` OR the route returns 409 `OAUTH_NOT_CONNECTED` (same
+    flow as step 4).
+  - Custom Globals: require a grant row or 403 `GLOBAL_NOT_GRANTED`.
+- `renderingTenantId = COALESCE(d.tenant_id, req.user.tid)` — Tenant
+  rows render under the dashboard-owning tenant; Globals render
+  under the requester's tenant. Bridge JWT `sub`/`tenant_id` +
+  pipeline JWT `sub`/`tenant_id` + audit `tenant_id` all bind to
+  `renderingTenantId`. Audit `metadata.scope` and
+  `metadata.dashboard_tenant_id` preserve the row's authored tenant
+  for forensic triangulation.
+- `actingVia`: Globals always `authed_render` (nothing is being
+  impersonated — a Global isn't owned). `admin_impersonation` still
+  fires for Tenant rows viewed by an admin outside the owning tenant.
+- Cache writes: `INSERT...ON CONFLICT` into `dashboard_render_cache`
+  keyed on `(dashboard.id, renderingTenantId)` for both scopes.
+  Tenant-scoped rows additionally dual-write the legacy
+  `view_html/css/js` columns for non-render readers (embed,
+  portability, preview fallback). Globals don't dual-write — no
+  single-tenant context for those columns.
+- Fallback read: prefer cache table by `(dashboard, rendering
+  tenant)`; for Tenant rows fall back to legacy columns when the
+  cache row is empty.
+
+**Public share path**: `getPublicDashboard` SELECT adds
+`AND scope='tenant'` (belt-and-suspenders — Globals can't have a
+public_token per the CHECK).
+
+**Admin preview (admin.service.fetchDashboardContent)**: new
+`options.targetTenantId`. Required when previewing a Global; ignored
+for Tenant rows. 400 `RENDERING_TENANT_REQUIRED` when absent on a
+Global. Route reads from `req.body.target_tenant_id` or the query
+param.
+
+**Admin create (admin.service.createDashboard)**: accepts `scope` +
+`ctx.isPlatformAdmin`. Admin-only for `scope='global'`. Tenant rows
+without `tenantId` error 400 `TENANT_REQUIRED`. Global rows insert
+with `tenant_id=NULL` (the CHECK backs it). `updateDashboard`
+intentionally does NOT expose scope mutation — post-create scope
+changes would need cache + grant + connection reconciliation (out of
+scope for 4b).
+
+**Validation**: `dashboardCreateSchema.tenantId` is now
+nullable+optional; `scope` enum added. `dashboardUpdateSchema` has
+no `scope` field.
+
+**Listing**: `listDashboards` extended. Non-admin tenant users see
+their Tenant rows + eligible Globals. "Eligible Global":
+
+```sql
+d.scope = 'global' AND d.status = 'active' AND (
+  -- Integration-connected: tenant has an active connection
+  EXISTS (
+    SELECT 1 FROM platform.integrations i
+     JOIN platform.connections c
+       ON c.integration_id = i.id
+      AND c.tenant_id = $tenant
+      AND c.status = 'active'
+     WHERE i.slug = d.integration
+  )
+  OR
+  -- Custom: opt-in via grant row
+  ((d.integration IS NULL OR d.integration = '')
+   AND EXISTS (
+     SELECT 1 FROM platform.dashboard_tenant_grants g
+      WHERE g.dashboard_id = d.id AND g.tenant_id = $tenant
+   ))
+)
+```
+
+Platform admins see every row (LEFT JOIN `tenants` now so Globals
+with `tenant_id=NULL` don't drop).
+
+**Frontend builder**: new Scope card at the top (Tenant / Global
+radio). `applyScopeVisibility` hides the tenant picker + the
+integration status pill when Global is selected (admin authoring;
+per-tenant status is irrelevant). Save payload includes `scope`;
+`tenantId` only sent when Scope=Tenant. Integration required on
+Scope=Global. Edit loader restores `scope` from `d.scope` (default
+`'tenant'`).
+
+**Portability**: import whitelist adds `'scope'`. Older pre-4b
+exports without `scope` get the column default (`'tenant'`) on
+import. Platform-wide export (the only tenant-export path the repo
+has) naturally round-trips Globals.
+
+### Tests
+
+- 68 (pre-4b) → 113 (post-4b). +45 specs across three commits:
+  - Commit (i): `builder-integrations.test.ts` (8)
+  - Commit (ii): `fan-out-jwt.test.ts` (11) + `fan-out.service.test.ts` (13)
+  - Commit (iii): `global-dashboards.test.ts` (13)
+- DB-backed render-path behavior (cache rows, bridge+pipeline JWT
+  tenant binding, 409 routing) still waits for an integration-test
+  harness. Specs mirror the pattern in
+  `integration.service.test.ts` / `oauth-scheduler.test.ts` — pure
+  logic, no Postgres.
+
+### Env changes
+
+None. `oauth-scheduler.ts` untouched. `XRAY_PIPELINE_JWT_*` and
+`XRAY_OAUTH_REDIRECT_URI` from step 4 unchanged. Per-integration
+`fan_out_secret` is per-row on `platform.integrations`, not an env
+var.
+
+### Deploy order on the VPS
+
+- Migrations 023–027 are additive → `migrations/*.sql` (pre-rebuild).
+  Fresh code boots into a schema that already has the new columns
+  and tables.
+- Before populating any row with `scope='global'`, the operator
+  should verify migration 025's CHECKs are installed (see the
+  on-VPS sanity queries below).
+
+### Verify on VPS after deploy
+
+```sql
+-- Fan-out secret trigger covers both client_secret + fan_out_secret.
+SELECT trigger_name FROM information_schema.triggers
+ WHERE trigger_name LIKE 'enforce_enc_integrations_%' ORDER BY trigger_name;
+-- Expect: enforce_enc_integrations_client_secret,
+--         enforce_enc_integrations_fan_out_secret.
+
+-- Fan-out tables present.
+\dt platform.fan_out_runs
+\dt platform.fan_out_deliveries
+
+-- Global scope CHECKs present.
+SELECT conname FROM pg_constraint WHERE conrelid = 'platform.dashboards'::regclass
+ AND conname IN ('dashboards_scope_tenant_id', 'dashboards_global_not_public')
+ ORDER BY conname;
+-- Expect both rows.
+
+-- Render cache + grants tables present.
+\dt platform.dashboard_render_cache
+\dt platform.dashboard_tenant_grants
+
+-- After a Global has been rendered by two tenants, each should have
+-- its own cache row.
+SELECT dashboard_id, tenant_id, rendered_at
+  FROM platform.dashboard_render_cache
+ ORDER BY rendered_at DESC LIMIT 10;
+
+-- Bridge mint audit rows on a Global render should carry the
+-- rendering tenant's id in tenant_id and the dashboard's authored
+-- tenant (NULL for Globals) in metadata.
+SELECT tenant_id, metadata->>'scope' AS scope,
+       metadata->>'dashboard_tenant_id' AS dashboard_tenant_id,
+       metadata->>'jti' AS jti
+  FROM platform.audit_log
+ WHERE action = 'dashboard.bridge_mint'
+   AND metadata->>'scope' = 'global'
+ ORDER BY created_at DESC LIMIT 10;
+```
+
+### Known follow-ups not done this session
+
+- **Grant-management admin UI** for Custom Globals. The grants table
+  exists, the render-path gate honors it, but no UI yet to add/remove
+  grants. Out of scope for 4b; UI ships alongside whatever step lands
+  Custom Globals in practice.
+- **Retire legacy `dashboards.view_html/view_css/view_js` columns.**
+  Tenant rows still dual-write them for non-render readers. Dropping
+  requires auditing embed, portability, and preview-fallback readers.
+  Post-step cleanup, not a 4b concern.
+- **Platform-wide portability export endpoint** for Globals only.
+  The existing `exportPlatform` covers them as part of a full
+  export; a Globals-only export is a later convenience.
+- **Per-tenant portability of Globals** (tenant moving to on-prem
+  taking their connection state + the global dashboards they see):
+  Globals carry `tenant_id=NULL` and aren't exportable per-tenant.
+  Pragmatic answer is "re-author on the target platform" — same
+  model the kickoff anticipated.
+- **Stripe/onboarding polish** — step 5. See
+  `.claude/step-5-kickoff.md`.
+- **RLS decorative, plaintext-read fallback, `withClient` →
+  `withTenantContext` migration** — all still step 6. Unchanged by
+  4b.
+- **Pipeline DB consumer (Model J)** — still post-step-6. 4b changed
+  what the pipeline JWT carries for Global renders (rendering tenant,
+  not author) but nobody verifies it yet.
