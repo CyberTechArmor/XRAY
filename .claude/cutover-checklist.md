@@ -39,7 +39,7 @@ Assumes:
 
 6. **Dry-run a restore into `vps-new`.** `pg_dump` from `vps-old`,
    `pg_restore` into `vps-new`'s empty postgres. Run
-   `migrations/probe-rls-cross-tenant.sql` and confirm PROBE PASS.
+   `migrations/probes/probe-rls-cross-tenant.sql` and confirm PROBE PASS.
    Back out the restore.
 
 ## Cutover window
@@ -87,7 +87,7 @@ Verify:
 
 ```bash
 docker exec -i xray-postgres psql -U xray -d xray \
-  < migrations/probe-rls-cross-tenant.sql
+  < migrations/probes/probe-rls-cross-tenant.sql
 ```
 
 Expect `PROBE PASS`. Any leak blocks the cutover — do not DNS-flip.
@@ -190,7 +190,7 @@ Run this within 30 min of DNS flip:
 2. Monitor `dashboard.render_failed` audit volume on `vps-new`.
    A post-cutover spike is expected (OAuth reconnect required,
    stale bridge secrets); it should tail off within 48h.
-3. Run `migrations/probe-rls-cross-tenant.sql` one more time
+3. Run `migrations/probes/probe-rls-cross-tenant.sql` one more time
    against live data. PROBE PASS before closing the cutover
    ticket.
 4. Decommission `vps-old` only after the week is clear. Keep the

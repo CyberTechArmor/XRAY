@@ -1919,7 +1919,7 @@ Prerequisite for the on-prem migration.
 | ii | `withTenantContext` / `withAdminClient` helper refactor | `server/src/db/connection.ts` |
 | iia | Migration 029 — RLS policy audit fill-in | `migrations/029_rls_policy_audit.sql` |
 | iii.1-17 | Tenant-scoped call-site migration (services round 1+2; routes/admin/auth deferred) | 17 per-service commits |
-| iv | Cross-tenant probe — SQL + TS | `migrations/probe-rls-cross-tenant.sql`, `server/src/db/rls-probe.test.ts` |
+| iv | Cross-tenant probe — SQL + TS | `migrations/probes/probe-rls-cross-tenant.sql`, `server/src/db/rls-probe.test.ts` |
 | v | Retire plaintext fallback in decrypt helpers | `server/src/lib/encrypted-column.ts` |
 | vi | `dashboard.render_failed` audit + admin `last_render_failed_at` | `dashboard.routes.ts`, `admin.service.ts` |
 | vii | `integration:needs_reconnect` WS broadcast | `oauth-scheduler.ts` |
@@ -2013,7 +2013,7 @@ ordering):
 
 Two artifacts:
 
-1. **SQL probe** (`migrations/probe-rls-cross-tenant.sql`) — the
+1. **SQL probe** (`migrations/probes/probe-rls-cross-tenant.sql`) — the
    literal acceptance check from the step-6 kickoff. Creates two
    synthetic tenants inside a BEGIN/ROLLBACK, inserts one row per
    RLS-enabled tenant-scoped table for each, then switches into
@@ -2086,7 +2086,7 @@ After rebuild, run the probe from the host:
 
 ```
 docker exec -i xray-postgres psql -U xray -d xray \
-  < migrations/probe-rls-cross-tenant.sql
+  < migrations/probes/probe-rls-cross-tenant.sql
 ```
 
 Expect `PROBE PASS`.
