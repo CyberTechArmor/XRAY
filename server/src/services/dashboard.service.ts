@@ -705,9 +705,24 @@ export async function renderPublicDashboard(
         'OAUTH_NOT_CONNECTED',
         'The tenant that created this share link needs to reconnect their integration.'
       );
+    } else if (sharingTenantId) {
+      // Global share path: we have a definite sharing tenant (from
+      // platform.dashboard_shares), so `not_connected` /
+      // `unknown_integration` means the tenant's connection row is
+      // genuinely missing — degrading silently produces a
+      // zero-access-token bridge call, and n8n typically answers with
+      // an empty 200, which the visitor sees as a blank iframe under
+      // the share header ("skeleton page loads"). Surface the failure
+      // loudly instead.
+      const reason = tokenResult.kind === 'unknown_integration'
+        ? 'The integration catalog no longer recognizes this dashboard\'s integration.'
+        : 'The tenant that created this share link is not connected to the required integration.';
+      throw new AppError(409, 'OAUTH_NOT_CONNECTED', reason);
     }
-    // not_connected / unknown_integration: degrade gracefully —
-    // render proceeds with access_token absent, same as pre-4b.
+    // Tenant-scoped dashboards with no definite share-tenant context:
+    // keep the silent degrade (matches pre-4b behavior — tenant rows
+    // that never had a tenant connection are rendered via their static
+    // view_html fallback further down).
   }
 
   // public_share intentionally has no end-user context. access_token +

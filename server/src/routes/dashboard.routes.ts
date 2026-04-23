@@ -641,6 +641,12 @@ router.post('/:id/share', authenticateJWT, async (req, res, next) => {
     }
     const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
     const result = await dashboardService.makePublic(req.params.id, tenantId, req.user!.sub);
+    // Clear any stale cache entry for this token. makePublic can return
+    // a pre-existing public_token (if the share row already existed),
+    // and an earlier failed render could have cached empty data under
+    // that token with a 30-minute TTL. PATCH and DELETE already clear;
+    // POST does too now for symmetry.
+    try { const { clearShareCache } = await import('./share.routes'); clearShareCache(result.public_token); } catch {}
     const shareDomain = (await getSetting('platform.share_domain')) || (await getSetting('platform.domain')) || config.webauthn.origin;
     const shareUrl = `${shareDomain.replace(/\/+$/, '')}/share/${result.public_token}`;
 
