@@ -1,10 +1,17 @@
 -- Cross-tenant RLS probe — step 6 acceptance check.
 --
--- Run this in a psql session against the platform DB after step 6's
--- migrations and code changes are deployed. It creates two synthetic
--- tenants, inserts one row per RLS-enabled tenant-scoped table for
--- each, then verifies that switching into each tenant's context
--- yields ONLY that tenant's rows. Admin bypass is verified last.
+-- Run this MANUALLY in a psql session against the platform DB after
+-- step 6's migrations and code changes are deployed. Creates two
+-- synthetic tenants, inserts one row per RLS-enabled tenant-scoped
+-- table for each, then verifies that switching into each tenant's
+-- context yields ONLY that tenant's rows. Admin bypass is verified
+-- last.
+--
+-- Lives in migrations/probes/ (not migrations/) so update.sh's
+-- pre-rebuild migration pass doesn't auto-apply it. The probe has
+-- real INSERT side effects that get rolled back at the end — if it
+-- ever ran as part of an automated deploy it could collide with
+-- prior state or leave residue on partial failure.
 --
 -- Every assertion uses RAISE EXCEPTION on failure so a leak hard-fails
 -- the script. A clean run prints 'PROBE PASS'. All changes roll back
@@ -12,10 +19,10 @@
 --
 -- Usage:
 --   docker exec -i <postgres-container> psql -U xray -d xray \
---     < migrations/probe-rls-cross-tenant.sql
+--     < migrations/probes/probe-rls-cross-tenant.sql
 --
 -- Or interactively:
---   \i migrations/probe-rls-cross-tenant.sql
+--   \i migrations/probes/probe-rls-cross-tenant.sql
 
 BEGIN;
 
@@ -47,11 +54,13 @@ BEGIN
     SELECT id INTO role_id FROM platform.roles LIMIT 1;
   END IF;
 
-  INSERT INTO platform.users (tenant_id, email, role_id, status)
-    VALUES (tenant_a, 'probe-a@example.test', role_id, 'active')
+  -- platform.users.name is NOT NULL in init.sql, so every probe
+  -- INSERT must supply it even though we never read it.
+  INSERT INTO platform.users (tenant_id, email, name, role_id, status)
+    VALUES (tenant_a, 'probe-a@example.test', 'Probe User A', role_id, 'active')
     RETURNING id INTO user_a;
-  INSERT INTO platform.users (tenant_id, email, role_id, status)
-    VALUES (tenant_b, 'probe-b@example.test', role_id, 'active')
+  INSERT INTO platform.users (tenant_id, email, name, role_id, status)
+    VALUES (tenant_b, 'probe-b@example.test', 'Probe User B', role_id, 'active')
     RETURNING id INTO user_b;
 
   INSERT INTO platform.dashboards (tenant_id, name)

@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 //   PROBE_RLS=1 DATABASE_URL=postgres://xray:xray@localhost:5432/xray \
 //     npx vitest run src/db/rls-probe.test.ts
 //
-// Matches the SQL acceptance probe at migrations/probe-rls-cross-tenant.sql
+// Matches the SQL acceptance probe at migrations/probes/probe-rls-cross-tenant.sql
 // but drives it through the application's helpers — so the probe also
 // catches helpers that forget to clear the admin bypass on a
 // withTenantContext checkout.
