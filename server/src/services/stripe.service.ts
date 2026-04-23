@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { withClient, withTransaction } from '../db/connection';
+import { withAdminClient, withAdminTransaction, withTenantContext } from '../db/connection';
 import { config } from '../config';
 import { AppError } from '../middleware/error-handler';
 import { getStripeConfig, getSetting } from './settings.service';
@@ -68,8 +68,7 @@ export async function handleCheckoutCompleted(
     return;
   }
 
-  await withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminTransaction(async (client) => {
     const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
     const subscriptionId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
 
@@ -111,8 +110,7 @@ export async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> 
   const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
   if (!customerId) return;
 
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     const tenantResult = await client.query(
       'SELECT id FROM platform.tenants WHERE stripe_customer_id = $1',
       [customerId]
@@ -141,8 +139,7 @@ export async function handleInvoiceFailed(invoice: Stripe.Invoice): Promise<void
   const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
   if (!customerId) return;
 
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     const tenantResult = await client.query(
       'SELECT id FROM platform.tenants WHERE stripe_customer_id = $1',
       [customerId]
@@ -175,8 +172,7 @@ export async function handleSubscriptionUpdated(
     : subscription.customer?.id;
   if (!customerId) return;
 
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     const tenantResult = await client.query(
       'SELECT id FROM platform.tenants WHERE stripe_customer_id = $1',
       [customerId]
@@ -225,8 +221,7 @@ export async function handleSubscriptionDeleted(
     : subscription.customer?.id;
   if (!customerId) return;
 
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     const tenantResult = await client.query(
       'SELECT id FROM platform.tenants WHERE stripe_customer_id = $1',
       [customerId]
@@ -267,8 +262,7 @@ export async function handlePaymentSucceeded(
   const resourceType = paymentIntent.metadata?.resource_type; // 'connection' or 'dashboard'
   const resourceName = paymentIntent.metadata?.resource_name;
 
-  await withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminTransaction(async (client) => {
     if (resourceType === 'connection') {
       await client.query(
         `INSERT INTO platform.connections (tenant_id, name, source_type, stripe_payment_id, status)
@@ -333,8 +327,7 @@ export async function getBillingStatus(tenantId: string): Promise<{
     pdfUrl: string | null;
   }>;
 }> {
-  const billingState = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const billingState = await withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       'SELECT * FROM platform.billing_state WHERE tenant_id = $1',
       [tenantId]
@@ -342,8 +335,7 @@ export async function getBillingStatus(tenantId: string): Promise<{
     return result.rows[0] || null;
   });
 
-  const tenant = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const tenant = await withTenantContext(tenantId, async (client) => {
     const result = await client.query('SELECT stripe_customer_id FROM platform.tenants WHERE id = $1', [tenantId]);
     return result.rows[0];
   });
@@ -436,8 +428,7 @@ export async function cancelSubscriptionAtPeriodEnd(
   const sub = await stripe.subscriptions.retrieve(subscriptionId);
 
   // Guard: subscription must belong to this tenant's Stripe customer.
-  const tenant = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const tenant = await withTenantContext(tenantId, async (client) => {
     const result = await client.query('SELECT stripe_customer_id FROM platform.tenants WHERE id = $1', [tenantId]);
     return result.rows[0];
   });
@@ -472,8 +463,7 @@ export async function resumeSubscription(
   const stripe = await getStripeClient();
   const sub = await stripe.subscriptions.retrieve(subscriptionId);
 
-  const tenant = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const tenant = await withTenantContext(tenantId, async (client) => {
     const result = await client.query('SELECT stripe_customer_id FROM platform.tenants WHERE id = $1', [tenantId]);
     return result.rows[0];
   });
