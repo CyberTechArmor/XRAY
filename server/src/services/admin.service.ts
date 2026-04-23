@@ -50,9 +50,9 @@ export async function listAllTenants(query: { page: number; limit: number }) {
               o.email AS owner_email,
               (SELECT COUNT(*) FROM platform.users u WHERE u.tenant_id = t.id) AS member_count,
               (
-                SELECT MAX(created_at) FROM platform.audit_log al
-                 WHERE al.tenant_id = t.id AND al.action = 'dashboard.opened'
-              ) AS last_render_at,
+                SELECT MAX(u.last_login_at) FROM platform.users u
+                 WHERE u.tenant_id = t.id
+              ) AS last_user_login_at,
               EXISTS(
                 SELECT 1 FROM platform.platform_settings ps
                  WHERE ps.key = 'billing.override.' || t.id::text AND ps.value = 'true'
@@ -63,15 +63,15 @@ export async function listAllTenants(query: { page: number; limit: number }) {
        ORDER BY t.created_at DESC LIMIT $1 OFFSET $2`,
       [query.limit, offset]
     );
-    // Derive a simplified Active/Inactive signal for the admin row,
-    // favoring the explicit override. Matches the operator's
-    // preferred row-level granularity ("real-time gate means only two
-    // states ever appear here").
+    // Derive the admin-row gate-access signal, favoring the explicit
+    // override. Three values — 'override' | 'active' | 'inactive' —
+    // match the Stripe Tenant Billing Status page so the labels read
+    // identically across both tabs.
     const rows = result.rows.map((r: any) => {
-      let subStatus: 'active' | 'inactive' | 'override' = 'inactive';
-      if (r.billing_override) subStatus = 'override';
-      else if (r.payment_status === 'active' || r.payment_status === 'trialing') subStatus = 'active';
-      return { ...r, subscription_status_simple: subStatus };
+      let gateAccess: 'active' | 'inactive' | 'override' = 'inactive';
+      if (r.billing_override) gateAccess = 'override';
+      else if (r.payment_status === 'active' || r.payment_status === 'trialing') gateAccess = 'active';
+      return { ...r, gate_access: gateAccess };
     });
     return { data: rows, total, page: query.page, limit: query.limit };
   });
