@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 // ENCRYPTION_KEY must be set before importing modules that read config.
 beforeAll(() => {
@@ -12,11 +12,6 @@ async function importLib() {
 }
 
 describe('encrypted-column', () => {
-  beforeEach(async () => {
-    const { __resetPlaintextWarnings } = await importLib();
-    __resetPlaintextWarnings();
-  });
-
   it('round-trips a string secret', async () => {
     const { encryptSecret, decryptSecret } = await importLib();
     const ct = encryptSecret('hunter2');
@@ -40,22 +35,19 @@ describe('encrypted-column', () => {
     expect(decryptSecret('', 'x')).toBe('');
   });
 
-  it('transitional: plaintext string passes through with one WARN', async () => {
+  it('rejects plaintext input with a loud error', async () => {
+    // Step 6 (v): plaintext pass-through fallback retired. Any row
+    // reaching decrypt without the enc:v1: envelope is a bug signal.
     const { decryptSecret } = await importLib();
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(decryptSecret('plain', 'webhooks:secret:abc')).toBe('plain');
-    expect(decryptSecret('plain', 'webhooks:secret:abc')).toBe('plain');
-    expect(spy).toHaveBeenCalledTimes(1);
-    spy.mockRestore();
+    expect(() => decryptSecret('plain-value', 'webhooks:secret:abc'))
+      .toThrow(/plaintext row detected/);
+    expect(() => decryptSecret('plain-value', 'webhooks:secret:abc'))
+      .toThrow(/webhooks:secret:abc/);
   });
 
-  it('transitional: WARN fires per distinct row', async () => {
+  it('rejects string missing the prefix even if it looks encrypted', async () => {
     const { decryptSecret } = await importLib();
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    decryptSecret('plain', 'webhooks:secret:row-a');
-    decryptSecret('plain', 'webhooks:secret:row-b');
-    expect(spy).toHaveBeenCalledTimes(2);
-    spy.mockRestore();
+    expect(() => decryptSecret('enc:v0:legacy', 'x')).toThrow(/plaintext row detected/);
   });
 
   it('tampered ciphertext throws', async () => {
@@ -93,13 +85,13 @@ describe('encrypted-column', () => {
     expect(twice).toEqual(once);
   });
 
-  it('JSON: transitional plaintext object passes through with WARN', async () => {
+  it('JSON: rejects non-empty plaintext object', async () => {
+    // Step 6 (v): any JSON field with user keys instead of a single
+    // enc:v1: envelope is a bug signal; throw instead of returning it.
     const { decryptJsonField } = await importLib();
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const out = decryptJsonField({ Authorization: 'Bearer plain' }, 'dashboards:fetch_headers:rowX');
-    expect(out).toEqual({ Authorization: 'Bearer plain' });
-    expect(spy).toHaveBeenCalledTimes(1);
-    spy.mockRestore();
+    expect(() =>
+      decryptJsonField({ Authorization: 'Bearer plain' }, 'dashboards:fetch_headers:rowX')
+    ).toThrow(/plaintext JSON object detected/);
   });
 
   it('JSON: accepts string input (pg JSONB serialized as text)', async () => {
