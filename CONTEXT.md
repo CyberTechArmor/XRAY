@@ -1899,3 +1899,277 @@ Browser-side smoke test:
 6. Admin → Dashboards → any Custom Global → "Grants" column →
    Manage → add the new tenant → the tenant's dashboard list
    surfaces the Global within a WebSocket tick.
+
+
+## Step 6 — Platform DB hardening (shipped)
+
+The "RLS is decorative no more" milestone. Step 6 turns the platform
+DB's tenant_isolation policies into actual enforcement, migrates
+tenant-scoped service call sites onto a new `withTenantContext`
+helper, retires the plaintext-read fallback in the encrypted-column
+helpers, and ships two deferred-from-step-5 items: the render-failure
+audit action and the OAuth needs_reconnect WebSocket broadcast.
+Prerequisite for the on-prem migration.
+
+### Commit trail (22 commits on `claude/xray-tenant-capture-bridge-hp8ut`)
+
+| # | Concern | Ref |
+|---|---|---|
+| i | Audit + taxonomy doc | `.claude/withclient-audit.md` |
+| ii | `withTenantContext` / `withAdminClient` helper refactor | `server/src/db/connection.ts` |
+| iia | Migration 029 — RLS policy audit fill-in | `migrations/029_rls_policy_audit.sql` |
+| iii.1-17 | Tenant-scoped call-site migration (services round 1+2; routes/admin/auth deferred) | 17 per-service commits |
+| iv | Cross-tenant probe — SQL + TS | `migrations/probe-rls-cross-tenant.sql`, `server/src/db/rls-probe.test.ts` |
+| v | Retire plaintext fallback in decrypt helpers | `server/src/lib/encrypted-column.ts` |
+| vi | `dashboard.render_failed` audit + admin `last_render_failed_at` | `dashboard.routes.ts`, `admin.service.ts` |
+| vii | `integration:needs_reconnect` WS broadcast | `oauth-scheduler.ts` |
+| viii | CLAUDE.md tenant-context guardrails | `CLAUDE.md` |
+| ix | CONTEXT.md handoff + cutover checklist | this section + `.claude/cutover-checklist.md` |
+
+### Helper redesign (commit ii)
+
+Old: `withTenantContext(tenantId, isPlatformAdmin, fn)` — took a
+bypass flag that, when `true`, short-circuited the very RLS
+tenant_isolation policy the helper existed to enforce. Zero call
+sites actually invoked it (the one import in `ai.service.ts` was
+dead code — the file has its own user-scope helper).
+
+New:
+- `withTenantContext(tenantId, fn)` — always sets
+  `app.current_tenant = tenantId` AND `app.is_platform_admin = 'false'`.
+  RLS policies gate every query.
+- `withAdminClient(fn)` — opt-in bypass. Sets
+  `app.is_platform_admin = 'true'`. Use for admin UI, Stripe
+  webhook reverse-lookups, fan-out iteration.
+- `withClient(fn)` — unchanged; for unauth / bootstrap only.
+- Transaction analogues: `withTenantTransaction`,
+  `withAdminTransaction`.
+
+Dead `withTenantContext` import in `ai.service.ts` removed.
+6 unit tests (`server/src/db/connection.test.ts`) lock the
+set_config sequence each helper emits against a fake pool.
+
+### Migration 029 — RLS policy fill-in (commit iia)
+
+Added `tenant_isolation` + `platform_admin_bypass` policies on 5
+tables that carried a `tenant_id` column but had no RLS at all:
+`fan_out_deliveries`, `dashboard_render_cache`,
+`dashboard_tenant_grants`, `dashboard_shares`, `tenant_notes`.
+
+**`tenant_notes` gets admin_bypass only** — deliberately no
+`tenant_isolation` because notes are platform-admin-only forever
+(may be removed entirely later). Tenant-context reads return zero
+rows by default-deny.
+
+**`connection_comments`** already had RLS enabled in init.sql with
+only `platform_admin_bypass`; no `tenant_isolation`. Since the
+table has `connection_id` (not `tenant_id`), the new policy joins
+transitively via `EXISTS (SELECT 1 FROM platform.connections c …)`.
+
+Documented carve-outs (stay bypass-only / global): `magic_links`,
+`platform_settings`, `email_templates`, `integrations`,
+`fan_out_runs`, `roles`, `permissions`, `role_permissions`,
+`connection_templates`, `tenants`. Inbox tables stay user-scoped
+(deferred — mirrors mig 016's user_scope shape in a future pass).
+
+Purely additive, idempotent, no data migration.
+
+### Call-site migration (commits iii.1–iii.17)
+
+302 `withClient` call sites audited. Per-service case-by-case
+evaluation and commit. Three broad outcomes:
+
+- **All tenant-scoped → `withTenantContext`**: `connection.service`,
+  `webhook.service`, `data.service`.
+- **All admin-surface → `withAdminClient`**: `rbac` (partial; only
+  `deleteRole` touches RLS tables), `apikey`, `push`, `inbox`,
+  `replay`. Plus local `bypassRLS` helpers deleted in `webhook`
+  and `user`.
+- **Mixed — per-function classification**: `audit`, `upload`,
+  `invitation`, `meet`, `user`, `fan-out`, `integration`,
+  `stripe`, `dashboard.service` (mechanical sweep only;
+  per-function refinement deferred).
+
+The `dashboard.service` mechanical-only sweep is a deliberate
+choice: 28 call sites in 1121 lines touching the public/embed/
+share/render paths. The 1:1 `withAdminClient` swap preserves
+behavior exactly while leaving the tenant-context tightening as a
+visible follow-up.
+
+**Still on `withClient` at step-6 close** (per the audit doc's
+ordering):
+- Routes: `connection.routes`, `inbox.routes`, `user.routes`,
+  `oauth.routes`, `dashboard.routes`, `stripe.routes` (~38 sites).
+- Admin surface: `admin.service` (36), `admin.routes` (5),
+  `admin.ai.routes` (5), `portability.service` (3).
+- Auth/bootstrap: `auth.service` (18 — mostly unauth U paths
+  that correctly stay on `withClient`).
+- Misc: `settings.service`, `email.service`, `email-templates`.
+- System: `oauth-scheduler` (2 — the scheduler's select/refresh
+  ops; classified as S/A, not migrated because they're correctly
+  cross-tenant by design).
+
+### Cross-tenant probe (commit iv)
+
+Two artifacts:
+
+1. **SQL probe** (`migrations/probe-rls-cross-tenant.sql`) — the
+   literal acceptance check from the step-6 kickoff. Creates two
+   synthetic tenants inside a BEGIN/ROLLBACK, inserts one row per
+   RLS-enabled tenant-scoped table for each, then switches into
+   each tenant's context and `RAISE EXCEPTION`s on any leak.
+   Prints `PROBE PASS` on success. Zero residue.
+
+2. **Vitest probe** (`server/src/db/rls-probe.test.ts`) — drives
+   the same probe through `withTenantContext` / `withAdminClient`
+   against a live DB. Skipped by default;
+   `PROBE_RLS=1 DATABASE_URL=... npx vitest run src/db/rls-probe.test.ts`
+   runs it. Catches helper-level bugs the pure-SQL probe can't see.
+
+### Encryption-column strict mode (commit v)
+
+`decryptSecret` and `decryptJsonField` now **throw** on any input
+that doesn't carry the `enc:v1:` envelope. Previously they
+returned plaintext unchanged and emitted a single WARN per
+`(table, column, row_id)` — a transitional fallback for rows
+predating step 1's backfill. Every VPS that's run step 1's
+backfill has no legacy plaintext rows left, so the fallback was
+silently masking what would otherwise be bug signals (missed
+backfill, direct DB write bypassing the `enc:v1:` enforcement
+triggers, or a trigger that was DISABLEd).
+
+`warnPlaintext` dedup cache + `__resetPlaintextWarnings` test
+hook both deleted. Two new specs cover the reject path; two
+legacy "pass-through with WARN" specs removed.
+
+### Deferred-from-earlier-steps items shipped (commits vi + vii)
+
+**vi — `dashboard.render_failed` audit.** Render route emits an
+audit row when the upstream-fetch retry loop exhausts. Metadata
+includes last error, attempt count, scope, and
+`fallback_used: bool`. Also adds `last_render_failed_at`
+subquery to `admin.service.listAllTenants` so the admin UI can
+surface a "Last failure" column (closes step-5's deferred item).
+
+**vii — `integration:needs_reconnect` WS broadcast.**
+`oauth-scheduler` fires when the refresh loop flips
+`connections.status → 'error'` — either from the exhausted-retries
+path or the missing-refresh-token path. UI pill goes live without
+waiting for the next poll. Mirrors step-4c's
+`integration:connected` / `integration:disconnected` shape.
+
+### Acceptance
+
+- `npm test`: 133 active specs green (127 baseline + 6 new helper
+  specs + various teardown in encrypted-column). 8 RLS probe specs
+  correctly skipped without `PROBE_RLS=1`.
+- `tsc --noEmit`: clean.
+- Cross-tenant probe: runs against fresh Postgres with `PROBE PASS`
+  output. Covers every RLS-enabled tenant-scoped table in
+  init.sql + migrations 017-029.
+- Migration 029 applied idempotently — re-running is a no-op.
+
+### Env changes
+
+None. No new env vars, no Dockerfile or docker-compose changes.
+
+### Deploy order on the VPS
+
+Standard `update.sh`:
+- Step 2 copies `frontend/app.js` (unchanged this step but still
+  part of the pipeline).
+- Step 4 re-runs `migrations/*.sql`; migration 029 lands.
+- Step 5 rebuilds the server container with the new helpers +
+  services.
+
+After rebuild, run the probe from the host:
+
+```
+docker exec -i xray-postgres psql -U xray -d xray \
+  < migrations/probe-rls-cross-tenant.sql
+```
+
+Expect `PROBE PASS`.
+
+### Verify on VPS after deploy
+
+```sql
+-- Migration 029 policies present:
+SELECT tablename, policyname FROM pg_policies
+ WHERE schemaname = 'platform'
+   AND tablename IN ('fan_out_deliveries','dashboard_render_cache',
+                     'dashboard_tenant_grants','dashboard_shares',
+                     'tenant_notes','connection_comments')
+ ORDER BY tablename, policyname;
+
+-- tenant_notes has admin_bypass only (no tenant_isolation):
+SELECT policyname FROM pg_policies
+ WHERE schemaname='platform' AND tablename='tenant_notes';
+
+-- render-failed audit fires (pick a tenant with a broken dashboard,
+-- render, check audit_log):
+SELECT created_at, metadata->>'reason', metadata->>'fallback_used'
+  FROM platform.audit_log
+ WHERE action = 'dashboard.render_failed'
+ ORDER BY created_at DESC LIMIT 10;
+
+-- last_render_failed_at surfaces in admin tenants list:
+SELECT t.name, (
+  SELECT MAX(al.created_at) FROM platform.audit_log al
+   WHERE al.tenant_id = t.id AND al.action = 'dashboard.render_failed'
+) AS last_render_failed_at
+  FROM platform.tenants t
+ ORDER BY last_render_failed_at DESC NULLS LAST LIMIT 10;
+```
+
+Browser-side smoke:
+
+1. Open `/`, log in as platform admin.
+2. Admin → Tenants — page renders, no RLS errors in server logs.
+3. Admin → Dashboards → render one — renders as expected.
+4. Tenant view — user's billing page loads with correct
+   subscription (no tenant leaks, no cross-tenant data visible).
+5. Disable an OAuth app's client_secret in the integrations admin
+   panel → next scheduler tick (or wait 5 min) → tenant's UI pill
+   flips to "Needs reconnect" via WebSocket (no page refresh).
+
+### What didn't ship (deferred to post-step-6)
+
+- **Per-function tenant-context refinement for `dashboard.service`**
+  — 10+ functions take `tenantId` and only touch tenant-scoped
+  tables. Mechanical sweep shipped in iii.17 preserves behavior;
+  targeted `withTenantContext` is a separate PR.
+- **Routes tenant-context migration** — `connection`, `inbox`,
+  `user`, `oauth`, `dashboard`, `stripe` routes (~38 sites) plus
+  admin surface (~46 sites). All currently correct under
+  `withClient + admin bypass`; migration is a ratchet, not a bug
+  fix.
+- **Auth.service tenant-context migration** — 18 sites, mostly
+  U paths (unauth flows: magic link, signup, first-boot). A few
+  A paths (admin flag lookups that cross-tenant). Reviewed in the
+  audit doc but not migrated.
+- **Formal pre-commit lint / `.eslintrc` rule** for the
+  `withTenantContext` default. CLAUDE.md documents the policy;
+  automated enforcement waits for the allow-list to stabilize.
+- **Pipeline DB Model D / J** — still the post-step-6 pipeline
+  hardening. See `.claude/pipeline-hardening-notes.md`.
+- **Inbox user_scope RLS** — mirrors migration 016's shape.
+  Future pass.
+- **Legacy `dashboards.view_html/css/js` column retirement** —
+  reader audit required.
+- **Portability export/import gap-fill** — needs to round-trip
+  `stripe_customer_id`, `stripe_subscription_id`,
+  `platform_settings`, `api_keys`, `webhooks`, `integrations`,
+  new post-4b tables. Currently operators should `pg_dump` for
+  host moves (see cutover checklist).
+- **Admin "Last failure" column frontend wiring** — backend
+  surface shipped in (vi); the bundle UI change is cosmetic and
+  non-blocking.
+
+### Cutover ready
+
+`.claude/cutover-checklist.md` has the step-by-step for the
+on-prem migration — pre-flight (schema sync, encryption key
+inventory, Stripe/OAuth URI staging), cutover window (pg_dump,
+restore, file sync, secret rotation, webhook/DNS flip), and
+post-cutover (probe re-run, audit monitoring, vps-old decommission).
