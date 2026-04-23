@@ -37,22 +37,30 @@ export async function listAllTenants(query: { page: number; limit: number }) {
     const countResult = await client.query('SELECT COUNT(*) FROM platform.tenants');
     const total = parseInt(countResult.rows[0].count, 10);
     // Join:
-    //   - billing_state for plan_tier + payment_status (existing)
-    //   - owner user for owner_email (existing)
-    //   - MAX(audit_log.created_at) for dashboard.opened — the simplest
-    //     "last render" signal without adding a new audit action. No
-    //     migration needed.
+    //   - billing_state for payment_status + stripe_subscription_id
+    //     (payment_status alone can drift stale; we require a real
+    //     subscription_id before declaring Gate access 'active')
+    //   - owner user for owner_email
+    //   - MAX(user_sessions.last_active_at) for the Last active column
+    //     (updates on every token refresh — truer "someone was in the
+    //     app recently" signal than users.last_login_at)
     //   - platform_settings for billing override flag (key pattern
-    //     `billing.override.<tenant_id>`, value='true' = overridden).
+    //     `billing.override.<tenant_id>`, value='true' = overridden)
     const result = await client.query(
       `SELECT t.*, bs.plan_tier AS plan, bs.dashboard_limit, bs.payment_status,
-              bs.current_period_end,
+              bs.stripe_subscription_id, bs.current_period_end,
               o.email AS owner_email,
               (SELECT COUNT(*) FROM platform.users u WHERE u.tenant_id = t.id) AS member_count,
               (
-                SELECT MAX(u.last_login_at) FROM platform.users u
-                 WHERE u.tenant_id = t.id
-              ) AS last_user_login_at,
+                -- Last platform activity across any session for any
+                -- user in this tenant. user_sessions.last_active_at is
+                -- bumped on every token refresh, so this is a truer
+                -- "someone was in the app" signal than users.last_login_at,
+                -- which only fires on the initial magic-link exchange
+                -- and then stays pinned while the refresh cookie rolls.
+                SELECT MAX(s.last_active_at) FROM platform.user_sessions s
+                 WHERE s.tenant_id = t.id
+              ) AS last_user_active_at,
               EXISTS(
                 SELECT 1 FROM platform.platform_settings ps
                  WHERE ps.key = 'billing.override.' || t.id::text AND ps.value = 'true'
@@ -67,10 +75,21 @@ export async function listAllTenants(query: { page: number; limit: number }) {
     // override. Three values — 'override' | 'active' | 'inactive' —
     // match the Stripe Tenant Billing Status page so the labels read
     // identically across both tabs.
+    //
+    // `payment_status='active'` alone isn't enough: billing_state rows
+    // can carry a stale 'active' from older installs that never saw
+    // a subscription.deleted webhook (encapsoul in the Apr 23 VPS
+    // snapshot is the canonical example — payment_status='active' but
+    // stripe_subscription_id is NULL and no subs live in Stripe).
+    // Require a non-null stripe_subscription_id so the 'active' row
+    // only surfaces when there's a real Stripe subscription backing it.
     const rows = result.rows.map((r: any) => {
       let gateAccess: 'active' | 'inactive' | 'override' = 'inactive';
       if (r.billing_override) gateAccess = 'override';
-      else if (r.payment_status === 'active' || r.payment_status === 'trialing') gateAccess = 'active';
+      else if (
+        (r.payment_status === 'active' || r.payment_status === 'trialing')
+        && r.stripe_subscription_id
+      ) gateAccess = 'active';
       return { ...r, gate_access: gateAccess };
     });
     return { data: rows, total, page: query.page, limit: query.limit };
