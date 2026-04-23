@@ -753,6 +753,42 @@ router.delete('/:id/share', authenticateJWT, async (req, res, next) => {
   }
 });
 
+// POST /:id/share/rotate - issue a fresh public_token while keeping
+// is_public unchanged. Security feature: invalidates the old URL
+// without forcing the user to revoke → recreate → re-toggle-to-public.
+router.post('/:id/share/rotate', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_owner && !req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can rotate share links' } });
+    }
+    const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
+    const result = await dashboardService.rotatePublic(req.params.id, tenantId);
+    // Clear cached renders for both the old and the new token. The
+    // old one stops resolving; the new one needs a fresh render.
+    try {
+      const { clearShareCache } = await import('./share.routes');
+      if (result.previous_token) clearShareCache(result.previous_token);
+      clearShareCache(result.public_token);
+    } catch {}
+    const shareDomain = (await getSetting('platform.share_domain')) || (await getSetting('platform.domain')) || config.webauthn.origin;
+    const shareUrl = `${shareDomain.replace(/\/+$/, '')}/share/${result.public_token}`;
+    // Broadcast to tenant so every open tab refreshes (the old URL
+    // won't work anymore). Reuses the share-changed channel — the
+    // dashboard_list + share-modal listeners both already handle it.
+    try {
+      const { broadcastToTenant } = await import('../ws');
+      broadcastToTenant(tenantId, 'dashboard:share-changed', { dashboardId: req.params.id, is_public: result.is_public, rotated: true });
+    } catch {}
+    res.json({
+      ok: true,
+      data: { public_token: result.public_token, share_url: shareUrl, is_public: result.is_public },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /:id/share - get share status & URL (owner or platform admin only)
 router.get('/:id/share', authenticateJWT, async (req, res, next) => {
   try {
