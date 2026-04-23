@@ -556,8 +556,8 @@ export async function makePublic(
 export async function makePrivate(
   dashboardId: string,
   tenantId: string
-): Promise<void> {
-  await withClient(async (client) => {
+): Promise<{ revoked_token: string | null }> {
+  return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const scopeRow = await client.query(
       'SELECT scope FROM platform.dashboards WHERE id = $1',
@@ -573,24 +573,31 @@ export async function makePrivate(
       const del = await client.query(
         `DELETE FROM platform.dashboard_shares
           WHERE dashboard_id = $1 AND tenant_id = $2
-         RETURNING dashboard_id`,
+         RETURNING public_token`,
         [dashboardId, tenantId]
       );
       if (del.rows.length === 0) {
         throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'No share link to revoke for this tenant');
       }
-      return;
+      return { revoked_token: (del.rows[0].public_token as string) || null };
     }
-    const result = await client.query(
-      `UPDATE platform.dashboards
-       SET is_public = false, public_token = NULL, updated_at = now()
-       WHERE id = $1 AND tenant_id = $2
-       RETURNING id`,
+    // Capture the existing token before NULLing it so we can kick
+    // any connected public-share viewers via notifyShareRevoked.
+    const before = await client.query(
+      'SELECT public_token FROM platform.dashboards WHERE id = $1 AND tenant_id = $2',
       [dashboardId, tenantId]
     );
-    if (result.rows.length === 0) {
+    if (before.rows.length === 0) {
       throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
     }
+    const revokedToken = (before.rows[0].public_token as string | null) || null;
+    await client.query(
+      `UPDATE platform.dashboards
+       SET is_public = false, public_token = NULL, updated_at = now()
+       WHERE id = $1 AND tenant_id = $2`,
+      [dashboardId, tenantId]
+    );
+    return { revoked_token: revokedToken };
   });
 }
 

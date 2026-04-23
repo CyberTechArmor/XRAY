@@ -735,9 +735,18 @@ router.delete('/:id/share', authenticateJWT, async (req, res, next) => {
       return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can manage public sharing' } });
     }
     const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
-    await dashboardService.makePrivate(req.params.id, tenantId);
+    const revokeResult = await dashboardService.makePrivate(req.params.id, tenantId);
     // Clear share page cache
     try { const { clearShareCache } = await import('./share.routes'); clearShareCache(); } catch {}
+    // Kick any public-share viewers currently watching the revoked
+    // URL so their page flips to the "share link revoked" screen
+    // instead of keeping a stale sessionStorage render alive.
+    if (revokeResult.revoked_token) {
+      try {
+        const { notifyShareRevoked } = await import('../ws');
+        notifyShareRevoked(revokeResult.revoked_token, 'revoked');
+      } catch {}
+    }
     // Broadcast to tenant
     try {
       const { broadcastToTenant } = await import('../ws');
@@ -770,6 +779,16 @@ router.post('/:id/share/rotate', authenticateJWT, async (req, res, next) => {
       if (result.previous_token) clearShareCache(result.previous_token);
       clearShareCache(result.public_token);
     } catch {}
+    // Kick every public-share viewer currently watching the old
+    // token so a leaked URL can't keep rendering via their local
+    // sessionStorage cache. The share.html listener flips to the
+    // "share link revoked" screen on receipt and drops the cache.
+    if (result.previous_token) {
+      try {
+        const { notifyShareRevoked } = await import('../ws');
+        notifyShareRevoked(result.previous_token, 'rotated');
+      } catch {}
+    }
     const shareDomain = (await getSetting('platform.share_domain')) || (await getSetting('platform.domain')) || config.webauthn.origin;
     const shareUrl = `${shareDomain.replace(/\/+$/, '')}/share/${result.public_token}`;
     // Broadcast to tenant so every open tab refreshes (the old URL
