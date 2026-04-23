@@ -1,4 +1,9 @@
-import { withClient, withTransaction } from '../db/connection';
+import {
+  withAdminClient,
+  withAdminTransaction,
+  withTenantContext,
+  withTenantTransaction,
+} from '../db/connection';
 import { generateToken, hashToken, hashRefreshToken } from '../lib/crypto';
 import { AppError } from '../middleware/error-handler';
 import { sendTemplateEmail } from './email.service';
@@ -13,9 +18,7 @@ export async function createInvitation(
   invitedBy: string,
   input: { email: string; roleId?: string; dashboardIds?: string[] }
 ) {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-
+  return withTenantTransaction(tenantId, async (client) => {
     // If no roleId provided, default to 'member' role
     let roleId = input.roleId;
     if (!roleId) {
@@ -109,8 +112,7 @@ export async function createInvitation(
 }
 
 export async function listInvitations(tenantId: string, query: { page: number; limit: number }) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withTenantContext(tenantId, async (client) => {
     const offset = (query.page - 1) * query.limit;
     const result = await client.query(
       `SELECT i.*, r.name as role_name
@@ -126,9 +128,12 @@ export async function listInvitations(tenantId: string, query: { page: number; l
 }
 
 export async function acceptInvitation(input: { token: string; name: string }) {
-  // Token is the invitation ID for simplicity
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Token is the invitation ID for simplicity. Runs under admin
+  // bypass because the recipient isn't authenticated yet — the token
+  // is the capability, and the follow-on writes cross-tenant
+  // (user/session/dashboard_access for whichever tenant owns the
+  // invitation). Atomicity requires one transaction.
+  return withAdminTransaction(async (client) => {
     const result = await client.query(
       `SELECT * FROM platform.invitations
        WHERE id = $1 AND status = 'pending' AND expires_at > now()`,
@@ -277,8 +282,8 @@ export async function acceptInvitation(input: { token: string; name: string }) {
 }
 
 export async function getInvitationInfo(token: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Unauth token lookup — the recipient isn't logged in yet.
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT i.id, i.email, i.status, i.expires_at, t.name as tenant_name
        FROM platform.invitations i
@@ -302,8 +307,7 @@ export async function getInvitationInfo(token: string) {
 }
 
 export async function revokeInvitation(tenantId: string, invitationId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `UPDATE platform.invitations SET status = 'revoked'
        WHERE id = $1 AND tenant_id = $2 AND status = 'pending'
