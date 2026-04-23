@@ -1,4 +1,4 @@
-import { withClient } from '../db/connection';
+import { withAdminClient } from '../db/connection';
 
 // ── Types ──
 export interface Thread {
@@ -37,8 +37,7 @@ export async function listThreads(
   offset = 0,
   archived = false
 ): Promise<Thread[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     let whereClause = `tp.user_id = $1`;
     const params: any[] = [userId, limit, offset];
@@ -106,8 +105,7 @@ export async function getThreadMessages(
   threadId: string,
   userId: string
 ): Promise<Message[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // Verify user is a participant
     const partCheck = await client.query(
@@ -151,8 +149,7 @@ export async function sendMessage(
     tag?: string;
   }
 ): Promise<{ threadId: string; messageId: string }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     let threadId: string | undefined = opts.threadId;
 
@@ -224,8 +221,7 @@ export async function sendMessage(
 
 // ── Toggle star ──
 export async function toggleStar(threadId: string, userId: string): Promise<boolean> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `UPDATE platform.inbox_thread_participants SET is_starred = NOT is_starred
        WHERE thread_id = $1 AND user_id = $2 RETURNING is_starred`,
@@ -238,8 +234,7 @@ export async function toggleStar(threadId: string, userId: string): Promise<bool
 
 // ── Toggle archive ──
 export async function toggleArchive(threadId: string, userId: string): Promise<boolean> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `UPDATE platform.inbox_thread_participants SET is_archived = NOT COALESCE(is_archived, false)
        WHERE thread_id = $1 AND user_id = $2 RETURNING is_archived`,
@@ -252,8 +247,7 @@ export async function toggleArchive(threadId: string, userId: string): Promise<b
 
 // ── Set thread tag ──
 export async function setThreadTag(threadId: string, tag: string | null): Promise<string | null> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `UPDATE platform.inbox_threads SET tag = $1 WHERE id = $2 RETURNING tag`,
       [tag, threadId]
@@ -269,8 +263,7 @@ export async function getRecipients(
   tenantId: string,
   isPlatformAdmin: boolean
 ): Promise<{ members: any[]; tenants?: any[] }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     if (isPlatformAdmin) {
       // Platform admin: get all tenants
@@ -308,8 +301,7 @@ export async function getRecipients(
 
 // ── Get tenant members (for platform admin compose) ──
 export async function getTenantMembers(tenantId: string): Promise<any[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT u.id, u.name, u.email FROM platform.users u
        WHERE u.tenant_id = $1 AND u.status = 'active' ORDER BY u.name`,
@@ -321,8 +313,7 @@ export async function getTenantMembers(tenantId: string): Promise<any[]> {
 
 // ── Get platform admin user IDs (for resolving 'support' recipient) ──
 export async function getPlatformAdminIds(): Promise<string[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT u.id FROM platform.users u
        JOIN platform.roles r ON r.id = u.role_id
@@ -334,8 +325,7 @@ export async function getPlatformAdminIds(): Promise<string[]> {
 
 // ── Get thread participant user IDs ──
 export async function getThreadParticipants(threadId: string): Promise<string[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT user_id FROM platform.inbox_thread_participants WHERE thread_id = $1`,
       [threadId]
@@ -346,8 +336,7 @@ export async function getThreadParticipants(threadId: string): Promise<string[]>
 
 // ── Get unread count ──
 export async function getUnreadCount(userId: string): Promise<number> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT COUNT(*) FROM platform.inbox_thread_participants WHERE user_id = $1 AND is_read = false`,
       [userId]
