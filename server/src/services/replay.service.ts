@@ -1,4 +1,4 @@
-import { withClient, withTransaction } from '../db/connection';
+import { withAdminClient, withAdminTransaction } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { gzipSync, gunzipSync } from 'zlib';
 
@@ -9,8 +9,7 @@ export async function createSession(
   tenantId: string,
   data: { userAgent?: string; viewportWidth?: number; viewportHeight?: number }
 ) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.sessions (user_id, tenant_id, started_at, user_agent, viewport_width, viewport_height, is_active)
        VALUES ($1, $2, now(), $3, $4, $5, true)
@@ -28,8 +27,7 @@ export async function createSegment(
   segmentType: 'platform' | 'dashboard',
   dashboardId?: string
 ) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.session_segments (session_id, segment_type, dashboard_id, started_at)
        VALUES ($1, $2, $3, now())
@@ -41,8 +39,7 @@ export async function createSegment(
 }
 
 export async function closeSegment(segmentId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `UPDATE platform.session_segments
        SET ended_at = now(),
@@ -61,8 +58,7 @@ export async function closeSegment(segmentId: string) {
 // ── Events / Recordings ─────────────────────────────────────────────────────
 
 export async function storeEvents(segmentId: string, events: any[]) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // Compress events
     const compressed = gzipSync(Buffer.from(JSON.stringify(events)));
@@ -111,8 +107,7 @@ export async function storeEvents(segmentId: string, events: any[]) {
 }
 
 export async function getEvents(segmentId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // Get the session ID for this segment
     const segResult = await client.query(
@@ -367,8 +362,7 @@ function formatMs(ms: number): string {
 // ── Storage Size ───────────────────────────────────────────────────────────
 
 export async function getSegmentStorageSize(segmentId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // Get the session for this segment to sum all session recordings
     const segResult = await client.query(
@@ -487,8 +481,7 @@ export async function listSessions(
     offset?: number;
   }
 ) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     const conditions: string[] = [];
     const values: unknown[] = [];
@@ -552,8 +545,7 @@ export async function listSegments(filters?: {
   offset?: number;
   search?: string;
 }) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     const conditions: string[] = [];
     const values: unknown[] = [];
@@ -638,8 +630,7 @@ export async function listSegments(filters?: {
 }
 
 export async function getSegment(segmentId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     const result = await client.query(
       `SELECT seg.*, s.user_id, s.tenant_id, s.user_agent, s.viewport_width, s.viewport_height,
@@ -688,8 +679,7 @@ export async function getSegment(segmentId: string) {
 // ── Flags ───────────────────────────────────────────────────────────────────
 
 export async function flagTraining(segmentId: string, isTraining: boolean) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // If setting is_training = true, also set is_permanent = true
     if (isTraining) {
@@ -717,8 +707,7 @@ export async function flagTraining(segmentId: string, isTraining: boolean) {
 }
 
 export async function flagPermanent(segmentId: string, isPermanent: boolean) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     if (!isPermanent) {
       // Cannot unset permanent if is_training is true
@@ -744,8 +733,7 @@ export async function flagPermanent(segmentId: string, isPermanent: boolean) {
 // ── Delete Segment ─────────────────────────────────────────────────────────
 
 export async function deleteSegment(segmentId: string) {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminTransaction(async (client) => {
     // Delete recordings, tags, comments, then the segment itself (CASCADE handles most)
     await client.query(`DELETE FROM platform.segment_recordings WHERE segment_id = $1`, [segmentId]);
     await client.query(`DELETE FROM platform.segment_tags WHERE segment_id = $1`, [segmentId]);
@@ -761,8 +749,7 @@ export async function deleteSegment(segmentId: string) {
 // ── Tags ────────────────────────────────────────────────────────────────────
 
 export async function addTag(segmentId: string, tag: string, userId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.segment_tags (segment_id, tag, created_by)
        VALUES ($1, $2, $3)
@@ -774,8 +761,7 @@ export async function addTag(segmentId: string, tag: string, userId: string) {
 }
 
 export async function removeTag(tagId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `DELETE FROM platform.segment_tags WHERE id = $1 RETURNING id`,
       [tagId]
@@ -792,8 +778,7 @@ export async function addComment(
   body: string,
   timestampSeconds?: number
 ) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.segment_comments (segment_id, user_id, body, timestamp_seconds)
        VALUES ($1, $2, $3, $4)
@@ -805,8 +790,7 @@ export async function addComment(
 }
 
 export async function listComments(segmentId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT c.*, u.name AS user_name, u.email AS user_email
        FROM platform.segment_comments c
@@ -822,8 +806,7 @@ export async function listComments(segmentId: string) {
 // ── Active Sessions / Shadow Viewing ────────────────────────────────────────
 
 export async function getActiveSessions(tenantId?: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     const conditions = ['s.is_active = true'];
     const values: unknown[] = [];
@@ -859,8 +842,7 @@ export async function getActiveSessions(tenantId?: string) {
 }
 
 export async function finalizeStaleSession(sessionId: string) {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminTransaction(async (client) => {
 
     // Close any open segments
     await client.query(
@@ -892,8 +874,7 @@ export async function finalizeStaleSession(sessionId: string) {
 // ── Shadow View Tracking ────────────────────────────────────────────────────
 
 export async function recordShadowView(segmentId: string, userId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     await client.query(
       `UPDATE platform.session_segments
        SET shadow_views = COALESCE(shadow_views, '[]'::jsonb) || $2::jsonb
@@ -904,8 +885,7 @@ export async function recordShadowView(segmentId: string, userId: string) {
 }
 
 export async function updateShadowViewEnd(segmentId: string, userId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // Find the index of the matching shadow view entry and update it
     const seg = await client.query(
@@ -933,8 +913,7 @@ export async function updateShadowViewEnd(segmentId: string, userId: string) {
 // ── Finalize User Sessions (on WS disconnect) ────────────────────────────
 
 export async function finalizeUserSessions(userId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id FROM platform.sessions WHERE user_id = $1 AND is_active = true`,
       [userId]
@@ -955,8 +934,7 @@ export async function finalizeUserSessions(userId: string) {
 // ── Stale Session Cleanup ──────────────────────────────────────────────────
 
 export async function finalizeStaleActiveSessions(maxAgeMinutes: number = 120) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // Find active sessions where the most recent activity is older than maxAgeMinutes.
     // "Most recent activity" = latest segment start, or session start if no segments.
@@ -987,8 +965,7 @@ export async function finalizeStaleActiveSessions(maxAgeMinutes: number = 120) {
 // ── Retention Cleanup ───────────────────────────────────────────────────────
 
 export async function runRetentionCleanup(retentionDays: number) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // Find segments that are past retention and not permanent
     const result = await client.query(
