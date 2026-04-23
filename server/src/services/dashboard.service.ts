@@ -110,30 +110,30 @@ export async function listDashboards(
      LEFT JOIN platform.connections c ON c.id = ds.connection_id
      WHERE ds.dashboard_id = d.id) AS connectors`;
 
-    // Step 4b: Global dashboards. Non-admin users see a Global iff
-    // their tenant has either (a) an active connection to the
-    // dashboard's integration, or (b) a grant row for Custom Globals.
-    // Platform admins see every Global unconditionally.
-    //
-    // "Eligible global" predicate, reused across both branches:
+    // Step 4b: Global dashboards. Per the operator's definition —
+    // "Global dashboard means it is replicated for all users but
+    // utilizes each individual tenant's oauth/custom auth" — a Global
+    // with an integration set is VISIBLE to every tenant. If the
+    // rendering tenant hasn't connected that integration yet, the
+    // click-to-render hits 409 OAUTH_NOT_CONNECTED and the Connect
+    // modal opens (the step-4 first-render flow). Gating visibility
+    // on the connection would hide the dashboard that triggers the
+    // connect prompt — a chicken-and-egg loop. So: integration-set
+    // Globals show unconditionally; Custom Globals (no integration,
+    // no render-time gate) stay grant-gated since there's no later
+    // opportunity to block access.
     const globalEligibleWhere = `
       d.scope = 'global' AND d.status = 'active' AND (
-        -- Integration-connected Globals: tenant has an active connection
-        EXISTS (
-          SELECT 1 FROM platform.integrations i2
-           JOIN platform.connections c2
-             ON c2.integration_id = i2.id
-            AND c2.tenant_id = $1
-            AND c2.status = 'active'
-           WHERE i2.slug = d.integration
-        )
-        -- Custom Globals (no integration): opt-in via grant row
-        OR (
-          (d.integration IS NULL OR d.integration = '')
-          AND EXISTS (
-            SELECT 1 FROM platform.dashboard_tenant_grants g
-             WHERE g.dashboard_id = d.id AND g.tenant_id = $1
-          )
+        -- Integration-set Globals: visible to every tenant. The
+        -- render path gates the actual fetch on the tenant's
+        -- connection state + prompts reconnect when needed.
+        (d.integration IS NOT NULL AND d.integration <> '')
+        -- Custom Globals (no integration): opt-in via grant row.
+        -- The render path has no integration to gate on, so this
+        -- is the ONLY gate.
+        OR EXISTS (
+          SELECT 1 FROM platform.dashboard_tenant_grants g
+           WHERE g.dashboard_id = d.id AND g.tenant_id = $1
         )
       )`;
 
