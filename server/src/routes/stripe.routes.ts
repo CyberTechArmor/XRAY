@@ -255,7 +255,8 @@ router.post('/subscription/:id/resume', authenticateJWT, requirePermission('bill
   }
 });
 
-// GET /admin/products - list all Stripe products with gate status (platform admin only)
+// GET /admin/products - list all Stripe products with gate status,
+// billing-page visibility, and status-row visibility (platform admin only)
 router.get('/admin/products', authenticateJWT, async (req, res, next) => {
   try {
     if (!req.user!.is_platform_admin) {
@@ -271,24 +272,77 @@ router.get('/admin/products', authenticateJWT, async (req, res, next) => {
 
     const products = await stripe.products.list({ active: true, limit: 100 });
 
-    // Load gate products setting (simple array of product IDs)
-    const gateProductsRaw = await getSetting('stripe_gate_products');
-    let gateProductIds: string[] = [];
-    if (gateProductsRaw) {
-      try { gateProductIds = JSON.parse(gateProductsRaw); } catch { /* ignore */ }
+    // Load the three per-product toggle lists in parallel.
+    const [gateRaw, billingRaw, statusRaw] = await Promise.all([
+      getSetting('stripe_gate_products'),
+      getSetting('stripe_billing_page_products'),
+      getSetting('stripe_status_tenant_row_products'),
+    ]);
+    function parseIds(raw: string | null): Set<string> {
+      if (!raw) return new Set();
+      try { return new Set(JSON.parse(raw) as string[]); } catch { return new Set(); }
     }
-    const gateSet = new Set(gateProductIds);
+    const gateSet = parseIds(gateRaw);
+    const billingSet = parseIds(billingRaw);
+    const statusSet = parseIds(statusRaw);
 
     const result = products.data.map(p => ({
       id: p.id,
       name: p.name,
       description: p.description || '',
       isGateProduct: gateSet.has(p.id),
+      isBillingPageProduct: billingSet.has(p.id),
+      isStatusRowProduct: statusSet.has(p.id),
     }));
 
     res.json({
       ok: true,
       data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/product-toggles - persist gate / billing-page / status-row
+// per-product lists in one round-trip. Accepts any subset of keys.
+// Broadcasts billing:updated to every tenant so their billing page
+// picks up the new "available plans" set live.
+router.post('/admin/product-toggles', authenticateJWT, async (req, res, next) => {
+  try {
+    if (!req.user!.is_platform_admin) {
+      return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Platform admin only' } });
+    }
+    const { updateSettings } = await import('../services/settings.service');
+    const body = req.body || {};
+    const updates: Record<string, string | null> = {};
+    if (Array.isArray(body.gate)) updates['stripe_gate_products'] = JSON.stringify(body.gate);
+    if (Array.isArray(body.billingPage)) updates['stripe_billing_page_products'] = JSON.stringify(body.billingPage);
+    if (Array.isArray(body.statusRow)) updates['stripe_status_tenant_row_products'] = JSON.stringify(body.statusRow);
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ ok: false, error: { code: 'NO_UPDATES', message: 'No toggle lists supplied' } });
+    }
+    await updateSettings(updates, req.user!.sub);
+
+    // Same broadcast pattern as gate-products — fan a billing:updated
+    // event out so tenant billing pages re-fetch /subscribable.
+    try {
+      const { withClient } = await import('../db/connection');
+      const { broadcastToTenant } = await import('../ws');
+      const tenants = await withClient(async (client) => {
+        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        const r = await client.query('SELECT id FROM platform.tenants');
+        return r.rows.map((row: any) => row.id);
+      });
+      for (const tid of tenants) {
+        broadcastToTenant(tid, 'billing:updated', { togglesChanged: true });
+      }
+    } catch { /* ignore */ }
+
+    res.json({
+      ok: true,
+      data: { saved: Object.keys(updates) },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {

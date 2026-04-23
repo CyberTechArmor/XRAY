@@ -499,9 +499,10 @@ export async function resumeSubscription(
 }
 
 // Return the list of products the tenant can subscribe to from their
-// own billing page. (ii-a) sources this from stripe_gate_products —
-// (ii-b) introduces a separate stripe_billing_page_products setting
-// so an admin can surface non-gate products too.
+// own billing page. Sourced from `stripe_billing_page_products` when
+// the admin has configured it; falls back to `stripe_gate_products`
+// so upgrades from (ii-a) — which only had gate-products — keep
+// working with no admin action.
 export async function listSubscribableProducts(): Promise<Array<{
   id: string;
   name: string;
@@ -511,15 +512,26 @@ export async function listSubscribableProducts(): Promise<Array<{
   currency: string | null;
   interval: string | null;
 }>> {
-  const gateProductsRaw = await getSetting('stripe_gate_products');
-  if (!gateProductsRaw) return [];
-  let gateProductIds: string[] = [];
-  try { gateProductIds = JSON.parse(gateProductsRaw); } catch { return []; }
-  if (gateProductIds.length === 0) return [];
+  const billingRaw = await getSetting('stripe_billing_page_products');
+  let productIds: string[] = [];
+  let source: 'billing' | 'gate' = 'billing';
+  if (billingRaw) {
+    try { productIds = JSON.parse(billingRaw); } catch { productIds = []; }
+  }
+  if (productIds.length === 0) {
+    // Fallback: the gate-products list — keeps existing installs
+    // functional without requiring admin action.
+    source = 'gate';
+    const gateRaw = await getSetting('stripe_gate_products');
+    if (gateRaw) {
+      try { productIds = JSON.parse(gateRaw); } catch { productIds = []; }
+    }
+  }
+  if (productIds.length === 0) return [];
 
   const stripe = await getStripeClient();
   const out: Array<{ id: string; name: string; description: string; priceId: string | null; amount: number | null; currency: string | null; interval: string | null }> = [];
-  for (const pid of gateProductIds) {
+  for (const pid of productIds) {
     try {
       const prod = await stripe.products.retrieve(pid);
       if (!prod.active) continue;
@@ -539,6 +551,9 @@ export async function listSubscribableProducts(): Promise<Array<{
       // Skip products Stripe can't return — admin may have left stale IDs
     }
   }
+  // source var is intentionally unused today; kept so the fallback
+  // reason is easy to log if we need to diagnose later.
+  void source;
   return out;
 }
 
