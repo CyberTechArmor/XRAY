@@ -189,8 +189,11 @@ async function insertRun(
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query(
+      // Column is window_params (not `window`) — `window` is a reserved
+      // keyword in Postgres. Public field name in the request body +
+      // envelope JWT claim stays `window`; the rename is SQL-only.
       `INSERT INTO platform.fan_out_runs
-         (integration_id, idempotency_key, target_url, window, metadata)
+         (integration_id, idempotency_key, target_url, window_params, metadata)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
       [
