@@ -1,10 +1,6 @@
-import { getPool, withClient } from '../db/connection';
+import { withAdminClient } from '../db/connection';
 import { generateToken, hashToken } from '../lib/crypto';
 import * as audit from './audit.service';
-
-async function bypassRLS(client: import('pg').PoolClient) {
-  await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-}
 
 const API_KEY_PREFIX = 'xray_';
 
@@ -29,12 +25,15 @@ interface ApiKeyRow {
   created_at: string;
 }
 
+// All API-key routes are gated by `platform.admin` — operations are
+// cross-tenant by design (a key may belong to any tenant, and the
+// validator must see every row). withAdminClient throughout.
+
 /**
  * Create a new API key. Returns the full key only once — it is never stored.
  */
 export async function createApiKey(params: CreateApiKeyParams) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const rawKey = generateToken(32);
     const fullKey = `${API_KEY_PREFIX}${rawKey}`;
     const keyHash = hashToken(fullKey);
@@ -75,8 +74,7 @@ export async function createApiKey(params: CreateApiKeyParams) {
  * List all API keys (never exposes the full key).
  */
 export async function listApiKeys(): Promise<ApiKeyRow[]> {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id, tenant_id, name, key_prefix, scopes, created_by, is_active, last_used_at, expires_at, created_at
        FROM platform.api_keys
@@ -90,8 +88,7 @@ export async function listApiKeys(): Promise<ApiKeyRow[]> {
  * Revoke (deactivate) an API key.
  */
 export async function revokeApiKey(id: string, revokedBy: string): Promise<ApiKeyRow | null> {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `UPDATE platform.api_keys SET is_active = false WHERE id = $1 RETURNING *`,
       [id]
@@ -119,8 +116,7 @@ export async function revokeApiKey(id: string, revokedBy: string): Promise<ApiKe
 export async function validateApiKey(fullKey: string): Promise<ApiKeyRow | null> {
   if (!fullKey.startsWith(API_KEY_PREFIX)) return null;
 
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const keyHash = hashToken(fullKey);
 
     const result = await client.query(
@@ -138,10 +134,12 @@ export async function validateApiKey(fullKey: string): Promise<ApiKeyRow | null>
       return null;
     }
 
-    // Update last_used_at (fire-and-forget)
-    getPool().query(
-      `UPDATE platform.api_keys SET last_used_at = now() WHERE id = $1`,
-      [key.id]
+    // Update last_used_at (fire-and-forget). Runs under admin bypass
+    // so api_keys.tenant_isolation doesn't gate the UPDATE; keys can
+    // belong to any tenant and the validator is a cross-tenant path.
+    // A failure here doesn't affect auth.
+    withAdminClient((c) =>
+      c.query(`UPDATE platform.api_keys SET last_used_at = now() WHERE id = $1`, [key.id])
     ).catch(() => {});
 
     return key;
@@ -152,8 +150,7 @@ export async function validateApiKey(fullKey: string): Promise<ApiKeyRow | null>
  * Get a single API key by ID.
  */
 export async function getApiKey(id: string): Promise<ApiKeyRow | null> {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id, tenant_id, name, key_prefix, scopes, created_by, is_active, last_used_at, expires_at, created_at
        FROM platform.api_keys WHERE id = $1`,
