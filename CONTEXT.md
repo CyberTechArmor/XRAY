@@ -1249,3 +1249,202 @@ SELECT tenant_id, metadata->>'scope' AS scope,
 - **Pipeline DB consumer (Model J)** — still post-step-6. 4b changed
   what the pipeline JWT carries for Global renders (rendering tenant,
   not author) but nobody verifies it yet.
+
+---
+
+## Step 4c — Post-step-4b cleanup (shipped)
+
+Four bugs that user testing on the VPS surfaced after step 4b landed.
+None schema-blocking; loose ends in UI wiring + one missing real-time
+path. Four concerns, four small commits, zero new migrations.
+
+### Commit (i) — Edit loader restores Integration selection
+
+Editing a dashboard whose `integration` was populated (e.g.
+`housecall_pro`) left the builder's Integration dropdown on "Custom
+(no auth)". Root cause: race between the edit loader's synchronous
+`intEl.value = d.integration` and the async
+`loadBuilderIntegrations()` that populates the `<option>`s from
+`/api/connections/my-integrations`. Setting `sel.value` to a slug
+whose `<option>` hasn't been appended yet is a silent no-op; the
+populate then reads `current = sel.value` (empty) and doesn't
+restore.
+
+Fix: `loadBuilderIntegrations(preferredValue)` now accepts an
+optional slug and prefers it over `sel.value` when deciding what to
+restore after the rebuild. Edit loader calls
+`loadBuilderIntegrations(d.integration || '')` instead of the direct
+assignment — ordering no longer matters.
+
+File: `frontend/bundles/general.json`. Version 4b-002 -> 4c-003.
+
+### Commit (ii) — Global share: GET /:id/share now handles Globals
+
+Sharing a Global still threw "Dashboard not found" even after
+migration 028. Diagnosis (server logs + route walk): the share modal
+opens with `GET /api/dashboards/:id/share`, which called
+`dashboardService.getDashboard(id, tenantId)` whose SELECT is `WHERE
+id=$1 AND tenant_id=$2`. Globals carry `tenant_id=NULL`, so that
+SELECT returned zero rows and threw
+`AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found')` before
+any share-table lookup. POST / PATCH / DELETE were already
+scope-aware from step-4b's commit `efa639e`; only GET wasn't.
+
+Fix (single route change, no service touch):
+
+- `GET /:id/share` branches on `dashboards.scope` inline:
+  - `scope='global'` -> read `(public_token, is_public)` from
+    `platform.dashboard_shares WHERE dashboard_id=$1 AND tenant_id=$2`;
+    missing row returns the same "no link yet" shape the UI already
+    handles (`{ is_public:false, share_url:null, public_token:null }`).
+  - `scope='tenant'` -> unchanged, reads `platform.dashboards` by
+    `(id, tenant_id)`.
+
+Secondary fix in the same commit: `PATCH /:id/share` on a Global
+used to UPDATE-only; zero-rows on a non-existent share row was a
+silent no-op. Added `RETURNING dashboard_id` + a 404
+`SHARE_LINK_MISSING` ("Create the share link before toggling
+visibility.") so any future UI regression that reorders PATCH before
+POST surfaces instead of silent no-op.
+
+File: `server/src/routes/dashboard.routes.ts`.
+
+### Commit (iii) — Real-time integration connect/disconnect via WS
+
+The step-4b fix landed the connection-gated Global visibility in
+`listDashboards`, but open tabs on other users of the same tenant
+didn't see new Globals appear (or disappear) until a manual reload.
+Fix reuses the `broadcastToTenant` pattern that already powers
+`dashboard:share-changed`:
+
+- Server: `GET /api/oauth/callback` (OAuth connect) +
+  `POST /api/connections/api-key/:slug` fire
+  `integration:connected { slug }`; `POST /api/connections/disconnect/:slug`
+  fires `integration:disconnected { slug }`. All three wrapped in
+  try/catch so a WS hiccup never poisons the connect/disconnect path
+  itself.
+- Frontend: the existing `dashboard_list` onWsMessage that listens
+  for `dashboard:share-changed` gains a parallel branch for
+  `integration:connected` / `integration:disconnected`. Calls
+  `loadDashboards()` + `loadMyIntegrations()` so the dashboard grid,
+  the My-Integrations strip, and the per-card connection pills all
+  refresh live.
+
+Files: `server/src/routes/oauth.routes.ts`,
+`server/src/routes/connection.routes.ts`, `frontend/bundles/general.json`.
+Version 4c-003 -> 4c-004.
+
+Acceptance (manual on the VPS): two browser windows on the same
+tenant — window A clicks Connect on HCP, window B live-flips the
+strip to "Connected" and HCP Globals appear in the grid. Window A
+clicks Disconnect, window B live-removes them.
+
+### Commit (iv) — In-app alert / confirm modals
+
+Every browser `alert()` / `confirm()` across the app replaced with an
+in-app modal matching the existing `.modal-overlay`/`.modal` styles
+(app.css:65+). Two new globals in `frontend/app.js`, next to the
+`toast()` helper:
+
+- `window.__xrayAlert(message, { title?, okLabel? })` -> `Promise<void>`
+- `window.__xrayConfirm(message, { title?, okLabel?, cancelLabel?,
+    danger? })` -> `Promise<boolean>`
+
+Keyboard: Enter = OK, Escape = Cancel (dismiss on alert). Overlay
+click = Cancel. OK button autofocuses on open. `opts.danger = true`
+paints the OK button in `.btn.danger` red for destructive confirms
+(Revoke/Delete/Disconnect/Clear).
+
+Mechanical swap across `frontend/bundles/general.json`:
+- 64 `alert(...)` call sites -> `window.__xrayAlert(...)`.
+- 16 `confirm(...)` sites -> `(await window.__xrayConfirm(...))`.
+- 16 enclosing handlers (`btn.onclick = function()` / `window.X =
+  function()`) gained `async` so the `await` is legal. `node --check`
+  on every view JS string is green.
+
+Plus the one `confirm()` in `frontend/app.js` itself (the AI
+Clear-API-key handler snippet) got the same swap with
+`danger: true`.
+
+`app.js?v=30` -> `?v=31` in `index.html` so browsers fetch the new
+helpers. Bundle version 4c-004 -> 4c-005.
+
+Scope bound: only `alert()` / `confirm()` swapped. `toast()` already
+matches the in-app surface; untouched. No general-purpose toast-
+replacement abstraction per the kickoff's scope fence.
+
+### Env changes
+
+None. No new env vars, no migrations, no docker-compose changes, no
+Dockerfile changes. Step 4c is a pure code-only update.
+
+### Deploy order on the VPS
+
+Standard `update.sh`:
+- Step 2 copies the new `app.js`, `index.html`, and `bundles/general.json`.
+- Step 4 re-runs `migrations/*.sql` (all idempotent; no new migrations
+  in 4c).
+- Step 5 rebuilds the server container picking up
+  `oauth.routes.ts` / `connection.routes.ts` / `dashboard.routes.ts`
+  changes.
+
+No post-rebuild migrations to run. No backfill to re-run. No nginx
+config changes.
+
+### Verify on VPS after deploy
+
+```sql
+-- 4c didn't touch schema, so 4b's verify queries are still the set
+-- an operator runs. Two 4c-specific traces:
+
+-- Integration connect/disconnect audit rows (surface that the broadcast
+-- code path fired):
+SELECT created_at, action, metadata->>'integration_slug' AS slug, tenant_id
+  FROM platform.audit_log
+ WHERE action IN ('connection.oauth_connected',
+                  'connection.api_key_connected',
+                  'connection.disconnected')
+ ORDER BY created_at DESC LIMIT 10;
+
+-- Per-tenant share rows (4b's dashboard_shares, exercised by 4c's
+-- GET/PATCH fixes):
+SELECT dashboard_id, tenant_id, is_public, created_at
+  FROM platform.dashboard_shares
+ ORDER BY created_at DESC LIMIT 10;
+```
+
+Browser-side smoke test after deploy (incognito window recommended so
+the new `app.js?v=31` downloads cleanly):
+
+1. Edit an existing HCP dashboard -> dropdown shows "HouseCall Pro"
+   selected, not "Custom".
+2. Two tabs on same tenant: Connect HCP in tab A -> tab B's My-
+   Integrations strip + Global dashboards flip to live WITHOUT
+   reload. Disconnect in either -> both tabs lose HCP Globals live.
+3. Share a Global -> modal opens with "Create share link" (not
+   "Dashboard not found") -> create + copy URL -> incognito visit
+   renders the dashboard.
+4. Any Revoke / Delete / Disconnect action -> in-app modal with a
+   red confirm button. Zero browser-native `alert()` / `confirm()`
+   dialogs anywhere.
+
+### Known follow-ups not done this session
+
+- **Integration `needs_reconnect` WS broadcast.** When the 5-min
+  OAuth scheduler flips a connection to `status='error'` /
+  `needs_reconnect`, there's no broadcast. The render-path 409 still
+  works when the tenant clicks in, but live strip/pill refresh is
+  missing. The kickoff called this out as optional for 4c;
+  intentionally deferred.
+- **Modal focus trap.** Current `__xrayConfirm` gives the OK button
+  focus but doesn't trap Tab inside the modal. Low-priority given
+  most modals are two-button; revisit if/when a confirm grows a form.
+- **113 tests still green.** The kickoff flagged a possible stub-ws
+  broadcast spec as optional for commit (iii); skipped. The existing
+  `broadcastToTenant` implementation is already exercised indirectly
+  via the share-changed routes from 4b. A direct spec would add
+  coverage but not surface behavior the route handlers don't already
+  guarantee.
+- **RLS decorative, plaintext-read fallback, `withClient` ->
+  `withTenantContext` migration** — all still step 6. Unchanged by
+  4c.
