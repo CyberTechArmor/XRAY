@@ -1345,6 +1345,11 @@
       var apiForm = overlay.querySelector('#connect-api-key-form');
       if (apiBtn) apiBtn.onclick = function() {
         apiForm.style.display = '';
+        // Put the cursor in the input so the user can paste without a
+        // second click. Defer one tick so the browser has painted the
+        // now-visible form before .focus() runs.
+        var input = overlay.querySelector('#connect-api-key-input');
+        if (input) setTimeout(function() { try { input.focus(); } catch (e) {} }, 0);
       };
       var cancelApi = overlay.querySelector('[data-cancel-apikey]');
       if (cancelApi) cancelApi.onclick = function() { apiForm.style.display = 'none'; };
