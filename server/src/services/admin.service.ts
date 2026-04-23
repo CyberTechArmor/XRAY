@@ -61,6 +61,15 @@ export async function listAllTenants(query: { page: number; limit: number }) {
                 SELECT MAX(s.last_active_at) FROM platform.user_sessions s
                  WHERE s.tenant_id = t.id
               ) AS last_user_active_at,
+              -- Last render-path failure for this tenant. The render
+              -- route emits dashboard.render_failed on upstream-fetch
+              -- exhaust; this subquery surfaces the most recent one so
+              -- the admin "Last failure" column can flag tenants whose
+              -- dashboards aren't loading. NULL when nothing's failed.
+              (
+                SELECT MAX(al.created_at) FROM platform.audit_log al
+                 WHERE al.tenant_id = t.id AND al.action = 'dashboard.render_failed'
+              ) AS last_render_failed_at,
               EXISTS(
                 SELECT 1 FROM platform.platform_settings ps
                  WHERE ps.key = 'billing.override.' || t.id::text AND ps.value = 'true'

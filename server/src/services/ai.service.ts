@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { withClient, withTenantContext, getPool } from '../db/connection';
+import { withClient, getPool } from '../db/connection';
 import type { PoolClient } from '../db/connection';
 import { getSetting } from './settings.service';
 import { AppError } from '../middleware/error-handler';

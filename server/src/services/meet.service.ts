@@ -1,4 +1,4 @@
-import { withClient } from '../db/connection';
+import { withAdminClient, withClient, withTenantContext } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { decrypt } from '../lib/crypto';
 
@@ -211,9 +211,10 @@ export async function createRoom(options: {
   return { room, joinUrl };
 }
 
+// Cross-tenant by design: lookup by userId only, used for display
+// labels in support-call UI that spans tenants.
 export async function getUserDisplayName(userId: string): Promise<string | null> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query('SELECT name, email FROM platform.users WHERE id = $1', [userId]);
     if (result.rows.length === 0) return null;
     return result.rows[0].name || result.rows[0].email;
@@ -221,8 +222,7 @@ export async function getUserDisplayName(userId: string): Promise<string | null>
 }
 
 export async function getUserInfo(userId: string): Promise<{ name: string | null; email: string } | null> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query('SELECT name, email FROM platform.users WHERE id = $1', [userId]);
     if (result.rows.length === 0) return null;
     return { name: result.rows[0].name || null, email: result.rows[0].email };
@@ -230,8 +230,8 @@ export async function getUserInfo(userId: string): Promise<{ name: string | null
 }
 
 export async function getTenantName(tenantId: string): Promise<string | null> {
+  // platform.tenants has no RLS; plain withClient suffices.
   return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const result = await client.query('SELECT name FROM platform.tenants WHERE id = $1', [tenantId]);
     return result.rows.length > 0 ? result.rows[0].name : null;
   });
@@ -245,9 +245,11 @@ export function getJoinUrl(serverUrl: string, roomName: string, participantName?
 
 // ── Support call functions ──
 
+// platform.support_calls is created inline on demand and has no RLS
+// policy — operates as a cross-tenant admin surface. withAdminClient
+// throughout for intent.
 export async function createSupportCall(callerId: string, tenantId: string, roomCode: string, joinUrl: string): Promise<Record<string, unknown>> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     // Ensure table exists (idempotent)
     await client.query(`CREATE TABLE IF NOT EXISTS platform.support_calls (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -267,8 +269,7 @@ export async function createSupportCall(callerId: string, tenantId: string, room
 }
 
 export async function getPendingSupportCalls(): Promise<any[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     // Check if table exists
     const tableCheck = await client.query(
       `SELECT to_regclass('platform.support_calls') AS tbl`
@@ -296,8 +297,7 @@ export async function getPendingSupportCalls(): Promise<any[]> {
 }
 
 export async function answerSupportCall(callId: string): Promise<void> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     await client.query(
       `UPDATE platform.support_calls SET status = 'answered', answered_at = now() WHERE id = $1`,
       [callId]
@@ -368,8 +368,7 @@ export function isWithinActiveHours(config: SupportCallConfig): boolean {
 }
 
 export async function getTenantMembers(tenantId: string): Promise<{ id: string; name: string; email: string }[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `SELECT id, name, email FROM platform.users WHERE tenant_id = $1 AND status = 'active' ORDER BY name ASC, email ASC`,
       [tenantId]

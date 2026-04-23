@@ -33,6 +33,22 @@ const FAIL_COUNT_BEFORE_ERROR = 5;
 let intervalHandle: NodeJS.Timeout | null = null;
 let running = false;
 
+// WS push fires when the scheduler flips a connection to status='error'
+// so the tenant's UI surfaces the 'Needs reconnect' pill without
+// waiting for the next poll. Mirrors the integration:connected /
+// integration:disconnected broadcasts in connection.routes. Dynamic
+// import + catch so a WS layer that's not up (unit tests, early boot)
+// doesn't fail the refresh transaction.
+function notifyNeedsReconnect(tenantId: string, integrationSlug: string): void {
+  import('../ws')
+    .then(({ broadcastToTenant }) => {
+      broadcastToTenant(tenantId, 'integration:needs_reconnect', {
+        slug: integrationSlug,
+      });
+    })
+    .catch(() => {});
+}
+
 export function startScheduler(): void {
   if (intervalHandle) return;
   intervalHandle = setInterval(tickSafely, TICK_INTERVAL_MS);
@@ -134,8 +150,8 @@ export async function refreshOneConnection(connectionId: string): Promise<boolea
     }
 
     const rowResult = await client.query(
-      `SELECT c.id, c.oauth_refresh_token, c.oauth_refresh_failed_count,
-              i.token_url, i.client_id, i.client_secret, i.id AS integration_id
+      `SELECT c.id, c.tenant_id, c.oauth_refresh_token, c.oauth_refresh_failed_count,
+              i.token_url, i.client_id, i.client_secret, i.id AS integration_id, i.slug
          FROM platform.connections c
          JOIN platform.integrations i ON i.id = c.integration_id
         WHERE c.id = $1
@@ -161,6 +177,7 @@ export async function refreshOneConnection(connectionId: string): Promise<boolea
          WHERE id = $1`,
         [row.id, 'oauth_refresh_token missing — tenant must reconnect']
       );
+      notifyNeedsReconnect(row.tenant_id, row.slug);
       return false;
     }
     const clientSecret = decryptSecret(
@@ -198,6 +215,9 @@ export async function refreshOneConnection(connectionId: string): Promise<boolea
          WHERE id = $1`,
         [row.id, nextFailCount, message.slice(0, 500), newStatus]
       );
+      if (newStatus === 'error') {
+        notifyNeedsReconnect(row.tenant_id, row.slug);
+      }
       return false;
     }
 

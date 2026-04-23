@@ -1,4 +1,4 @@
-import { withClient, withTransaction } from '../db/connection';
+import { withAdminClient, withAdminTransaction } from '../db/connection';
 import { generateToken, hashToken } from '../lib/crypto';
 import { decryptSecret } from '../lib/encrypted-column';
 import { mintBridgeJwt } from '../lib/n8n-bridge';
@@ -12,8 +12,7 @@ import { AppError } from '../middleware/error-handler';
 // three render call sites (authed / public-share / admin-preview) need
 // the secret, and they pass it straight into mintBridgeJwt.
 export async function fetchBridgeSecretCiphertext(dashboardId: string): Promise<string | null> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT bridge_secret FROM platform.dashboards WHERE id = $1',
       [dashboardId]
@@ -106,8 +105,7 @@ export async function listDashboards(
   hasManagePermission: boolean,
   isPlatformAdmin: boolean = false
 ): Promise<Dashboard[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // Ensure dashboard_views table exists (added in migration 007)
     await client.query(`
@@ -225,8 +223,7 @@ export async function getDashboard(
   dashboardId: string,
   tenantId: string
 ): Promise<Dashboard> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT * FROM platform.dashboards WHERE id = $1 AND tenant_id = $2`,
       [dashboardId, tenantId]
@@ -246,8 +243,7 @@ export async function createDashboard(input: {
   viewCss?: string;
   viewJs?: string;
 }): Promise<Dashboard> {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminTransaction(async (client) => {
     // Check dashboard limit for non-platform-admin tenants
     const billingResult = await client.query(
       'SELECT dashboard_limit FROM platform.billing_state WHERE tenant_id = $1',
@@ -294,8 +290,7 @@ export async function updateDashboard(
   dashboardId: string,
   updates: Partial<Pick<Dashboard, 'name' | 'description' | 'view_html' | 'view_css' | 'view_js' | 'status' | 'is_public'>>
 ): Promise<Dashboard> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -335,8 +330,7 @@ export async function grantAccess(
   grantedBy: string,
   tenantId: string
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       `INSERT INTO platform.dashboard_access (dashboard_id, user_id, granted_by, tenant_id)
        VALUES ($1, $2, $3, $4)
@@ -350,8 +344,7 @@ export async function revokeAccess(
   dashboardId: string,
   userId: string
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       'DELETE FROM platform.dashboard_access WHERE dashboard_id = $1 AND user_id = $2',
       [dashboardId, userId]
@@ -363,8 +356,7 @@ export async function checkUserAccess(
   dashboardId: string,
   userId: string
 ): Promise<boolean> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT 1 FROM platform.dashboard_access WHERE dashboard_id = $1 AND user_id = $2`,
       [dashboardId, userId]
@@ -376,8 +368,7 @@ export async function checkUserAccess(
 export async function getAccessList(
   dashboardId: string
 ): Promise<Array<{ user_id: string; email: string; name: string; granted_at: string }>> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT da.user_id, u.email, u.name, da.created_at as granted_at
        FROM platform.dashboard_access da
@@ -399,8 +390,7 @@ export async function buildDashboardBundle(
 ): Promise<Record<string, unknown>> {
   const dashboards = await listDashboards(tenantId, userId, hasManagePermission);
 
-  const sources = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const sources = await withAdminClient(async (client) => {
     if (dashboards.length === 0) return [];
     const ids = dashboards.map((d) => d.id);
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
@@ -445,8 +435,7 @@ export async function createEmbed(
 ): Promise<{ embedToken: string; id: string }> {
   const embedToken = generateToken(32);
 
-  const result = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const result = await withAdminClient(async (client) => {
     return client.query(
       `INSERT INTO platform.dashboard_embeds
          (dashboard_id, tenant_id, embed_token, allowed_domains, created_by, expires_at)
@@ -471,8 +460,7 @@ export async function revokeEmbed(
   dashboardId: string,
   tenantId: string
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       'UPDATE platform.dashboard_embeds SET is_active = false WHERE id = $1 AND dashboard_id = $2 AND tenant_id = $3',
       [embedId, dashboardId, tenantId]
@@ -487,8 +475,7 @@ export async function makePublic(
   tenantId: string,
   actingUserId?: string | null
 ): Promise<{ public_token: string; is_public: boolean }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     // Resolve dashboard scope up front. Globals use dashboard_shares;
     // Tenant rows keep using dashboards.public_token for backwards
     // compatibility with existing share links.
@@ -557,8 +544,7 @@ export async function makePrivate(
   dashboardId: string,
   tenantId: string
 ): Promise<{ revoked_token: string | null }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const scopeRow = await client.query(
       'SELECT scope FROM platform.dashboards WHERE id = $1',
       [dashboardId]
@@ -612,8 +598,7 @@ export async function rotatePublic(
   dashboardId: string,
   tenantId: string
 ): Promise<{ public_token: string; is_public: boolean; previous_token: string | null }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const scopeRow = await client.query(
       'SELECT scope FROM platform.dashboards WHERE id = $1',
       [dashboardId]
@@ -675,8 +660,7 @@ export async function rotatePublic(
 export async function getPublicDashboard(
   publicToken: string
 ): Promise<Dashboard & { sharing_tenant_id?: string }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     // Tenant-scoped dashboards: single-token-per-row on platform.dashboards.
     // Globals: per-(dashboard, tenant) rows in platform.dashboard_shares —
     // each sharing tenant owns their own token, and the render binds to
@@ -725,8 +709,7 @@ async function fetchTenantLabels(tenantId: string): Promise<{
   status: string | null;
   warehouse_host: string | null;
 } | null> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const r = await client.query(
       'SELECT slug, name, status, warehouse_host FROM platform.tenants WHERE id = $1',
       [tenantId]
@@ -972,8 +955,7 @@ export async function recordView(
   dashboardId: string,
   userId: string
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       `INSERT INTO platform.dashboard_views (dashboard_id, user_id) VALUES ($1, $2)`,
       [dashboardId, userId]
@@ -982,8 +964,7 @@ export async function recordView(
 }
 
 export async function getViewCount(dashboardId: string): Promise<number> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT COUNT(*)::int as count FROM platform.dashboard_views WHERE dashboard_id = $1`,
       [dashboardId]
@@ -996,8 +977,7 @@ export async function getViewHistory(
   dashboardId: string,
   limit: number = 50
 ): Promise<Array<{ user_id: string; email: string; name: string; viewed_at: string }>> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT dv.user_id, u.email, u.name, dv.viewed_at
        FROM platform.dashboard_views dv
@@ -1018,8 +998,7 @@ export async function listComments(
   limit: number = 10,
   offset: number = 0
 ): Promise<{ comments: any[]; total: number }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const countResult = await client.query(
       `SELECT COUNT(*)::int as total FROM platform.dashboard_comments WHERE dashboard_id = $1`,
       [dashboardId]
@@ -1042,8 +1021,7 @@ export async function createComment(
   authorId: string,
   content: string
 ): Promise<any> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.dashboard_comments (dashboard_id, author_id, content)
        VALUES ($1, $2, $3) RETURNING *`,
@@ -1054,8 +1032,7 @@ export async function createComment(
 }
 
 export async function deleteComment(commentId: string): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(`DELETE FROM platform.dashboard_comments WHERE id = $1`, [commentId]);
   });
 }
@@ -1065,8 +1042,7 @@ export async function deleteComment(commentId: string): Promise<void> {
 export async function listDashboardConnectors(
   dashboardId: string
 ): Promise<any[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT ds.id, ds.source_key, ds.table_name, ds.refresh_cadence,
               c.id as connection_id, c.name as connection_name, c.source_type, c.status as connection_status
@@ -1088,8 +1064,7 @@ export async function attachConnector(
   tenantId: string,
   refreshCadence: string = 'hourly'
 ): Promise<any> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.dashboard_sources (dashboard_id, tenant_id, connection_id, source_key, table_name, refresh_cadence)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
@@ -1100,8 +1075,7 @@ export async function attachConnector(
 }
 
 export async function detachConnector(sourceId: string): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(`DELETE FROM platform.dashboard_sources WHERE id = $1`, [sourceId]);
   });
 }
@@ -1112,8 +1086,7 @@ export async function updateTileImage(
   dashboardId: string,
   imageUrl: string
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       `UPDATE platform.dashboards SET tile_image_url = $1, updated_at = now() WHERE id = $2`,
       [imageUrl, dashboardId]
@@ -1126,8 +1099,7 @@ export async function updateTileImage(
 export async function getEmbedDashboard(
   embedToken: string
 ): Promise<Dashboard> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const embedResult = await client.query(
       `SELECT e.dashboard_id, e.allowed_domains, e.expires_at, e.is_active
        FROM platform.dashboard_embeds e

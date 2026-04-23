@@ -1,4 +1,4 @@
-import { withClient, withTransaction } from '../db/connection';
+import { withClient, withAdminClient, withTransaction } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 
 interface Role {
@@ -117,8 +117,10 @@ export async function updateRolePermissions(
 }
 
 export async function deleteRole(roleId: string): Promise<void> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Cross-tenant by design: the "is this role in use?" check counts
+  // users across every tenant (roles are global). Admin bypass so
+  // platform.users' tenant_isolation policy doesn't hide rows.
+  return withAdminClient(async (client) => {
     const roleResult = await client.query(
       'SELECT is_system FROM platform.roles WHERE id = $1',
       [roleId]

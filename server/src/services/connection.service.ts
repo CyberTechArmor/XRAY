@@ -1,4 +1,4 @@
-import { withClient } from '../db/connection';
+import { withTenantContext } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { decryptSecret } from '../lib/encrypted-column';
 
@@ -10,9 +10,7 @@ function decryptConnectionRow<T extends { id: string; connection_details?: strin
 }
 
 export async function listConnections(tenantId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
-    await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       'SELECT * FROM platform.connections WHERE tenant_id = $1 ORDER BY created_at DESC',
       [tenantId]
@@ -22,9 +20,7 @@ export async function listConnections(tenantId: string) {
 }
 
 export async function getConnection(tenantId: string, connectionId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
-    await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
+  return withTenantContext(tenantId, async (client) => {
     const connResult = await client.query(
       'SELECT * FROM platform.connections WHERE id = $1 AND tenant_id = $2',
       [connectionId, tenantId]

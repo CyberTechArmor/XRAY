@@ -1,12 +1,8 @@
-import { getPool, withClient } from '../db/connection';
+import { withAdminClient, withTenantContext } from '../db/connection';
 import { generateToken } from '../lib/crypto';
 import { encryptSecret, decryptSecret } from '../lib/encrypted-column';
 import * as audit from './audit.service';
 import crypto from 'crypto';
-
-async function bypassRLS(client: import('pg').PoolClient) {
-  await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-}
 
 interface CreateWebhookParams {
   tenantId: string;
@@ -28,8 +24,7 @@ interface UpdateWebhookParams {
  * Generates a signing secret for HMAC verification.
  */
 export async function createWebhook(params: CreateWebhookParams) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withTenantContext(params.tenantId, async (client) => {
     const secret = generateToken(32);
 
     const result = await client.query(
@@ -58,8 +53,7 @@ export async function createWebhook(params: CreateWebhookParams) {
  * List all webhooks for a tenant.
  */
 export async function listAllWebhooks(tenantId: string) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `SELECT id, tenant_id, name, target_url, events, is_active,
               last_triggered_at, failure_count, created_by, created_at, updated_at
@@ -71,8 +65,7 @@ export async function listAllWebhooks(tenantId: string) {
 }
 
 export async function getWebhook(id: string, tenantId: string) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `SELECT id, tenant_id, name, target_url, events, is_active,
               last_triggered_at, failure_count, created_by, created_at, updated_at
@@ -84,8 +77,7 @@ export async function getWebhook(id: string, tenantId: string) {
 }
 
 export async function updateWebhook(id: string, tenantId: string, params: UpdateWebhookParams) {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withTenantContext(tenantId, async (client) => {
     const sets: string[] = ['updated_at = now()'];
     const values: unknown[] = [];
     let idx = 1;
@@ -105,8 +97,7 @@ export async function updateWebhook(id: string, tenantId: string, params: Update
 }
 
 export async function deleteWebhook(id: string, tenantId: string, deletedBy: string): Promise<boolean> {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `DELETE FROM platform.webhooks WHERE id = $1 AND tenant_id = $2 RETURNING id, name`,
       [id, tenantId]
@@ -119,8 +110,7 @@ export async function deleteWebhook(id: string, tenantId: string, deletedBy: str
 }
 
 export async function regenerateSecret(id: string, tenantId: string): Promise<{ secret: string } | null> {
-  return withClient(async (client) => {
-    await bypassRLS(client);
+  return withTenantContext(tenantId, async (client) => {
     const newSecret = generateToken(32);
     const result = await client.query(
       `UPDATE platform.webhooks SET secret = $1, updated_at = now() WHERE id = $2 AND tenant_id = $3 RETURNING id`,
@@ -133,6 +123,13 @@ export async function regenerateSecret(id: string, tenantId: string): Promise<{ 
 
 /**
  * Send an HTTP POST to a single webhook and update its status.
+ *
+ * Delivery-status UPDATEs (last_triggered_at, failure_count) run
+ * under withAdminClient — sendWebhook is called with a webhook row
+ * but not its tenant_id, and webhooks.tenant_isolation would
+ * otherwise hide the row from a no-context UPDATE. Keeping these
+ * fire-and-forget preserves the prior behavior where delivery
+ * never blocks on a bookkeeping update.
  */
 async function sendWebhook(wh: { id: string; target_url: string; secret: string | null }, event: string, payload: Record<string, unknown>): Promise<boolean> {
   const body = JSON.stringify({ event, data: payload, timestamp: new Date().toISOString(), webhook_id: wh.id });
@@ -154,16 +151,22 @@ async function sendWebhook(wh: { id: string; target_url: string; secret: string 
       signal: AbortSignal.timeout(15_000),
     });
     if (res.ok) {
-      await getPool().query(`UPDATE platform.webhooks SET last_triggered_at = now(), failure_count = 0 WHERE id = $1`, [wh.id]).catch(() => {});
+      withAdminClient((c) =>
+        c.query(`UPDATE platform.webhooks SET last_triggered_at = now(), failure_count = 0 WHERE id = $1`, [wh.id])
+      ).catch(() => {});
       return true;
     } else {
       console.error(`Webhook ${wh.id} delivery failed: ${res.status} ${res.statusText}`);
-      await getPool().query(`UPDATE platform.webhooks SET failure_count = failure_count + 1, updated_at = now() WHERE id = $1`, [wh.id]).catch(() => {});
+      withAdminClient((c) =>
+        c.query(`UPDATE platform.webhooks SET failure_count = failure_count + 1, updated_at = now() WHERE id = $1`, [wh.id])
+      ).catch(() => {});
       return false;
     }
   } catch (err) {
     console.error(`Webhook ${wh.id} delivery error:`, err instanceof Error ? err.message : err);
-    await getPool().query(`UPDATE platform.webhooks SET failure_count = failure_count + 1, updated_at = now() WHERE id = $1`, [wh.id]).catch(() => {});
+    withAdminClient((c) =>
+      c.query(`UPDATE platform.webhooks SET failure_count = failure_count + 1, updated_at = now() WHERE id = $1`, [wh.id])
+    ).catch(() => {});
     return false;
   }
 }
@@ -173,8 +176,7 @@ async function sendWebhook(wh: { id: string; target_url: string; secret: string 
  * Signs the payload with HMAC-SHA256 using the webhook secret.
  */
 export async function dispatchEvent(tenantId: string, event: string, payload: Record<string, unknown>) {
-  const webhooks = await withClient(async (client) => {
-    await bypassRLS(client);
+  const webhooks = await withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `SELECT id, target_url, secret, events FROM platform.webhooks
        WHERE tenant_id = $1 AND is_active = true`,
@@ -201,8 +203,7 @@ export async function dispatchEvent(tenantId: string, event: string, payload: Re
  * Send a test event directly to a specific webhook, bypassing event filter.
  */
 export async function testWebhook(webhookId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
-  const wh = await withClient(async (client) => {
-    await bypassRLS(client);
+  const wh = await withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `SELECT id, target_url, secret FROM platform.webhooks WHERE id = $1 AND tenant_id = $2 AND is_active = true`,
       [webhookId, tenantId]

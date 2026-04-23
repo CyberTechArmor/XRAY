@@ -1,4 +1,4 @@
-import { withClient } from '../db/connection';
+import { withAdminClient, withTenantContext } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { encryptSecret, decryptSecret } from '../lib/encrypted-column';
 import * as auditService from './audit.service';
@@ -68,8 +68,7 @@ function redactIntegrationRow<
 export async function getIntegrationWithSecret(
   slug: string
 ): Promise<IntegrationRow | null> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT * FROM platform.integrations WHERE slug = $1',
       [slug]
@@ -93,8 +92,7 @@ export function decryptIntegrationClientSecret(row: IntegrationRow): string {
 // ─── Admin CRUD ─────────────────────────────────────────────────────────────
 
 export async function listAllIntegrations(): Promise<IntegrationRow[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id, slug, display_name, icon_url, status,
               supports_oauth, supports_api_key,
@@ -111,8 +109,7 @@ export async function listAllIntegrations(): Promise<IntegrationRow[]> {
 }
 
 export async function getIntegration(id: string): Promise<IntegrationRow> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT * FROM platform.integrations WHERE id = $1',
       [id]
@@ -150,8 +147,7 @@ export async function createIntegration(
   actingUserId: string
 ): Promise<IntegrationRow> {
   validateIntegrationConfig(input);
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.integrations
          (slug, display_name, icon_url, status, supports_oauth, supports_api_key,
@@ -233,8 +229,7 @@ export async function updateIntegration(
   };
   validateIntegrationConfig(merged);
 
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -320,8 +315,7 @@ export async function deleteIntegration(
   id: string,
   actingUserId: string
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     // Count tenant connections — FK has ON DELETE RESTRICT, but we'd
     // rather surface a clear error than a raw FK violation.
     const connRefs = await client.query(
@@ -360,8 +354,7 @@ export async function deleteIntegration(
 // The row carries the tenant's current connection state (auth_method,
 // has_connection) so the UI can render pills without a second query.
 export async function listActiveForTenant(tenantId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `SELECT i.id, i.slug, i.display_name, i.icon_url, i.status,
               i.supports_oauth, i.supports_api_key,
@@ -426,8 +419,7 @@ export async function resolveAccessTokenForRender(
   integrationSlug: string | null
 ): Promise<RenderTokenResult> {
   if (!integrationSlug) return { kind: 'not_connected' };
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `SELECT i.id AS integration_id, i.status AS integration_status,
               c.id AS connection_id,

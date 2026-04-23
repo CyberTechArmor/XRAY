@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { withClient } from '../db/connection';
+import { withAdminClient, withTenantContext } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { decryptSecret } from '../lib/encrypted-column';
 import { mintFanOutJwt } from '../lib/fan-out-jwt';
@@ -82,8 +82,7 @@ interface IntegrationLoadResult {
 }
 
 async function loadIntegrationForDispatch(slug: string): Promise<IntegrationLoadResult> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id, slug, display_name, status, fan_out_secret, fan_out_parallelism
          FROM platform.integrations
@@ -122,8 +121,7 @@ export async function getFanOutSecret(slug: string): Promise<{
   integrationStatus: string;
   secret: string;
 } | null> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id, status, fan_out_secret FROM platform.integrations WHERE slug = $1`,
       [slug]
@@ -143,8 +141,7 @@ interface ConnectedTenantRow {
 }
 
 async function listConnectedTenants(integrationId: string): Promise<ConnectedTenantRow[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT c.tenant_id, t.slug AS tenant_slug, c.status AS connection_status
          FROM platform.connections c
@@ -160,8 +157,7 @@ async function findPriorRun(
   integrationId: string,
   idempotencyKey: string
 ): Promise<FanOutSummary | null> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id, dispatched, skipped_needs_reconnect, skipped_inactive,
               skipped_integration_missing
@@ -186,8 +182,7 @@ async function insertRun(
   integrationId: string,
   req: FanOutRequest
 ): Promise<string> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       // Column is window_params (not `window`) — `window` is a reserved
       // keyword in Postgres. Public field name in the request body +
@@ -208,14 +203,17 @@ async function insertRun(
   });
 }
 
+// Per-(run, tenant) delivery rows. fan_out_deliveries got a
+// tenant_isolation policy in migration 029 — writes run under the
+// recipient tenant's context so RLS gates the INSERT/UPDATE on its
+// own, not just the WHERE clause.
 async function upsertSkipped(
   fanOutId: string,
   tenantId: string,
   idempotencyKey: string,
   reason: string
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withTenantContext(tenantId, async (client) => {
     await client.query(
       `INSERT INTO platform.fan_out_deliveries
          (fan_out_id, tenant_id, idempotency_key, status, skip_reason)
@@ -234,8 +232,7 @@ async function upsertDispatchAttempt(
   attemptCount: number,
   lastError: string | null
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withTenantContext(tenantId, async (client) => {
     await client.query(
       `INSERT INTO platform.fan_out_deliveries
          (fan_out_id, tenant_id, idempotency_key, status, attempt_count, last_error, delivered_at)
@@ -254,8 +251,7 @@ async function finalizeRun(
   fanOutId: string,
   counts: Omit<FanOutSummary, 'fan_out_id' | 'replay'>
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       `UPDATE platform.fan_out_runs
           SET dispatched = $2,
@@ -454,8 +450,7 @@ export interface FanOutLastRunSummary {
 export async function listLastFanOutByIntegration(): Promise<
   Record<string, FanOutLastRunSummary>
 > {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT DISTINCT ON (r.integration_id)
               r.integration_id, r.id, r.dispatched, r.skipped_needs_reconnect,

@@ -1,6 +1,6 @@
 import webpush from 'web-push';
 import { config } from '../config';
-import { withClient } from '../db/connection';
+import { withAdminClient } from '../db/connection';
 
 // Initialize VAPID keys if configured
 let pushConfigured = false;
@@ -41,8 +41,7 @@ export async function saveSubscription(
   userId: string,
   subscription: { endpoint: string; keys: { p256dh: string; auth: string } }
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await ensureTable(client);
     await client.query(
       `INSERT INTO platform.push_subscriptions (user_id, endpoint, keys_p256dh, keys_auth)
@@ -59,8 +58,7 @@ export async function saveSubscription(
  * Remove a push subscription.
  */
 export async function removeSubscription(userId: string, endpoint: string): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       'DELETE FROM platform.push_subscriptions WHERE user_id = $1 AND endpoint = $2',
       [userId, endpoint]
@@ -76,8 +74,7 @@ export async function sendPushToUser(
   payload: Record<string, unknown>
 ): Promise<void> {
   if (!pushConfigured) return;
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await ensureTable(client);
     const result = await client.query(
       'SELECT endpoint, keys_p256dh, keys_auth FROM platform.push_subscriptions WHERE user_id = $1',
@@ -109,8 +106,7 @@ export async function sendPushToUser(
  */
 export async function sendPushToAdmins(payload: Record<string, unknown>): Promise<void> {
   if (!pushConfigured) return;
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await ensureTable(client);
     // Try to include preferences if column exists, fallback to without
     let result;

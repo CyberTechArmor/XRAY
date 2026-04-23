@@ -4,16 +4,22 @@ import { encrypt, decrypt } from './crypto';
 // migration 017's trigger validates — do not change without a v2 path.
 const PREFIX = 'enc:v1:';
 
-// Transitional: some existing rows are still plaintext until the backfill
-// script rewrites them. When we read one, emit a single WARN per
-// (table, column, row_id) so operators can track which rows are left
-// without spamming every dashboard render.
-const seenPlaintext = new Set<string>();
+// Step 6 (v) retired the plaintext-read fallback. Before step 6,
+// decryptSecret / decryptJsonField returned plaintext input unchanged
+// and emitted a single WARN per (table, column, row_id), tolerating
+// rows that pre-dated step 1's encryption backfill. Every VPS that
+// upgrades through step 1 runs the backfill, so any plaintext row
+// reaching decrypt now is a bug signal (missed backfill, direct DB
+// write bypassing the enforcement triggers, or a trigger that was
+// DISABLEd) — preferable to throw loudly than silently return a
+// credential that was never meant to be stored unencrypted.
 
-function warnPlaintext(location: string): void {
-  if (seenPlaintext.has(location)) return;
-  seenPlaintext.add(location);
-  console.warn(`[encrypted-column] plaintext row detected at ${location} — run backfill-encrypt-credentials`);
+function decryptFailure(reason: string, location: string): Error {
+  return new Error(
+    `[encrypted-column] ${reason} at ${location}. ` +
+    `Rows must carry the enc:v1: envelope. If this is a legacy ` +
+    `row, run backfill-encrypt-credentials once and retry.`
+  );
 }
 
 export function isEncryptedString(value: string | null | undefined): boolean {
@@ -31,15 +37,14 @@ export function decryptSecret(ciphertext: string | null | undefined, location: s
   if (ciphertext == null) return null;
   if (ciphertext === '') return '';
   if (!ciphertext.startsWith(PREFIX)) {
-    warnPlaintext(location);
-    return ciphertext;
+    throw decryptFailure('plaintext row detected', location);
   }
   return decrypt(ciphertext.slice(PREFIX.length));
 }
 
 // JSONB columns store { "_enc": "enc:v1:<base64>" }. The empty object {}
 // is the schema default and is passed through as-is (no credentials to
-// protect). Non-empty plaintext objects are transitional and logged.
+// protect). Non-empty plaintext objects are a bug signal — throw.
 export function encryptJsonField(
   obj: Record<string, unknown> | null | undefined
 ): Record<string, string> | Record<string, never> | null {
@@ -65,11 +70,5 @@ export function decryptJsonField(
     const plaintext = decrypt((obj._enc as string).slice(PREFIX.length));
     return JSON.parse(plaintext) as Record<string, unknown>;
   }
-  warnPlaintext(location);
-  return obj;
-}
-
-// Testing hook — lets specs reset the dedup cache between cases.
-export function __resetPlaintextWarnings(): void {
-  seenPlaintext.clear();
+  throw decryptFailure('plaintext JSON object detected', location);
 }
