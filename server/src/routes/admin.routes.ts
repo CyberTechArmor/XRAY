@@ -157,6 +157,37 @@ router.patch('/tenants/:id/status', async (req, res, next) => {
   }
 });
 
+// POST /invite-tenant-owner - send a branded tenant-owner invite. The
+// recipient clicks through a signup magic link pre-populated with the
+// proposed owner name and tenant name; completeSignup creates the
+// tenant with them as the first user. Useful when an operator wants
+// to hand a paying customer a one-click onboarding link.
+router.post('/invite-tenant-owner', async (req, res, next) => {
+  try {
+    const { email, name, tenantName } = req.body || {};
+    if (typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({ ok: false, error: { code: 'MISSING_EMAIL', message: 'Recipient email is required' } });
+    }
+    if (typeof tenantName !== 'string' || !tenantName.trim()) {
+      return res.status(400).json({ ok: false, error: { code: 'MISSING_TENANT_NAME', message: 'Proposed organization name is required' } });
+    }
+    const result = await adminService.inviteTenantOwner({
+      email: email.trim(),
+      name: (typeof name === 'string' ? name : '').trim() || email.trim().split('@')[0],
+      tenantName: tenantName.trim(),
+      invitedByUserId: req.user!.sub,
+      invitedByTenantId: req.user!.tid,
+    });
+    res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /tenants/:id/members - list tenant members
 router.get('/tenants/:id/members', async (req, res, next) => {
   try {
@@ -261,6 +292,54 @@ router.patch('/dashboards/:id', async (req, res, next) => {
     res.json({
       ok: true,
       data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /dashboards/:id/grants - list tenants that have been granted
+// access to a Custom Global. Returns []` for non-custom dashboards.
+router.get('/dashboards/:id/grants', async (req, res, next) => {
+  try {
+    const result = await adminService.listDashboardGrants(req.params.id);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /dashboards/:id/grants - grant a tenant access to a Custom
+// Global. Body: { tenantId }. Idempotent; re-granting is a no-op.
+router.post('/dashboards/:id/grants', async (req, res, next) => {
+  try {
+    const { tenantId } = req.body || {};
+    if (typeof tenantId !== 'string' || !tenantId) {
+      return res.status(400).json({ ok: false, error: { code: 'MISSING_TENANT_ID', message: 'tenantId is required' } });
+    }
+    const result = await adminService.grantDashboardToTenant(req.params.id, tenantId, req.user!.sub);
+    res.status(201).json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /dashboards/:id/grants/:tenantId - revoke grant
+router.delete('/dashboards/:id/grants/:tenantId', async (req, res, next) => {
+  try {
+    await adminService.revokeDashboardGrant(req.params.id, req.params.tenantId, req.user!.sub);
+    res.json({
+      ok: true,
+      data: { revoked: true },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {

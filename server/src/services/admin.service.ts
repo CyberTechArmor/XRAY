@@ -7,6 +7,7 @@ import { mintPipelineJwt, isPipelineJwtConfigured } from '../lib/pipeline-jwt';
 import * as integrationService from './integration.service';
 import { refreshCache as refreshSettingsCache } from './settings.service';
 import * as auditService from './audit.service';
+import * as authService from './auth.service';
 
 function decryptConnectionRow<T extends { id: string; connection_details?: string | null }>(row: T): T {
   if (row.connection_details !== undefined) {
@@ -31,21 +32,85 @@ function decryptDashboardRow<T extends { id: string; bridge_secret?: unknown }>(
 
 export async function listAllTenants(query: { page: number; limit: number }) {
   return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     const offset = (query.page - 1) * query.limit;
     const countResult = await client.query('SELECT COUNT(*) FROM platform.tenants');
     const total = parseInt(countResult.rows[0].count, 10);
+    // Join:
+    //   - billing_state for plan_tier + payment_status (existing)
+    //   - owner user for owner_email (existing)
+    //   - MAX(audit_log.created_at) for dashboard.opened — the simplest
+    //     "last render" signal without adding a new audit action. No
+    //     migration needed.
+    //   - platform_settings for billing override flag (key pattern
+    //     `billing.override.<tenant_id>`, value='true' = overridden).
     const result = await client.query(
       `SELECT t.*, bs.plan_tier AS plan, bs.dashboard_limit, bs.payment_status,
+              bs.current_period_end,
               o.email AS owner_email,
-              (SELECT COUNT(*) FROM platform.users u WHERE u.tenant_id = t.id) AS member_count
+              (SELECT COUNT(*) FROM platform.users u WHERE u.tenant_id = t.id) AS member_count,
+              (
+                SELECT MAX(created_at) FROM platform.audit_log al
+                 WHERE al.tenant_id = t.id AND al.action = 'dashboard.opened'
+              ) AS last_render_at,
+              EXISTS(
+                SELECT 1 FROM platform.platform_settings ps
+                 WHERE ps.key = 'billing.override.' || t.id::text AND ps.value = 'true'
+              ) AS billing_override
        FROM platform.tenants t
        LEFT JOIN platform.billing_state bs ON bs.tenant_id = t.id
        LEFT JOIN platform.users o ON o.id = t.owner_user_id
        ORDER BY t.created_at DESC LIMIT $1 OFFSET $2`,
       [query.limit, offset]
     );
-    return { data: result.rows, total, page: query.page, limit: query.limit };
+    // Derive a simplified Active/Inactive signal for the admin row,
+    // favoring the explicit override. Matches the operator's
+    // preferred row-level granularity ("real-time gate means only two
+    // states ever appear here").
+    const rows = result.rows.map((r: any) => {
+      let subStatus: 'active' | 'inactive' | 'override' = 'inactive';
+      if (r.billing_override) subStatus = 'override';
+      else if (r.payment_status === 'active' || r.payment_status === 'trialing') subStatus = 'active';
+      return { ...r, subscription_status_simple: subStatus };
+    });
+    return { data: rows, total, page: query.page, limit: query.limit };
   });
+}
+
+// Admin-driven "invite a tenant owner" — routes through the same
+// signup magic-link path a normal self-signup uses, so completeSignup
+// creates the tenant + user + billing_state atomically. Sends the
+// signup_verification email today; commit (v) will rebrand this
+// path as `tenant_invitation` once the template is seeded.
+export async function inviteTenantOwner(input: {
+  email: string;
+  name: string;
+  tenantName: string;
+  invitedByUserId: string;
+  invitedByTenantId: string;
+}): Promise<{ message: string; email: string; tenantName: string }> {
+  const result = await authService.initiateSignup({
+    email: input.email,
+    name: input.name,
+    tenantName: input.tenantName,
+  });
+
+  auditService.log({
+    tenantId: input.invitedByTenantId,
+    userId: input.invitedByUserId,
+    action: 'tenant.owner_invited',
+    resourceType: 'tenant',
+    metadata: {
+      email: input.email,
+      proposed_tenant_name: input.tenantName,
+    },
+  });
+
+  return {
+    message: result.message,
+    email: input.email,
+    tenantName: input.tenantName,
+  };
 }
 
 export async function createTenant(input: { name: string; slug: string }) {
@@ -425,6 +490,111 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
     const dash = result.rows[0];
     auditService.log({ tenantId: dash.tenant_id, action: 'dashboard.update', resourceType: 'dashboard', resourceId: dashboardId, metadata: { fields: Object.keys(updates) } });
     return decryptDashboardRow(dash);
+  });
+}
+
+// ── Dashboard tenant grants (Custom Globals only) ─────────────
+//
+// Integration-connected Globals gate on the viewer's active
+// connection — no grant table needed. Custom Globals (integration
+// IS NULL, scope='global') are opt-in per tenant; the 027 migration
+// added `platform.dashboard_tenant_grants` and the render path
+// honors grant rows. These three helpers back the admin grant-
+// management UI surfaced on admin_dashboards in step 5 (iii).
+
+export async function listDashboardGrants(dashboardId: string): Promise<Array<{
+  tenant_id: string;
+  tenant_name: string;
+  tenant_slug: string;
+  granted_by: string | null;
+  granted_by_email: string | null;
+  created_at: string;
+}>> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      `SELECT g.tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
+              g.granted_by, u.email AS granted_by_email, g.created_at
+         FROM platform.dashboard_tenant_grants g
+         JOIN platform.tenants t ON t.id = g.tenant_id
+    LEFT JOIN platform.users u ON u.id = g.granted_by
+        WHERE g.dashboard_id = $1
+     ORDER BY g.created_at DESC`,
+      [dashboardId]
+    );
+    return result.rows;
+  });
+}
+
+export async function grantDashboardToTenant(
+  dashboardId: string,
+  tenantId: string,
+  grantedByUserId: string
+): Promise<{ dashboard_id: string; tenant_id: string; granted_by: string; created_at: string }> {
+  return withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+
+    // Guard: only apply grants to Custom Globals. Integration Globals
+    // gate via connection and a grant row here is noise; tenant-scoped
+    // dashboards have no grant semantics.
+    const dashRes = await client.query(
+      `SELECT id, scope, integration FROM platform.dashboards WHERE id = $1`,
+      [dashboardId]
+    );
+    if (dashRes.rows.length === 0) {
+      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+    }
+    const dash = dashRes.rows[0];
+    if (dash.scope !== 'global' || dash.integration) {
+      throw new AppError(400, 'NOT_CUSTOM_GLOBAL', 'Grants only apply to Custom Globals (global scope + no integration).');
+    }
+
+    const tenantRes = await client.query('SELECT id FROM platform.tenants WHERE id = $1', [tenantId]);
+    if (tenantRes.rows.length === 0) {
+      throw new AppError(404, 'TENANT_NOT_FOUND', 'Tenant not found');
+    }
+
+    const insertRes = await client.query(
+      `INSERT INTO platform.dashboard_tenant_grants (dashboard_id, tenant_id, granted_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (dashboard_id, tenant_id) DO UPDATE
+         SET granted_by = EXCLUDED.granted_by
+       RETURNING dashboard_id, tenant_id, granted_by, created_at`,
+      [dashboardId, tenantId, grantedByUserId]
+    );
+
+    auditService.log({
+      tenantId,
+      userId: grantedByUserId,
+      action: 'dashboard.grant_added',
+      resourceType: 'dashboard',
+      resourceId: dashboardId,
+      metadata: { granted_tenant_id: tenantId },
+    });
+
+    return insertRes.rows[0];
+  });
+}
+
+export async function revokeDashboardGrant(
+  dashboardId: string,
+  tenantId: string,
+  revokedByUserId: string
+): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    await client.query(
+      `DELETE FROM platform.dashboard_tenant_grants WHERE dashboard_id = $1 AND tenant_id = $2`,
+      [dashboardId, tenantId]
+    );
+    auditService.log({
+      tenantId,
+      userId: revokedByUserId,
+      action: 'dashboard.grant_removed',
+      resourceType: 'dashboard',
+      resourceId: dashboardId,
+      metadata: { revoked_tenant_id: tenantId },
+    });
   });
 }
 
