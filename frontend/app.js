@@ -1155,6 +1155,22 @@
   }
   window.__xrayToast = toast;
 
+  // ── Billing-event fanout ──
+  // The WS `billing:updated` path can have multiple interested views
+  // at the same time (dashboard_list paywall + billing page + admin
+  // tenants). A single `window.__xrayBillingChanged = fn` would let
+  // whichever view registered last clobber the rest. Views call
+  // __xrayOnBilling(fn) on mount and we fan out to all of them.
+  window.__xrayBillingSubscribers = window.__xrayBillingSubscribers || [];
+  window.__xrayOnBilling = function(fn) {
+    if (typeof fn !== 'function') return function() {};
+    window.__xrayBillingSubscribers.push(fn);
+    return function unsubscribe() {
+      var i = window.__xrayBillingSubscribers.indexOf(fn);
+      if (i >= 0) window.__xrayBillingSubscribers.splice(i, 1);
+    };
+  };
+
   // ── Alert / Confirm modals ──
   // In-app replacements for browser alert() / confirm(). Both return
   // Promises so existing `if (!confirm(...)) return;` call sites
@@ -1416,14 +1432,14 @@
     this.disabled = true;
     var btn = this;
     api.post('/api/auth/magic-link', { email: email }).then(function(d) {
-      btn.disabled = false;
       if (!d.ok) { showAuthErr('login-err', (d.error && d.error.message) || 'Failed to send code.'); return; }
       pendingEmail = email;
       pendingFlow = 'login';
       window.__pendingFlow = 'login';
       document.getElementById('verify-sub').textContent = 'We sent a 6-digit code to ' + email;
       showLandingForm('verify');
-    }).catch(function() { btn.disabled = false; showAuthErr('login-err', 'Network error.'); });
+    }).catch(function() { showAuthErr('login-err', 'Network error.'); })
+      .finally(function() { btn.disabled = false; });
   };
 
   document.getElementById('land-login-email').onkeydown = function(e) {
@@ -1520,14 +1536,26 @@
     this.disabled = true;
     var btn = this;
     api.post('/api/auth/signup', { name: name, email: email, tenantName: org }).then(function(d) {
-      btn.disabled = false;
-      if (!d.ok) { showAuthErr('signup-err', (d.error && d.error.message) || 'Signup failed.'); return; }
+      if (!d.ok) {
+        var code = d.error && d.error.code;
+        var msg = (d.error && d.error.message) || 'Signup failed.';
+        if (code === 'SLUG_TAKEN' || code === 'TENANT_EXISTS' || code === 'INVALID_TENANT_NAME') {
+          var orgEl = document.getElementById('signup-org');
+          if (orgEl) { orgEl.focus(); orgEl.select(); }
+        } else if (code === 'EMAIL_EXISTS') {
+          var emEl = document.getElementById('signup-email');
+          if (emEl) { emEl.focus(); emEl.select(); }
+        }
+        showAuthErr('signup-err', msg);
+        return;
+      }
       pendingEmail = email;
       pendingFlow = 'signup';
       window.__pendingFlow = 'signup';
       document.getElementById('verify-sub').textContent = 'We sent a 6-digit code to ' + email;
       showLandingForm('verify');
-    }).catch(function() { btn.disabled = false; showAuthErr('signup-err', 'Network error.'); });
+    }).catch(function() { showAuthErr('signup-err', 'Network error.'); })
+      .finally(function() { btn.disabled = false; });
   };
 
   // Signup Enter key
@@ -1550,11 +1578,19 @@
     this.disabled = true;
     var btn = this;
     api.post('/api/auth/setup', { name: name, email: email, tenantName: org }).then(function(d) {
-      btn.disabled = false;
-      if (!d.ok) { showAuthErr('setup-err', (d.error && d.error.message) || 'Setup failed.'); return; }
+      if (!d.ok) {
+        var code = d.error && d.error.code;
+        var msg = (d.error && d.error.message) || 'Setup failed.';
+        if (code === 'SLUG_TAKEN' || code === 'TENANT_EXISTS' || code === 'INVALID_TENANT_NAME') {
+          document.getElementById('setup-org').focus();
+        }
+        showAuthErr('setup-err', msg);
+        return;
+      }
       accessToken = d.data.accessToken;
       enterApp();
-    }).catch(function() { btn.disabled = false; showAuthErr('setup-err', 'Network error.'); });
+    }).catch(function() { showAuthErr('setup-err', 'Network error.'); })
+      .finally(function() { btn.disabled = false; });
   };
 
   // Setup Enter key
@@ -1573,8 +1609,12 @@
     this.disabled = true;
     var btn = this;
     api.post('/api/auth/verify', { email: pendingEmail, code: code }).then(function(d) {
-      btn.disabled = false;
-      if (!d.ok) { showAuthErr('verify-err', (d.error && d.error.message) || 'Invalid code.'); return; }
+      if (!d.ok) {
+        var errCode = d.error && d.error.code;
+        var msg = (d.error && d.error.message) || 'Invalid code.';
+        showVerifyError(errCode, msg);
+        return;
+      }
       // Multi-tenant: show tenant picker
       if (d.data.tenants && d.data.tenants.length > 1) {
         showTenantPicker(d.data.tenants, d.data.email);
@@ -1582,8 +1622,52 @@
       }
       accessToken = d.data.accessToken;
       enterApp();
-    }).catch(function() { btn.disabled = false; showAuthErr('verify-err', 'Network error.'); });
+    }).catch(function() { showAuthErr('verify-err', 'Network error.'); })
+      .finally(function() { btn.disabled = false; });
   };
+
+  // Show verify-form error with an embedded "Resend code" CTA when the
+  // failure is due to an expired/used magic link. Clicking resends via
+  // the same endpoint that initiated the flow (signup vs. login) so the
+  // user can recover without retyping anything.
+  function showVerifyError(code, msg) {
+    var errEl = document.getElementById('verify-err');
+    if (!errEl) { showAuthErr('verify-err', msg); return; }
+    var retryable = code === 'MAGIC_LINK_EXPIRED' || code === 'MAGIC_LINK_USED' || code === 'MAX_ATTEMPTS';
+    errEl.innerHTML = '';
+    var msgSpan = document.createElement('span');
+    msgSpan.textContent = msg;
+    errEl.appendChild(msgSpan);
+    if (retryable && pendingEmail) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Resend code';
+      btn.style.cssText = 'margin-left:8px;background:none;border:none;color:inherit;text-decoration:underline;cursor:pointer;padding:0;font:inherit';
+      btn.onclick = function() {
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+        var endpoint = pendingFlow === 'signup' ? '/api/auth/signup' : '/api/auth/magic-link';
+        var body = pendingFlow === 'signup'
+          ? { email: pendingEmail, name: document.getElementById('signup-name').value.trim(), tenantName: document.getElementById('signup-org').value.trim() }
+          : { email: pendingEmail };
+        api.post(endpoint, body).then(function(r) {
+          if (r && r.ok) {
+            errEl.textContent = 'A new code has been sent to ' + pendingEmail + '.';
+          } else {
+            btn.disabled = false;
+            btn.textContent = 'Resend code';
+            errEl.textContent = (r && r.error && r.error.message) || 'Could not resend the code.';
+          }
+        }).catch(function() {
+          btn.disabled = false;
+          btn.textContent = 'Resend code';
+          errEl.textContent = 'Network error — try again.';
+        });
+      };
+      errEl.appendChild(btn);
+    }
+    errEl.style.display = '';
+  }
 
   document.getElementById('verify-code').onkeydown = function(e) {
     if (e.key === 'Enter') document.getElementById('btn-verify').click();
@@ -1661,10 +1745,69 @@
         if (d.data.accessToken) {
           accessToken = d.data.accessToken;
           enterApp();
+          return;
         }
       }
+      // Verify failed — surface the specific error on the login form
+      // and open the modal so the user can request a fresh link instead
+      // of staring at a blank page.
+      document.getElementById('landing-screen').style.display = '';
+      openModal('login');
+      var code = d && d.error && d.error.code;
+      var msg = (d && d.error && d.error.message) || 'This link is no longer valid.';
+      showMagicLinkExpiredOnLogin(code, msg);
+    }).catch(function() {
+      document.getElementById('landing-screen').style.display = '';
+      openModal('login');
+      showMagicLinkExpiredOnLogin('NETWORK', 'Network error — could not verify the link.');
     });
     return true;
+  }
+
+  // Render the login form's error area with a re-request CTA when a
+  // magic-link verify fails with a known code. The button re-submits
+  // the email through /api/auth/magic-link so the user never has to
+  // retype anything.
+  function showMagicLinkExpiredOnLogin(code, msg) {
+    var errEl = document.getElementById('login-err');
+    if (!errEl) return;
+    var retryable = code === 'MAGIC_LINK_EXPIRED' || code === 'MAGIC_LINK_USED' || code === 'INVALID_TOKEN';
+    errEl.innerHTML = '';
+    var msgSpan = document.createElement('span');
+    msgSpan.textContent = msg;
+    errEl.appendChild(msgSpan);
+    if (retryable) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Send a new link';
+      btn.style.cssText = 'margin-left:8px;background:none;border:none;color:inherit;text-decoration:underline;cursor:pointer;padding:0;font:inherit';
+      btn.onclick = function() {
+        var email = (document.getElementById('land-login-email') || { value: '' }).value.trim();
+        if (!email) {
+          errEl.textContent = 'Enter your email above, then click Send a new link.';
+          var emailEl = document.getElementById('land-login-email');
+          if (emailEl) emailEl.focus();
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+        api.post('/api/auth/magic-link', { email: email }).then(function(r) {
+          if (r && r.ok) {
+            errEl.textContent = 'A new link has been sent to ' + email + '.';
+          } else {
+            btn.disabled = false;
+            btn.textContent = 'Send a new link';
+            errEl.textContent = (r && r.error && r.error.message) || 'Could not send a new link.';
+          }
+        }).catch(function() {
+          btn.disabled = false;
+          btn.textContent = 'Send a new link';
+          errEl.textContent = 'Network error — try again.';
+        });
+      };
+      errEl.appendChild(btn);
+    }
+    errEl.style.display = '';
   }
 
   // ── Enter app ──
@@ -3041,8 +3184,8 @@
           if (window.__xrayRefreshTeamView) window.__xrayRefreshTeamView();
         } else if (msg.type === 'billing:updated' && msg.data) {
           // Billing gate changed — reload dashboard view to update access
-          if (msg.data.gateChanged) {
-            // Admin changed gate products — re-check billing silently
+          if (msg.data.gateChanged || msg.data.togglesChanged) {
+            // Admin changed product config — re-check billing silently
           } else if (msg.data.hasVision) {
             if (window.__xrayToast) window.__xrayToast('Subscription activated! Dashboard access granted.', 'success');
           } else if (msg.data.hasVision === false) {
@@ -3050,7 +3193,14 @@
           }
           // Refresh dashboard list view to re-check billing from server
           if (window.__xrayRefreshDashboardList) window.__xrayRefreshDashboardList();
-          // Trigger a re-check of billing status for any active dashboard view
+          // Fan out to every billing subscriber registered with
+          // __xrayOnBilling(). Fallback to the legacy single-handler
+          // hook so any older bundle still wires up.
+          if (Array.isArray(window.__xrayBillingSubscribers)) {
+            window.__xrayBillingSubscribers.slice().forEach(function(fn) {
+              try { fn(msg.data); } catch (e) {}
+            });
+          }
           if (window.__xrayBillingChanged) window.__xrayBillingChanged(msg.data);
         } else if (msg.type === 'tenant:replay-changed' && msg.data) {
           // Replay toggle changed by platform admin — update sidebar in real-time
