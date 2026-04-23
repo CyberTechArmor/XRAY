@@ -1,4 +1,4 @@
-import { withClient } from '../db/connection';
+import { withAdminClient, withTenantContext } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 
 export interface FileRecord {
@@ -25,8 +25,7 @@ export async function createFileRecord(input: {
   contextType: string;
   contextId?: string;
 }): Promise<FileRecord> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withTenantContext(input.tenantId, async (client) => {
     const result = await client.query(
       `INSERT INTO platform.file_uploads
         (tenant_id, uploaded_by, original_name, stored_name, mime_type, size_bytes, context_type, context_id)
@@ -42,9 +41,11 @@ export async function createFileRecord(input: {
 }
 
 // ── Get file by ID ──
+// Cross-tenant by design — /uploads/:filename/download resolves files
+// by stored_name without knowing which tenant owns them; authorization
+// for the serve happens at the route layer.
 export async function getFileById(fileId: string): Promise<FileRecord> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     // Try by UUID first, then by stored_name (for /uploads/:filename/download URLs)
     let result: any = { rows: [] };
     // Only try UUID lookup if it looks like a UUID (avoid PG cast error)
@@ -74,9 +75,8 @@ export async function listFilesByContext(
   contextId: string,
   tenantId?: string
 ): Promise<FileRecord[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-    if (tenantId) {
+  const query = async (client: import('pg').PoolClient, scoped: boolean) => {
+    if (scoped) {
       const result = await client.query(
         `SELECT * FROM platform.file_uploads
          WHERE context_type = $1 AND context_id = $2 AND tenant_id = $3
@@ -92,15 +92,18 @@ export async function listFilesByContext(
       [contextType, contextId]
     );
     return result.rows;
-  });
+  };
+  if (tenantId) {
+    return withTenantContext(tenantId, (c) => query(c, true));
+  }
+  return withAdminClient((c) => query(c, false));
 }
 
 // ── List all billing files across tenants (platform admin) ──
 export async function listAllBillingFiles(
   opts: { limit?: number; offset?: number }
 ): Promise<{ rows: any[]; total: number }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const countResult = await client.query(
       `SELECT count(*)::int AS total FROM platform.file_uploads WHERE context_type = 'invoice'`
     );
@@ -125,8 +128,7 @@ export async function listAllFiles(
   tenantId: string,
   opts: { contextType?: string; limit?: number; offset?: number }
 ): Promise<{ rows: FileRecord[]; total: number }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withTenantContext(tenantId, async (client) => {
     const conditions = ['tenant_id = $1'];
     const params: unknown[] = [tenantId];
     if (opts.contextType) {
@@ -157,8 +159,7 @@ export async function listAllFiles(
 export async function listAllFilesAdmin(
   opts: { contextType?: string; tenantId?: string; limit?: number; offset?: number }
 ): Promise<{ rows: any[]; total: number }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (opts.contextType) {
@@ -191,13 +192,13 @@ export async function listAllFilesAdmin(
 }
 
 // ── Share file to a tenant (creates a linked record pointing to same stored file) ──
+// Reads from one tenant and writes to another — cross-tenant by design.
 export async function shareFileToTenant(
   fileId: string,
   targetTenantId: string,
   sharedBy: string
 ): Promise<FileRecord> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const orig = await client.query(`SELECT * FROM platform.file_uploads WHERE id = $1`, [fileId]);
     if (orig.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'File not found');
     const f = orig.rows[0];
@@ -221,9 +222,10 @@ export async function shareFileToTenant(
 }
 
 // ── Delete file record ──
+// Lookup by ID only; caller-side authorization decides whether the
+// delete is allowed.
 export async function deleteFileRecord(fileId: string): Promise<{ id: string }> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `DELETE FROM platform.file_uploads WHERE id = $1 RETURNING id, stored_name`,
       [fileId]
