@@ -38,6 +38,27 @@ function decryptDashboardRow<T extends { id: string; bridge_secret?: unknown }>(
   return row;
 }
 
+// Replace public_token / is_public on a listDashboards row with the
+// tenant-effective values produced by the LEFT JOIN on
+// platform.dashboard_shares. For tenant-scoped rows the SQL CASE
+// falls through to d.public_token / d.is_public so nothing changes.
+// For Globals (d.public_token is always NULL on the dashboards row
+// per migration 025), this is what surfaces the per-tenant share
+// state so the dashboard list can render the share button state
+// correctly for non-admin users too.
+function applyShareOverrides<T extends Record<string, unknown>>(row: T): T {
+  const r = row as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(r, 'effective_public_token')) {
+    r.public_token = r.effective_public_token ?? null;
+    delete r.effective_public_token;
+  }
+  if (Object.prototype.hasOwnProperty.call(r, 'effective_is_public')) {
+    r.is_public = !!r.effective_is_public;
+    delete r.effective_is_public;
+  }
+  return row;
+}
+
 interface Dashboard {
   id: string;
   tenant_id: string;
@@ -148,36 +169,46 @@ export async function listDashboards(
     // every Global (regardless of rendering-tenant eligibility).
     if (isPlatformAdmin) {
       const result = await client.query(
-        `SELECT d.*, t.name as tenant_name, ${viewCountSub}, ${connectorsSub}
+        `SELECT d.*, t.name as tenant_name, ${viewCountSub}, ${connectorsSub},
+                CASE WHEN d.scope = 'global' THEN s.public_token ELSE d.public_token END AS effective_public_token,
+                CASE WHEN d.scope = 'global' THEN COALESCE(s.is_public, false) ELSE d.is_public END AS effective_is_public
          FROM platform.dashboards d
          LEFT JOIN platform.tenants t ON t.id = d.tenant_id
-         ORDER BY d.updated_at DESC`
+         LEFT JOIN platform.dashboard_shares s ON s.dashboard_id = d.id AND s.tenant_id = $1
+         ORDER BY d.updated_at DESC`,
+        [tenantId]
       );
-      return result.rows.map(decryptDashboardRow);
+      return result.rows.map(applyShareOverrides).map(decryptDashboardRow);
     }
 
     await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
 
     if (hasManagePermission) {
       const result = await client.query(
-        `SELECT d.*, ${viewCountSub}, ${connectorsSub}
+        `SELECT d.*, ${viewCountSub}, ${connectorsSub},
+                CASE WHEN d.scope = 'global' THEN s.public_token ELSE d.public_token END AS effective_public_token,
+                CASE WHEN d.scope = 'global' THEN COALESCE(s.is_public, false) ELSE d.is_public END AS effective_is_public
          FROM platform.dashboards d
+         LEFT JOIN platform.dashboard_shares s ON s.dashboard_id = d.id AND s.tenant_id = $1
          WHERE (d.scope = 'tenant' AND d.tenant_id = $1)
             OR (${globalEligibleWhere})
          ORDER BY d.updated_at DESC`,
         [tenantId]
       );
-      return result.rows.map(decryptDashboardRow);
+      return result.rows.map(applyShareOverrides).map(decryptDashboardRow);
     }
 
     // Regular users: only dashboards they have explicit access to,
     // plus eligible Globals (eligibility is a tenant property, so a
     // manage grant isn't required).
     const result = await client.query(
-      `SELECT d.*, ${viewCountSub}, ${connectorsSub}
+      `SELECT d.*, ${viewCountSub}, ${connectorsSub},
+              CASE WHEN d.scope = 'global' THEN s.public_token ELSE d.public_token END AS effective_public_token,
+              CASE WHEN d.scope = 'global' THEN COALESCE(s.is_public, false) ELSE d.is_public END AS effective_is_public
        FROM platform.dashboards d
        LEFT JOIN platform.dashboard_access da
          ON da.dashboard_id = d.id AND da.user_id = $2
+       LEFT JOIN platform.dashboard_shares s ON s.dashboard_id = d.id AND s.tenant_id = $1
        WHERE d.status IN ('active', 'disabled')
          AND (
            (d.scope = 'tenant' AND d.tenant_id = $1 AND da.user_id IS NOT NULL)
@@ -186,7 +217,7 @@ export async function listDashboards(
        ORDER BY d.updated_at DESC`,
       [tenantId, userId]
     );
-    return result.rows.map(decryptDashboardRow);
+    return result.rows.map(applyShareOverrides).map(decryptDashboardRow);
   });
 }
 
