@@ -26,7 +26,11 @@ CREATE TABLE IF NOT EXISTS platform.fan_out_runs (
     -- send one; service creates a fresh run in that case.
     idempotency_key             TEXT,
     target_url                  TEXT NOT NULL,
-    window                      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- Named window_params (not `window`) because `window` is a reserved
+    -- keyword in PostgreSQL (used for window functions). The public
+    -- JSON field (request body + envelope JWT claim) stays named
+    -- `window` — the column rename is SQL-only.
+    window_params               JSONB NOT NULL DEFAULT '{}'::jsonb,
     metadata                    JSONB NOT NULL DEFAULT '{}'::jsonb,
     dispatched                  INTEGER NOT NULL DEFAULT 0,
     skipped_needs_reconnect     INTEGER NOT NULL DEFAULT 0,
