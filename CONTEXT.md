@@ -1448,3 +1448,102 @@ the new `app.js?v=31` downloads cleanly):
 - **RLS decorative, plaintext-read fallback, `withClient` ->
   `withTenantContext` migration** — all still step 6. Unchanged by
   4c.
+
+### Step-4c follow-ups shipped in the same branch (post-deploy UX round)
+
+Four extra UX reports came in after the original 4c commits landed on
+the VPS. They all fit inside 4c's "post-4b cleanup" scope rather than
+deserving their own step, so they shipped on the same branch:
+
+- **Global-share "skeleton page".** `resolveAccessTokenForRender`
+  was silently degrading for `not_connected` / `unknown_integration`
+  in the public-share path, producing a zero-access-token bridge
+  call whose n8n response came back empty. For the Global branch
+  (where `sharing_tenant_id` is definite), this now throws 409
+  `OAUTH_NOT_CONNECTED` with a legible reason so the share page
+  shows the message instead of a blank iframe. Plus `POST
+  /:id/share` clears the share cache for the token it returns, for
+  symmetry with PATCH/DELETE.
+
+- **Disconnect confirm + toast use `display_name`.** "Disconnect
+  housecall_pro?" -> "Disconnect HouseCall Pro?" by looking up
+  `display_name` from the local My-Integrations array by slug. The
+  disconnecting tab also now calls `loadDashboards()` locally so
+  its own UI updates deterministically without waiting on the WS
+  round-trip (the WS broadcast still fires for every other tab).
+
+- **Paste-key autofocus.** Clicking "Paste key" in the Connect
+  modal now focuses `#connect-api-key-input` on the next tick so
+  the user can paste immediately.
+
+- **Three-state share button + non-admin can copy Globals.** The
+  card share button now has three states: red (no share link,
+  admin-only — click creates), amber (internal link, admin-only —
+  click manages), green (publicly shared — any tenant user can see
+  and copy). Background is solid grey (`#1a1c26`) so it stays
+  legible over tile images; state shows via border + icon color
+  only. Root cause of non-admins being unable to copy: each
+  listDashboards variant returned `d.public_token = NULL` for
+  Globals because the per-tenant share token lives in
+  `platform.dashboard_shares`. Fixed by LEFT JOIN on
+  `dashboard_shares` keyed on `(dashboard_id, tenant_id = $1)` plus
+  a small post-processor that surfaces the tenant-effective
+  `public_token` / `is_public` on the canonical fields. Tenant-
+  scoped rows fall through unchanged. WS propagation works for
+  non-admins too — the `dashboard:share-changed` forwarder routes
+  to every dashboard_list handler regardless of role. Also fixed
+  the click-handler selector (`.dash-share-btn[data-share-idx]`
+  -> `.dash-share-btn`) so the non-admin copy button's click
+  actually fires.
+
+- **Rotate Link (new admin action).** Share modal gains a "Rotate
+  Link" button (amber styling) next to Revoke. `POST /:id/share/rotate`
+  issues a fresh token while keeping `is_public` untouched — single-
+  click security response to a leaked URL. Branches on scope:
+  Globals update `dashboard_shares.public_token`; Tenant rows
+  update `dashboards.public_token`. Both paths return the
+  previous token so the caller can clear the share cache for
+  both tokens.
+
+- **Rotate/Revoke kick live viewers.** On rotate or revoke, any
+  browser tab currently on the old `/share/<token>` URL gets
+  kicked to the standard "Dashboard not found or share link has
+  been revoked" screen in real time. Mechanism: a new
+  unauthenticated WS connection mode — `/ws?share_token=<token>`
+  — registers public share viewers in a token-keyed
+  `shareSubscribers` map on the server. `notifyShareRevoked(token,
+  reason)` sends `{type:'share:revoked', data:{reason}}` to every
+  subscriber and closes the socket. Wired into the rotate route
+  (with `previous_token`) and the revoke route (with
+  `revoked_token` captured via a pre-UPDATE SELECT so the
+  public-share path can be notified). Also removed the
+  sessionStorage cache in `share.html` that was making
+  hard-refresh render the old dashboard from the tab's local
+  store even after the server-side token was gone — the client
+  always re-fetches now; server-side `shareCache` remains the
+  performance layer.
+
+### Env changes (post-deploy round)
+
+Still none. The WS `share_token` mode piggybacks on the existing
+`/ws` endpoint. No new env vars, no new migrations, no docker-
+compose changes, no Dockerfile changes.
+
+### Verify on VPS after the follow-up deploy
+
+Browser-side smoke test (needs two tabs on two different accounts
+for some steps):
+
+1. As any tenant user (owner or member), view a Global whose tenant
+   has an active connection. Card shows the green share icon when
+   publicly shared, nothing when internal, nothing when not shared.
+2. As a non-admin tenant user, click the green share icon — URL
+   copies to clipboard.
+3. As admin, open the share modal on a shared dashboard. Click
+   "Rotate Link" -> confirm. The modal re-renders with the new URL.
+   In a separate incognito tab already on the old URL, the page
+   instantly flips to "Dashboard not found or share link has been
+   revoked" without any interaction. Hard-refresh that tab -> still
+   the revoked screen (no client cache, server 404s the old token).
+4. Click "Revoke Link" on a shared dashboard -> same kick behavior
+   on any live viewer.
