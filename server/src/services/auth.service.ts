@@ -27,6 +27,16 @@ interface MagicLink {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+// Derive a URL-safe slug from a tenant display name. Exported for reuse
+// (completeSignup + firstBootSetup + initiateSignup all funnel through
+// this single definition) and for the slug-collision spec.
+export function normalizeSlug(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 async function getUserPermissions(userId: string): Promise<string[]> {
   return withClient(async (client) => {
     const result = await client.query(
@@ -184,10 +194,10 @@ export async function firstBootSetup(input: {
     const roleId = roleResult.rows[0].id;
 
     // Create tenant
-    const slug = input.tenantName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
+    const slug = normalizeSlug(input.tenantName);
+    if (!slug) {
+      throw new AppError(400, 'INVALID_TENANT_NAME', 'Organization name must contain at least one letter or number.');
+    }
 
     const tenantResult = await client.query(
       `INSERT INTO platform.tenants (name, slug) VALUES ($1, $2) RETURNING *`,
@@ -307,6 +317,25 @@ export async function initiateSignup(input: {
     throw new AppError(409, 'TENANT_EXISTS', 'An organization with this name already exists. Please choose a different name.');
   }
 
+  // Also check slug collision up front — two distinct names can collapse
+  // to the same slug (e.g. "Acme Corp" and "Acme, Corp!") and we want the
+  // user to see a clear error now, not a 500 at completeSignup.
+  const derivedSlug = normalizeSlug(input.tenantName);
+  if (!derivedSlug) {
+    throw new AppError(400, 'INVALID_TENANT_NAME', 'Organization name must contain at least one letter or number.');
+  }
+  const existingSlug = await withClient(async (client) => {
+    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await client.query(
+      'SELECT id FROM platform.tenants WHERE slug = $1',
+      [derivedSlug]
+    );
+    return result.rows[0];
+  });
+  if (existingSlug) {
+    throw new AppError(409, 'SLUG_TAKEN', 'That organization name collides with an existing one. Please pick a more distinct name.');
+  }
+
   const { code, token } = await createMagicLink(input.email, 'signup', undefined, {
     name: input.name,
     tenantName: input.tenantName,
@@ -361,9 +390,13 @@ export async function verifyCode(input: {
   code: string;
 }): Promise<MagicLink> {
   return withClient(async (client) => {
+    // Read the most recent magic link for this email regardless of
+    // expiry/used state so we can return a specific error code for
+    // each failure mode (expired vs. used vs. no record vs. wrong
+    // code). Clients key a re-request CTA off MAGIC_LINK_EXPIRED.
     const result = await client.query(
       `SELECT * FROM platform.magic_links
-       WHERE email = $1 AND used = false AND expires_at > now()
+       WHERE email = $1
        ORDER BY created_at DESC
        LIMIT 1`,
       [input.email]
@@ -371,7 +404,15 @@ export async function verifyCode(input: {
 
     const magicLink = result.rows[0] as MagicLink | undefined;
     if (!magicLink) {
-      throw new AppError(400, 'INVALID_CODE', 'No valid verification code found');
+      throw new AppError(400, 'INVALID_CODE', 'No verification code found. Please request a new one.');
+    }
+
+    if (magicLink.used) {
+      throw new AppError(400, 'MAGIC_LINK_USED', 'This code has already been used. Please request a new one.');
+    }
+
+    if (new Date(magicLink.expires_at) <= new Date()) {
+      throw new AppError(400, 'MAGIC_LINK_EXPIRED', 'This code has expired. Please request a new one.');
     }
 
     if (magicLink.attempts >= config.magicLink.maxAttempts) {
@@ -380,7 +421,7 @@ export async function verifyCode(input: {
         'UPDATE platform.magic_links SET used = true WHERE id = $1',
         [magicLink.id]
       );
-      throw new AppError(400, 'MAX_ATTEMPTS', 'Maximum verification attempts exceeded');
+      throw new AppError(400, 'MAX_ATTEMPTS', 'Maximum verification attempts exceeded. Please request a new code.');
     }
 
     if (magicLink.code !== input.code) {
@@ -405,15 +446,26 @@ export async function verifyToken(token: string): Promise<MagicLink> {
   const tokenHash = hashToken(token);
 
   return withClient(async (client) => {
+    // Look up the magic link by token regardless of used/expiry so we
+    // can branch the error code — UI uses MAGIC_LINK_EXPIRED /
+    // MAGIC_LINK_USED to offer a "send me a new link" CTA instead of a
+    // generic "invalid token" dead end.
     const result = await client.query(
-      `SELECT * FROM platform.magic_links
-       WHERE token_hash = $1 AND used = false AND expires_at > now()`,
+      `SELECT * FROM platform.magic_links WHERE token_hash = $1`,
       [tokenHash]
     );
 
     const magicLink = result.rows[0] as MagicLink | undefined;
     if (!magicLink) {
-      throw new AppError(400, 'INVALID_TOKEN', 'Invalid or expired verification token');
+      throw new AppError(400, 'INVALID_TOKEN', 'Invalid verification link. Please request a new one.');
+    }
+
+    if (magicLink.used) {
+      throw new AppError(400, 'MAGIC_LINK_USED', 'This link has already been used. Please request a new one.');
+    }
+
+    if (new Date(magicLink.expires_at) <= new Date()) {
+      throw new AppError(400, 'MAGIC_LINK_EXPIRED', 'This link has expired. Please request a new one.');
     }
 
     // Mark as used
@@ -459,10 +511,10 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
     const roleId = roleResult.rows[0].id;
 
     // Create slug from tenant name
-    const slug = metadata.tenantName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
+    const slug = normalizeSlug(metadata.tenantName);
+    if (!slug) {
+      throw new AppError(400, 'INVALID_TENANT_NAME', 'Organization name must contain at least one letter or number.');
+    }
 
     // Check tenant name uniqueness (case-insensitive)
     const existingTenant = await client.query(
@@ -471,6 +523,18 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
     );
     if (existingTenant.rows.length > 0) {
       throw new AppError(409, 'TENANT_EXISTS', 'An organization with this name already exists. Please choose a different name.');
+    }
+
+    // Re-check slug collision at commit time — covers races where two
+    // signups were initiated concurrently with names that normalize to
+    // the same slug. Throwing here surfaces a legible error instead of
+    // a raw unique-constraint 500 on the INSERT below.
+    const existingSlug = await client.query(
+      'SELECT id FROM platform.tenants WHERE slug = $1',
+      [slug]
+    );
+    if (existingSlug.rows.length > 0) {
+      throw new AppError(409, 'SLUG_TAKEN', 'That organization name collides with an existing one. Please pick a more distinct name.');
     }
 
     // Create tenant
