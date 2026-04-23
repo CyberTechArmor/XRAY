@@ -683,12 +683,20 @@ router.patch('/:id/share', authenticateJWT, async (req, res, next) => {
       );
       const scope: 'tenant' | 'global' = scopeRow.rows[0]?.scope || 'tenant';
       if (scope === 'global') {
-        await client.query(
+        const updated = await client.query(
           `UPDATE platform.dashboard_shares
               SET is_public = $1, updated_at = now()
-            WHERE dashboard_id = $2 AND tenant_id = $3`,
+            WHERE dashboard_id = $2 AND tenant_id = $3
+          RETURNING dashboard_id`,
           [!!is_public, req.params.id, tenantIdForShare]
         );
+        if (updated.rows.length === 0) {
+          // PATCH is toggle-only; creating the share row is POST /:id/share's
+          // job. Fail loudly so a future UI regression that reorders PATCH
+          // before POST surfaces instead of silently no-opping.
+          const { AppError } = await import('../middleware/error-handler');
+          throw new AppError(404, 'SHARE_LINK_MISSING', 'Create the share link before toggling visibility.');
+        }
       } else {
         await client.query(
           'UPDATE platform.dashboards SET is_public = $1, updated_at = now() WHERE id = $2',
@@ -746,17 +754,59 @@ router.get('/:id/share', authenticateJWT, async (req, res, next) => {
       return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Only the owner or super admin can view share status' } });
     }
     const tenantId = await resolveDashboardTenant(req.params.id, req.user!);
-    const dashboard = await dashboardService.getDashboard(req.params.id, tenantId);
-    if (!dashboard.public_token) {
-      // No share link exists at all
+    // Branch on scope. `getDashboard` keys on (id, tenant_id) and Globals
+    // carry tenant_id=NULL, so hitting it for a Global returns
+    // DASHBOARD_NOT_FOUND ("Dashboard not found") — the symptom reported
+    // on the VPS. Globals' share state lives on platform.dashboard_shares
+    // keyed on (dashboard_id, sharing_tenant_id); look it up directly.
+    const { withClient } = await import('../db/connection');
+    const shareState = await withClient(async (client) => {
+      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const dash = await client.query(
+        'SELECT scope FROM platform.dashboards WHERE id = $1',
+        [req.params.id]
+      );
+      if (dash.rows.length === 0) {
+        const { AppError } = await import('../middleware/error-handler');
+        throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+      }
+      const scope: 'tenant' | 'global' = dash.rows[0].scope;
+      if (scope === 'global') {
+        const share = await client.query(
+          `SELECT public_token, is_public FROM platform.dashboard_shares
+            WHERE dashboard_id = $1 AND tenant_id = $2`,
+          [req.params.id, tenantId]
+        );
+        if (share.rows.length === 0) {
+          return { public_token: null as string | null, is_public: false };
+        }
+        return {
+          public_token: share.rows[0].public_token as string,
+          is_public: !!share.rows[0].is_public,
+        };
+      }
+      // Tenant scope: read off platform.dashboards as before.
+      const d = await client.query(
+        'SELECT public_token, is_public FROM platform.dashboards WHERE id = $1 AND tenant_id = $2',
+        [req.params.id, tenantId]
+      );
+      if (d.rows.length === 0) {
+        const { AppError } = await import('../middleware/error-handler');
+        throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+      }
+      return {
+        public_token: (d.rows[0].public_token as string | null) || null,
+        is_public: !!d.rows[0].is_public,
+      };
+    });
+    if (!shareState.public_token) {
       return res.json({ ok: true, data: { is_public: false, share_url: null, public_token: null } });
     }
-    // Link exists — return it regardless of is_public (internal vs public)
     const shareDomain = (await getSetting('platform.share_domain')) || (await getSetting('platform.domain')) || config.webauthn.origin;
-    const shareUrl = `${shareDomain.replace(/\/+$/, '')}/share/${dashboard.public_token}`;
+    const shareUrl = `${shareDomain.replace(/\/+$/, '')}/share/${shareState.public_token}`;
     return res.json({
       ok: true,
-      data: { is_public: !!dashboard.is_public, share_url: shareUrl, public_token: dashboard.public_token },
+      data: { is_public: shareState.is_public, share_url: shareUrl, public_token: shareState.public_token },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {
