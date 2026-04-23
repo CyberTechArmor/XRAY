@@ -497,6 +497,23 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       );
       return r.rows[0] || null;
     });
+
+    // Render-failure audit (step 6 vi). Emitted whether or not a
+    // cache fallback is available so the admin "Last failure"
+    // column reflects upstream health, not what the viewer saw.
+    auditService.log({
+      tenantId: renderingTenantId,
+      userId: req.user!.sub,
+      action: 'dashboard.render_failed',
+      resourceType: 'dashboard',
+      resourceId: req.params.id,
+      metadata: {
+        reason: lastError || 'fetch_failed',
+        attempts: MAX_ATTEMPTS,
+        scope: dashboard.scope,
+        fallback_used: !!cached,
+      },
+    });
     const fallbackHtml = cached?.view_html || (dashboard.scope === 'tenant' ? dashboard.view_html : null);
     const fallbackCss = cached?.view_css || (dashboard.scope === 'tenant' ? dashboard.view_css : null);
     const fallbackJs = cached?.view_js || (dashboard.scope === 'tenant' ? dashboard.view_js : null);
