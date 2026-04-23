@@ -1155,6 +1155,22 @@
   }
   window.__xrayToast = toast;
 
+  // ── Billing-event fanout ──
+  // The WS `billing:updated` path can have multiple interested views
+  // at the same time (dashboard_list paywall + billing page + admin
+  // tenants). A single `window.__xrayBillingChanged = fn` would let
+  // whichever view registered last clobber the rest. Views call
+  // __xrayOnBilling(fn) on mount and we fan out to all of them.
+  window.__xrayBillingSubscribers = window.__xrayBillingSubscribers || [];
+  window.__xrayOnBilling = function(fn) {
+    if (typeof fn !== 'function') return function() {};
+    window.__xrayBillingSubscribers.push(fn);
+    return function unsubscribe() {
+      var i = window.__xrayBillingSubscribers.indexOf(fn);
+      if (i >= 0) window.__xrayBillingSubscribers.splice(i, 1);
+    };
+  };
+
   // ── Alert / Confirm modals ──
   // In-app replacements for browser alert() / confirm(). Both return
   // Promises so existing `if (!confirm(...)) return;` call sites
@@ -3168,8 +3184,8 @@
           if (window.__xrayRefreshTeamView) window.__xrayRefreshTeamView();
         } else if (msg.type === 'billing:updated' && msg.data) {
           // Billing gate changed — reload dashboard view to update access
-          if (msg.data.gateChanged) {
-            // Admin changed gate products — re-check billing silently
+          if (msg.data.gateChanged || msg.data.togglesChanged) {
+            // Admin changed product config — re-check billing silently
           } else if (msg.data.hasVision) {
             if (window.__xrayToast) window.__xrayToast('Subscription activated! Dashboard access granted.', 'success');
           } else if (msg.data.hasVision === false) {
@@ -3177,7 +3193,14 @@
           }
           // Refresh dashboard list view to re-check billing from server
           if (window.__xrayRefreshDashboardList) window.__xrayRefreshDashboardList();
-          // Trigger a re-check of billing status for any active dashboard view
+          // Fan out to every billing subscriber registered with
+          // __xrayOnBilling(). Fallback to the legacy single-handler
+          // hook so any older bundle still wires up.
+          if (Array.isArray(window.__xrayBillingSubscribers)) {
+            window.__xrayBillingSubscribers.slice().forEach(function(fn) {
+              try { fn(msg.data); } catch (e) {}
+            });
+          }
           if (window.__xrayBillingChanged) window.__xrayBillingChanged(msg.data);
         } else if (msg.type === 'tenant:replay-changed' && msg.data) {
           // Replay toggle changed by platform admin — update sidebar in real-time

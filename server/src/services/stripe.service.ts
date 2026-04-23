@@ -498,6 +498,31 @@ export async function resumeSubscription(
   };
 }
 
+// Resolve the product-ID list for the tenant billing page from
+// settings. Prefer `stripe_billing_page_products`; fall back to
+// `stripe_gate_products` for installs that upgraded from (ii-a)
+// without reconfiguring. Exported for testing — tolerates malformed
+// JSON (treated as empty).
+export function resolveSubscribableProductIds(
+  billingRaw: string | null,
+  gateRaw: string | null
+): { ids: string[]; source: 'billing' | 'gate' | 'none' } {
+  function parse(raw: string | null): string[] {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+  const billing = parse(billingRaw);
+  if (billing.length > 0) return { ids: billing, source: 'billing' };
+  const gate = parse(gateRaw);
+  if (gate.length > 0) return { ids: gate, source: 'gate' };
+  return { ids: [], source: 'none' };
+}
+
 // Return the list of products the tenant can subscribe to from their
 // own billing page. Sourced from `stripe_billing_page_products` when
 // the admin has configured it; falls back to `stripe_gate_products`
@@ -512,21 +537,11 @@ export async function listSubscribableProducts(): Promise<Array<{
   currency: string | null;
   interval: string | null;
 }>> {
-  const billingRaw = await getSetting('stripe_billing_page_products');
-  let productIds: string[] = [];
-  let source: 'billing' | 'gate' = 'billing';
-  if (billingRaw) {
-    try { productIds = JSON.parse(billingRaw); } catch { productIds = []; }
-  }
-  if (productIds.length === 0) {
-    // Fallback: the gate-products list — keeps existing installs
-    // functional without requiring admin action.
-    source = 'gate';
-    const gateRaw = await getSetting('stripe_gate_products');
-    if (gateRaw) {
-      try { productIds = JSON.parse(gateRaw); } catch { productIds = []; }
-    }
-  }
+  const [billingRaw, gateRaw] = await Promise.all([
+    getSetting('stripe_billing_page_products'),
+    getSetting('stripe_gate_products'),
+  ]);
+  const { ids: productIds } = resolveSubscribableProductIds(billingRaw, gateRaw);
   if (productIds.length === 0) return [];
 
   const stripe = await getStripeClient();
@@ -551,9 +566,6 @@ export async function listSubscribableProducts(): Promise<Array<{
       // Skip products Stripe can't return — admin may have left stale IDs
     }
   }
-  // source var is intentionally unused today; kept so the fallback
-  // reason is easy to log if we need to diagnose later.
-  void source;
   return out;
 }
 
