@@ -33,6 +33,7 @@ info() { echo -e "  ${CYAN}→${NC} $1"; }
 warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
 ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
 fail() { echo -e "  ${RED}✗${NC} $1"; exit 1; }
+err()  { echo -e "  ${RED}✗${NC} $1"; }
 
 banner
 
@@ -483,8 +484,17 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
 done
 
 if [ $ELAPSED -ge $MAX_WAIT ]; then
-  warn "Health check timed out after ${MAX_WAIT}s"
-  warn "The app may still be starting. Check: docker compose logs -f server"
+  echo
+  err "Health check failed: ${HEALTH_URL} did not return 200 within ${MAX_WAIT}s"
+  err "Install did not complete. Recent server logs:"
+  echo
+  # Dump the last 30 lines so the operator can see what actually went
+  # wrong without running a follow-up command.
+  docker compose logs --tail 30 server 2>&1 | sed 's/^/    /'
+  echo
+  err "Investigate with: docker compose logs -f server"
+  err "Once fixed, re-run ./install.sh — it's idempotent."
+  exit 1
 fi
 
 # ── Step 11: Summary ──────────────────────────────────────
