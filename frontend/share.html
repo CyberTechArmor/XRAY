@@ -57,26 +57,14 @@
   var token = parts[parts.length - 1];
   if (!token) { showError('No share token provided'); return; }
 
-  // Check sessionStorage cache (30 min TTL)
-  var cacheKey = 'xray_share_' + token;
-  var cached = null;
-  try {
-    var raw = sessionStorage.getItem(cacheKey);
-    if (raw) {
-      var parsed = JSON.parse(raw);
-      if (parsed.ts && (Date.now() - parsed.ts) < 30 * 60 * 1000) {
-        cached = parsed.data;
-      } else {
-        sessionStorage.removeItem(cacheKey);
-      }
-    }
-  } catch(e) {}
-
-  if (cached) {
-    renderDashboard(cached);
-  } else {
-    fetchDashboard();
-  }
+  // No sessionStorage cache. Public share links are security-scoped
+  // (Rotate + Revoke are supposed to invalidate them immediately), and
+  // caching the render body keyed by token meant a hard-refresh after
+  // rotation still rendered the old dashboard from the tab's local
+  // store. Server-side share-cache (share.routes.ts) is the
+  // performance layer; the client always re-fetches.
+  fetchDashboard();
+  subscribeShareWs();
 
   function fetchDashboard() {
     fetch('/api/share/' + encodeURIComponent(token))
@@ -86,15 +74,32 @@
           showError((d.error && d.error.message) || 'This dashboard is no longer available.');
           return;
         }
-        // Cache the result
-        try {
-          sessionStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), data: d.data }));
-        } catch(e) {}
         renderDashboard(d.data);
       })
       .catch(function() {
         showError('Failed to load dashboard. Please try again later.');
       });
+  }
+
+  // Open a minimal public WebSocket subscription so the server can
+  // kick this page when the admin Rotates or Revokes the share
+  // link. No JWT \u2014 the share token itself is the identifier. On
+  // receipt of share:revoked we blow away the rendered iframe and
+  // show the standard "share link revoked" screen.
+  function subscribeShareWs() {
+    try {
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var ws = new WebSocket(proto + '//' + location.host + '/ws?share_token=' + encodeURIComponent(token));
+      ws.onmessage = function(evt) {
+        try {
+          var msg = JSON.parse(evt.data);
+          if (msg && msg.type === 'share:revoked') {
+            showError('Dashboard not found or share link has been revoked');
+            try { ws.close(); } catch(e) {}
+          }
+        } catch(e) {}
+      };
+    } catch(e) {}
   }
 
   function renderDashboard(data) {

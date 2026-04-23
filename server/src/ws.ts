@@ -10,6 +10,10 @@ interface AuthenticatedSocket extends WebSocket {
   isPlatformAdmin?: boolean;
   isAlive?: boolean;
   replaySessionId?: string;
+  // Public share viewers don't carry a user identity — they're
+  // subscribers keyed on the share token so the server can kick
+  // them off when the token is rotated or revoked.
+  shareToken?: string;
 }
 
 // Track connected clients by userId
@@ -18,6 +22,10 @@ const clients = new Map<string, Set<AuthenticatedSocket>>();
 const adminSockets = new Set<AuthenticatedSocket>();
 // Track shadow-view subscribers: sessionId -> Set of subscriber sockets
 const shadowSubscribers = new Map<string, Set<AuthenticatedSocket>>();
+// Track public-share viewers: share token -> Set of subscriber sockets.
+// Used by notifyShareRevoked to kick viewers on rotate/revoke so a
+// leaked URL can't keep rendering via their sessionStorage cache.
+const shareSubscribers = new Map<string, Set<AuthenticatedSocket>>();
 
 let wss: WebSocketServer;
 
@@ -29,9 +37,38 @@ export function initWebSocketServer(server: HttpServer) {
   wss = new WebSocketServer({ server, path: '/ws' });
 
   wss.on('connection', (ws: AuthenticatedSocket, req) => {
-    // Extract token from query string
+    // Extract token from query string. Two connection shapes:
+    //   ?token=<JWT>             — authenticated user session (all
+    //                              existing use cases)
+    //   ?share_token=<token>     — public share viewer, no auth. Used
+    //                              by share.html to learn when its
+    //                              token is rotated/revoked so the
+    //                              page can kick itself out.
     const url = new URL(req.url || '', 'http://localhost');
     const token = url.searchParams.get('token');
+    const shareToken = url.searchParams.get('share_token');
+
+    if (shareToken) {
+      // Public share subscriber — no JWT, minimal privilege. Attach
+      // to the token-keyed subscriber set so notifyShareRevoked can
+      // find it. Keepalive via pong is shared with the main loop.
+      ws.shareToken = shareToken;
+      ws.isAlive = true;
+      if (!shareSubscribers.has(shareToken)) {
+        shareSubscribers.set(shareToken, new Set());
+      }
+      shareSubscribers.get(shareToken)!.add(ws);
+      ws.on('pong', () => { ws.isAlive = true; });
+      ws.on('close', () => {
+        const subs = shareSubscribers.get(shareToken);
+        if (subs) {
+          subs.delete(ws);
+          if (subs.size === 0) shareSubscribers.delete(shareToken);
+        }
+      });
+      ws.send(JSON.stringify({ type: 'share:connected', ts: Date.now() }));
+      return;
+    }
 
     if (!token) {
       ws.close(4001, 'Missing token');
@@ -175,6 +212,30 @@ export function sendToUser(userId: string, event: string, data: Record<string, u
       ws.send(message);
     }
   }
+}
+
+/**
+ * Kick every public-share viewer currently subscribed to `token`.
+ * Called when the token is rotated or revoked — the viewer's
+ * sessionStorage may still hold the last successful render, so the
+ * client listens for this message to replace the iframe with the
+ * "Dashboard not found / share link has been revoked" screen and
+ * drop the cached copy.
+ */
+export function notifyShareRevoked(token: string, reason: 'rotated' | 'revoked' = 'revoked'): number {
+  const subs = shareSubscribers.get(token);
+  if (!subs || subs.size === 0) return 0;
+  const message = JSON.stringify({ type: 'share:revoked', data: { reason }, ts: Date.now() });
+  let sent = 0;
+  for (const ws of subs) {
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(message); } catch {}
+      try { ws.close(1000, 'share revoked'); } catch {}
+      sent++;
+    }
+  }
+  shareSubscribers.delete(token);
+  return sent;
 }
 
 /**
