@@ -4,6 +4,7 @@ import { decryptSecret } from '../lib/encrypted-column';
 import { mintBridgeJwt } from '../lib/n8n-bridge';
 import { mintPipelineJwt, isPipelineJwtConfigured } from '../lib/pipeline-jwt';
 import * as auditService from './audit.service';
+import * as integrationService from './integration.service';
 import { AppError } from '../middleware/error-handler';
 
 // Internal-only. Fetches the raw `enc:v1:` ciphertext of a dashboard's
@@ -53,6 +54,7 @@ interface Dashboard {
   is_public: boolean;
   public_token: string | null;
   status: string;
+  scope: 'tenant' | 'global';
   template_id: string | null;
   integration: string | null;
   params: Record<string, unknown> | null;
@@ -110,30 +112,35 @@ export async function listDashboards(
      LEFT JOIN platform.connections c ON c.id = ds.connection_id
      WHERE ds.dashboard_id = d.id) AS connectors`;
 
-    // Step 4b: Global dashboards. Per the operator's definition —
-    // "Global dashboard means it is replicated for all users but
-    // utilizes each individual tenant's oauth/custom auth" — a Global
-    // with an integration set is VISIBLE to every tenant. If the
-    // rendering tenant hasn't connected that integration yet, the
-    // click-to-render hits 409 OAUTH_NOT_CONNECTED and the Connect
-    // modal opens (the step-4 first-render flow). Gating visibility
-    // on the connection would hide the dashboard that triggers the
-    // connect prompt — a chicken-and-egg loop. So: integration-set
-    // Globals show unconditionally; Custom Globals (no integration,
-    // no render-time gate) stay grant-gated since there's no later
-    // opportunity to block access.
+    // Step 4b (revised after operator feedback): Global dashboards
+    // are gated on the rendering tenant having an active connection
+    // to d.integration. The earlier "show every Global to every
+    // tenant + prompt Connect on click" model produced a 12-dashboard
+    // clutter when a catalog had 4 Globals each for 3 FSM services
+    // (HCP / Jobber / ServiceTitan) and a tenant only uses one. The
+    // tenant-facing "My Integrations" strip on the dashboard list is
+    // the proactive connect surface; once a tenant connects an
+    // integration, its Globals materialize in the list. Custom
+    // Globals (no integration → no render-time gate) still require
+    // an explicit grant row.
     const globalEligibleWhere = `
       d.scope = 'global' AND d.status = 'active' AND (
-        -- Integration-set Globals: visible to every tenant. The
-        -- render path gates the actual fetch on the tenant's
-        -- connection state + prompts reconnect when needed.
-        (d.integration IS NOT NULL AND d.integration <> '')
-        -- Custom Globals (no integration): opt-in via grant row.
-        -- The render path has no integration to gate on, so this
-        -- is the ONLY gate.
-        OR EXISTS (
-          SELECT 1 FROM platform.dashboard_tenant_grants g
-           WHERE g.dashboard_id = d.id AND g.tenant_id = $1
+        -- Integration-set Globals: tenant has an active connection
+        EXISTS (
+          SELECT 1 FROM platform.integrations i2
+           JOIN platform.connections c2
+             ON c2.integration_id = i2.id
+            AND c2.tenant_id = $1
+            AND c2.status = 'active'
+           WHERE i2.slug = d.integration
+        )
+        -- Custom Globals (no integration): opt-in via grant row
+        OR (
+          (d.integration IS NULL OR d.integration = '')
+          AND EXISTS (
+            SELECT 1 FROM platform.dashboard_tenant_grants g
+             WHERE g.dashboard_id = d.id AND g.tenant_id = $1
+          )
         )
       )`;
 
@@ -446,12 +453,53 @@ export async function revokeEmbed(
 
 export async function makePublic(
   dashboardId: string,
-  tenantId: string
+  tenantId: string,
+  actingUserId?: string | null
 ): Promise<{ public_token: string; is_public: boolean }> {
-  const token = generateToken(16); // 32 hex chars
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-    // Check if already has a token — if so, just return it
+    // Resolve dashboard scope up front. Globals use dashboard_shares;
+    // Tenant rows keep using dashboards.public_token for backwards
+    // compatibility with existing share links.
+    const scopeRow = await client.query(
+      'SELECT scope, tenant_id FROM platform.dashboards WHERE id = $1',
+      [dashboardId]
+    );
+    if (scopeRow.rows.length === 0) {
+      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+    }
+    const scope: 'tenant' | 'global' = scopeRow.rows[0].scope;
+
+    if (scope === 'global') {
+      // Per-(dashboard, sharing-tenant) row. The sharing tenant's own
+      // credentials drive the public render (resolveAccessTokenForRender
+      // runs with this tenant_id), so each tenant's share is isolated.
+      const existing = await client.query(
+        `SELECT public_token, is_public FROM platform.dashboard_shares
+          WHERE dashboard_id = $1 AND tenant_id = $2`,
+        [dashboardId, tenantId]
+      );
+      if (existing.rows.length > 0) {
+        return {
+          public_token: existing.rows[0].public_token,
+          is_public: existing.rows[0].is_public,
+        };
+      }
+      const token = generateToken(16);
+      const inserted = await client.query(
+        `INSERT INTO platform.dashboard_shares
+           (dashboard_id, tenant_id, public_token, is_public, created_by)
+         VALUES ($1, $2, $3, false, $4)
+         RETURNING public_token, is_public`,
+        [dashboardId, tenantId, token, actingUserId || null]
+      );
+      return {
+        public_token: inserted.rows[0].public_token,
+        is_public: inserted.rows[0].is_public,
+      };
+    }
+
+    // Tenant-scoped: original single-token-per-row path unchanged.
     const existing = await client.query(
       'SELECT public_token, is_public FROM platform.dashboards WHERE id = $1 AND tenant_id = $2 AND public_token IS NOT NULL',
       [dashboardId, tenantId]
@@ -459,7 +507,7 @@ export async function makePublic(
     if (existing.rows.length > 0 && existing.rows[0].public_token) {
       return { public_token: existing.rows[0].public_token, is_public: existing.rows[0].is_public };
     }
-    // Create new share link — default to internal (is_public = false)
+    const token = generateToken(16); // 32 hex chars
     const result = await client.query(
       `UPDATE platform.dashboards
        SET is_public = false, public_token = $1, updated_at = now()
@@ -480,6 +528,28 @@ export async function makePrivate(
 ): Promise<void> {
   await withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const scopeRow = await client.query(
+      'SELECT scope FROM platform.dashboards WHERE id = $1',
+      [dashboardId]
+    );
+    if (scopeRow.rows.length === 0) {
+      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+    }
+    const scope: 'tenant' | 'global' = scopeRow.rows[0].scope;
+    if (scope === 'global') {
+      // Revoke only the SHARING tenant's share link. Other tenants'
+      // shares of the same Global stay intact.
+      const del = await client.query(
+        `DELETE FROM platform.dashboard_shares
+          WHERE dashboard_id = $1 AND tenant_id = $2
+         RETURNING dashboard_id`,
+        [dashboardId, tenantId]
+      );
+      if (del.rows.length === 0) {
+        throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'No share link to revoke for this tenant');
+      }
+      return;
+    }
     const result = await client.query(
       `UPDATE platform.dashboards
        SET is_public = false, public_token = NULL, updated_at = now()
@@ -495,24 +565,45 @@ export async function makePrivate(
 
 export async function getPublicDashboard(
   publicToken: string
-): Promise<Dashboard> {
+): Promise<Dashboard & { sharing_tenant_id?: string }> {
   return withClient(async (client) => {
     await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-    // Share link works as long as the token exists (regardless of is_public flag)
-    // is_public only controls whether non-admin users can see/copy the link in the app
-    const result = await client.query(
-      // scope='tenant' filter is belt-and-suspenders — migration 025
-      // already CHECKs that Global rows carry public_token=NULL + is_public=false,
-      // so they can't match a share token in practice. Keeping the filter
-      // explicit here means any future CHECK relaxation stays gated.
+    // Tenant-scoped dashboards: single-token-per-row on platform.dashboards.
+    // Globals: per-(dashboard, tenant) rows in platform.dashboard_shares —
+    // each sharing tenant owns their own token, and the render binds to
+    // that tenant's credentials. Try tenant lookup first (hot path;
+    // covers every pre-4b share link), then fall back to the Global
+    // share table.
+    const tenantRow = await client.query(
       `SELECT * FROM platform.dashboards
        WHERE public_token = $1 AND status = 'active' AND scope = 'tenant'`,
       [publicToken]
     );
-    if (result.rows.length === 0) {
-      throw new AppError(404, 'NOT_FOUND', 'Dashboard not found or share link has been revoked');
+    if (tenantRow.rows.length > 0) {
+      return decryptDashboardRow(tenantRow.rows[0]);
     }
-    return decryptDashboardRow(result.rows[0]);
+    const globalRow = await client.query(
+      `SELECT d.*, s.tenant_id AS sharing_tenant_id, s.is_public AS share_is_public
+         FROM platform.dashboard_shares s
+         JOIN platform.dashboards d ON d.id = s.dashboard_id
+        WHERE s.public_token = $1 AND d.status = 'active' AND d.scope = 'global'`,
+      [publicToken]
+    );
+    if (globalRow.rows.length > 0) {
+      const row = globalRow.rows[0];
+      const decrypted = decryptDashboardRow(row) as Dashboard & {
+        sharing_tenant_id: string;
+        share_is_public?: boolean;
+      };
+      // Surface the sharing tenant to callers that need it (renderPublicDashboard).
+      decrypted.sharing_tenant_id = row.sharing_tenant_id;
+      // Mirror is_public from the share row so the app-visible flag
+      // reflects this specific tenant's choice, not a stale value on
+      // the dashboards row (which stays false for Globals).
+      decrypted.is_public = !!row.share_is_public;
+      return decrypted;
+    }
+    throw new AppError(404, 'NOT_FOUND', 'Dashboard not found or share link has been revoked');
   });
 }
 
@@ -576,13 +667,55 @@ export async function renderPublicDashboard(
       'This dashboard has an integration but no bridge signing secret.'
     );
   }
-  const tenantLabels = await fetchTenantLabels(dashboard.tenant_id);
-  // public_share intentionally does NOT perform OAuth lookup. Share
-  // links are DB-backed and must work even when no user/OAuth context
-  // exists. access_token + auth_method stay absent; the bridge JWT still
-  // carries tenant/dashboard labels + params so n8n can route.
+  // For Globals, the rendering tenant is the SHARING tenant (whoever
+  // generated this particular share link), not the dashboard-author
+  // tenant (which is NULL on a Global). Tenant-scoped dashboards keep
+  // using dashboard.tenant_id.
+  const sharingTenantId = (dashboard as Dashboard & { sharing_tenant_id?: string })
+    .sharing_tenant_id;
+  const renderingTenantId: string = sharingTenantId || dashboard.tenant_id;
+  const tenantLabels = await fetchTenantLabels(renderingTenantId);
+
+  // Resolve the sharing tenant's OAuth / API-key credential. The step-4
+  // resolver handles OAuth + API-key and reports needs_reconnect /
+  // not_connected / unknown_integration cleanly. For public shares we
+  // previously skipped the lookup (share had no end-user + no tenant
+  // context to pick); 4b shares carry a definite sharing tenant, so
+  // we CAN and SHOULD resolve — otherwise the shared render renders
+  // against n8n without a tenant credential and silently returns
+  // empty data.
+  let accessToken: string | null = null;
+  let authMethod: 'oauth' | 'api_key' | null = null;
+  if (dashboard.integration) {
+    const tokenResult = await integrationService.resolveAccessTokenForRender(
+      renderingTenantId,
+      dashboard.integration
+    );
+    if (tokenResult.kind === 'ready') {
+      accessToken = tokenResult.accessToken;
+      authMethod = tokenResult.authMethod;
+    } else if (tokenResult.kind === 'needs_reconnect') {
+      // A share link whose tenant's credentials have since expired
+      // (refresh failures hit threshold → status='error'). Without a
+      // UI to prompt, the best we can do is surface a clear 409 so
+      // the share page can show "This link requires the owner to
+      // reconnect their integration" rather than rendering empty.
+      throw new AppError(
+        409,
+        'OAUTH_NOT_CONNECTED',
+        'The tenant that created this share link needs to reconnect their integration.'
+      );
+    }
+    // not_connected / unknown_integration: degrade gracefully —
+    // render proceeds with access_token absent, same as pre-4b.
+  }
+
+  // public_share intentionally has no end-user context. access_token +
+  // auth_method ARE populated when the sharing tenant has an active
+  // connection (see above); the bridge JWT still carries tenant/dashboard
+  // labels + params so n8n can route.
   const minted = mintBridgeJwt({
-    tenantId: dashboard.tenant_id,
+    tenantId: renderingTenantId,
     tenantSlug: tenantLabels?.slug ?? null,
     tenantName: tenantLabels?.name ?? null,
     tenantStatus: tenantLabels?.status ?? null,
@@ -597,6 +730,8 @@ export async function renderPublicDashboard(
     params: (dashboard.params as Record<string, unknown>) || {},
     via: 'public_share',
     secret: bridgeSecret,
+    accessToken,
+    authMethod,
   });
   const headers: Record<string, string> = { Authorization: `Bearer ${minted.jwt}` };
 
@@ -606,7 +741,7 @@ export async function renderPublicDashboard(
   let pipelineJti: string | null = null;
   if (isPipelineJwtConfigured()) {
     const pipelineMinted = mintPipelineJwt({
-      tenantId: dashboard.tenant_id,
+      tenantId: renderingTenantId,
       via: 'public_share',
     });
     pipelineJti = pipelineMinted.jti;
@@ -614,7 +749,7 @@ export async function renderPublicDashboard(
   }
 
   auditService.log({
-    tenantId: dashboard.tenant_id,
+    tenantId: renderingTenantId,
     action: 'dashboard.bridge_mint',
     resourceType: 'dashboard',
     resourceId: dashboard.id,
@@ -624,9 +759,11 @@ export async function renderPublicDashboard(
       integration: dashboard.integration,
       template_id: dashboard.template_id || null,
       via: 'public_share',
-      auth_method: null,
-      access_token_present: false,
+      auth_method: authMethod,
+      access_token_present: !!accessToken,
       public_token_prefix: publicToken.slice(0, 8),
+      scope: dashboard.scope,
+      sharing_tenant_id: sharingTenantId || null,
     },
   });
   const fetchOpts: RequestInit = {
