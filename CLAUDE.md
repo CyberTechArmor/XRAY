@@ -33,3 +33,57 @@ The frontend is split into separate files to prevent Claude Code timeouts on lar
 - PostgreSQL database, schema in `init.sql`
 - Auth: magic link + passkey (WebAuthn)
 - Multi-tenant with RLS
+
+### Database context helpers (step 6)
+
+Three helpers live in `server/src/db/connection.ts`. Pick the right
+one for every new code path that touches the platform DB:
+
+- **`withTenantContext(tenantId, fn)`** — the default. Sets
+  `app.current_tenant = tenantId` AND `app.is_platform_admin = 'false'`
+  so the `tenant_isolation` RLS policy on every `platform.*` table
+  gates the query. Use whenever `tenantId` is available (tenant-scoped
+  routes, services called with a known tenant).
+- **`withAdminClient(fn)`** — opt-in platform-admin bypass. Sets
+  `app.is_platform_admin = 'true'` so the `platform_admin_bypass`
+  policy lets queries see every tenant's rows. Use for genuinely
+  cross-tenant paths: admin UI, Stripe webhook reverse-lookups, fan-out
+  dispatch iterating connected tenants, admin-only audit reads.
+- **`withClient(fn)`** — plain pool checkout, no context set. Use for
+  unauthenticated / bootstrap paths only: magic-link token lookup,
+  first-boot setup, `platform_settings` reads (global, no RLS).
+
+`withTenantTransaction` / `withAdminTransaction` are BEGIN/COMMIT
+analogues of the first two.
+
+Guardrails:
+
+- **New code defaults to `withTenantContext`.** If you're tempted to
+  use `withAdminClient` on a path that takes a `tenantId`, stop and
+  use `withTenantContext` instead — bypass is opt-in by design.
+- **Never write `withClient(...) + set_config('app.is_platform_admin', 'true')`**
+  inline. That was the pre-step-6 pattern; it's superseded by
+  `withAdminClient`. A local `bypassRLS` helper in a service file
+  is the same anti-pattern.
+- **Retiring `withClient`** is ongoing. See
+  `.claude/withclient-audit.md` for the current roster; admin surface
+  (`admin.service.ts`, `admin.routes.ts`, `portability.service.ts`)
+  and unauth flows (`auth.service.ts`) still use it as the shared
+  primitive.
+- **RLS policies live in `init.sql` + `migrations/*.sql`.** Any new
+  tenant-scoped table needs a `tenant_isolation` policy and a
+  `platform_admin_bypass` policy before the application layer starts
+  reading or writing under `withTenantContext`. See migration 029
+  for the canonical shape.
+
+### Encrypted columns (step 6 v)
+
+Secret columns (`connections.api_key`, `connections.oauth_*_token`,
+`dashboards.bridge_secret`, `integrations.client_secret`,
+`webhooks.secret`) are stored under the `enc:v1:` envelope, enforced
+by DB triggers (migration 017+). The `decryptSecret` /
+`decryptJsonField` helpers in `server/src/lib/encrypted-column.ts`
+**throw** on plaintext input — they no longer silently pass it
+through. A plaintext row reaching decrypt is a bug signal (missed
+backfill, direct DB write, disabled trigger), not a case to recover
+from in application code.
