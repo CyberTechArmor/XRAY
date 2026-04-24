@@ -129,9 +129,11 @@ router.post('/', authenticateJWT, async (req, res, next) => {
       const participants = await inboxService.getThreadParticipants(result.threadId);
 
       // Get sender name for notifications
-      const { withClient } = await import('../db/connection');
-      const senderInfo = await withClient(async (client) => {
-        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const { withAdminClient } = await import('../db/connection');
+      // Sender + recipients can be in different tenants (support threads
+      // span platform admin ↔ tenant users), so these lookups are
+      // deliberately cross-tenant.
+      const senderInfo = await withAdminClient(async (client) => {
         const r = await client.query('SELECT name, email FROM platform.users WHERE id = $1', [req.user!.sub]);
         return r.rows[0] || { name: '', email: '' };
       });
@@ -152,8 +154,7 @@ router.post('/', authenticateJWT, async (req, res, next) => {
         // Push notification (mobile/background)
         try {
           // Check user notification preferences
-          const userPrefs = await withClient(async (client) => {
-            await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+          const userPrefs = await withAdminClient(async (client) => {
             const r = await client.query('SELECT preferences FROM platform.users WHERE id = $1', [pid]);
             return r.rows[0]?.preferences || {};
           });
