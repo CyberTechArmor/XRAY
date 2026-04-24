@@ -1,4 +1,4 @@
-import { withAdminClient, withAdminTransaction } from '../db/connection';
+import { withAdminClient, withAdminTransaction, withTenantContext, withTenantTransaction } from '../db/connection';
 import { generateToken, hashToken } from '../lib/crypto';
 import { decryptSecret } from '../lib/encrypted-column';
 import { mintBridgeJwt } from '../lib/n8n-bridge';
@@ -6,6 +6,24 @@ import { mintPipelineJwt, isPipelineJwtConfigured } from '../lib/pipeline-jwt';
 import * as auditService from './audit.service';
 import * as integrationService from './integration.service';
 import { AppError } from '../middleware/error-handler';
+
+// Internal-only. Scope probe for the share functions — has to see
+// Globals (tenant_id IS NULL on platform.dashboards) as well as the
+// caller's tenant-scoped rows, so it crosses the tenant/global
+// boundary and runs under admin bypass. Callers branch on the result
+// and do the actual writes in tenant context.
+async function resolveDashboardScope(dashboardId: string): Promise<'tenant' | 'global'> {
+  return withAdminClient(async (client) => {
+    const r = await client.query(
+      'SELECT scope FROM platform.dashboards WHERE id = $1',
+      [dashboardId]
+    );
+    if (r.rows.length === 0) {
+      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
+    }
+    return r.rows[0].scope as 'tenant' | 'global';
+  });
+}
 
 // Internal-only. Fetches the raw `enc:v1:` ciphertext of a dashboard's
 // bridge signing secret. Never call this from an API handler; only the
@@ -223,7 +241,7 @@ export async function getDashboard(
   dashboardId: string,
   tenantId: string
 ): Promise<Dashboard> {
-  return withAdminClient(async (client) => {
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `SELECT * FROM platform.dashboards WHERE id = $1 AND tenant_id = $2`,
       [dashboardId, tenantId]
@@ -243,7 +261,7 @@ export async function createDashboard(input: {
   viewCss?: string;
   viewJs?: string;
 }): Promise<Dashboard> {
-  return withAdminTransaction(async (client) => {
+  return withTenantTransaction(input.tenantId, async (client) => {
     // Check dashboard limit for non-platform-admin tenants
     const billingResult = await client.query(
       'SELECT dashboard_limit FROM platform.billing_state WHERE tenant_id = $1',
@@ -330,7 +348,7 @@ export async function grantAccess(
   grantedBy: string,
   tenantId: string
 ): Promise<void> {
-  await withAdminClient(async (client) => {
+  await withTenantContext(tenantId, async (client) => {
     await client.query(
       `INSERT INTO platform.dashboard_access (dashboard_id, user_id, granted_by, tenant_id)
        VALUES ($1, $2, $3, $4)
@@ -390,7 +408,7 @@ export async function buildDashboardBundle(
 ): Promise<Record<string, unknown>> {
   const dashboards = await listDashboards(tenantId, userId, hasManagePermission);
 
-  const sources = await withAdminClient(async (client) => {
+  const sources = await withTenantContext(tenantId, async (client) => {
     if (dashboards.length === 0) return [];
     const ids = dashboards.map((d) => d.id);
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
@@ -435,7 +453,7 @@ export async function createEmbed(
 ): Promise<{ embedToken: string; id: string }> {
   const embedToken = generateToken(32);
 
-  const result = await withAdminClient(async (client) => {
+  const result = await withTenantContext(tenantId, async (client) => {
     return client.query(
       `INSERT INTO platform.dashboard_embeds
          (dashboard_id, tenant_id, embed_token, allowed_domains, created_by, expires_at)
@@ -460,7 +478,7 @@ export async function revokeEmbed(
   dashboardId: string,
   tenantId: string
 ): Promise<void> {
-  await withAdminClient(async (client) => {
+  await withTenantContext(tenantId, async (client) => {
     await client.query(
       'UPDATE platform.dashboard_embeds SET is_active = false WHERE id = $1 AND dashboard_id = $2 AND tenant_id = $3',
       [embedId, dashboardId, tenantId]
@@ -475,19 +493,12 @@ export async function makePublic(
   tenantId: string,
   actingUserId?: string | null
 ): Promise<{ public_token: string; is_public: boolean }> {
-  return withAdminClient(async (client) => {
-    // Resolve dashboard scope up front. Globals use dashboard_shares;
-    // Tenant rows keep using dashboards.public_token for backwards
-    // compatibility with existing share links.
-    const scopeRow = await client.query(
-      'SELECT scope, tenant_id FROM platform.dashboards WHERE id = $1',
-      [dashboardId]
-    );
-    if (scopeRow.rows.length === 0) {
-      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
-    }
-    const scope: 'tenant' | 'global' = scopeRow.rows[0].scope;
-
+  // Scope probe crosses the tenant/global boundary (Globals carry
+  // tenant_id=NULL on platform.dashboards per migration 025, so they're
+  // invisible under tenant-context RLS). Run as admin; branch into
+  // withTenantContext for the per-tenant writes below.
+  const scope = await resolveDashboardScope(dashboardId);
+  return withTenantContext(tenantId, async (client) => {
     if (scope === 'global') {
       // Per-(dashboard, sharing-tenant) row. The sharing tenant's own
       // credentials drive the public render (resolveAccessTokenForRender
@@ -544,15 +555,8 @@ export async function makePrivate(
   dashboardId: string,
   tenantId: string
 ): Promise<{ revoked_token: string | null }> {
-  return withAdminClient(async (client) => {
-    const scopeRow = await client.query(
-      'SELECT scope FROM platform.dashboards WHERE id = $1',
-      [dashboardId]
-    );
-    if (scopeRow.rows.length === 0) {
-      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
-    }
-    const scope: 'tenant' | 'global' = scopeRow.rows[0].scope;
+  const scope = await resolveDashboardScope(dashboardId);
+  return withTenantContext(tenantId, async (client) => {
     if (scope === 'global') {
       // Revoke only the SHARING tenant's share link. Other tenants'
       // shares of the same Global stay intact.
@@ -598,15 +602,8 @@ export async function rotatePublic(
   dashboardId: string,
   tenantId: string
 ): Promise<{ public_token: string; is_public: boolean; previous_token: string | null }> {
-  return withAdminClient(async (client) => {
-    const scopeRow = await client.query(
-      'SELECT scope FROM platform.dashboards WHERE id = $1',
-      [dashboardId]
-    );
-    if (scopeRow.rows.length === 0) {
-      throw new AppError(404, 'DASHBOARD_NOT_FOUND', 'Dashboard not found');
-    }
-    const scope: 'tenant' | 'global' = scopeRow.rows[0].scope;
+  const scope = await resolveDashboardScope(dashboardId);
+  return withTenantContext(tenantId, async (client) => {
     const newToken = generateToken(16);
     if (scope === 'global') {
       const before = await client.query(
@@ -1064,7 +1061,7 @@ export async function attachConnector(
   tenantId: string,
   refreshCadence: string = 'hourly'
 ): Promise<any> {
-  return withAdminClient(async (client) => {
+  return withTenantContext(tenantId, async (client) => {
     const result = await client.query(
       `INSERT INTO platform.dashboard_sources (dashboard_id, tenant_id, connection_id, source_key, table_name, refresh_cadence)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
