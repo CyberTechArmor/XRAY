@@ -3,7 +3,7 @@ import { authenticateJWT } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
 import * as connectionService from '../services/connection.service';
 import * as integrationService from '../services/integration.service';
-import { withClient } from '../db/connection';
+import { withTenantContext } from '../db/connection';
 import { encryptSecret } from '../lib/encrypted-column';
 import { mintOAuthState, buildAuthorizeUrl } from '../lib/oauth-state';
 import { config } from '../config';
@@ -124,8 +124,7 @@ router.post(
       }
 
       const tenantId = req.user!.tid;
-      await withClient(async (client) => {
-        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      await withTenantContext(tenantId, async (client) => {
         const existing = await client.query(
           `SELECT id FROM platform.connections
             WHERE tenant_id = $1 AND (integration_id = $2 OR source_type = $3)
@@ -202,8 +201,7 @@ router.post(
         });
       }
       const tenantId = req.user!.tid;
-      await withClient(async (client) => {
-        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      await withTenantContext(tenantId, async (client) => {
         await client.query(
           `UPDATE platform.connections
               SET oauth_refresh_token = NULL,
