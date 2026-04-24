@@ -47,7 +47,7 @@ router.get('/', authenticateJWT, async (req, res, next) => {
 // GET /unread - get unread count
 router.get('/unread', authenticateJWT, async (req, res, next) => {
   try {
-    const count = await inboxService.getUnreadCount(req.user!.sub);
+    const count = await inboxService.getUnreadCount(req.user!.sub, req.user!.tid);
     res.json({
       ok: true,
       data: { count },
@@ -94,7 +94,7 @@ router.get('/recipients/:tenantId', authenticateJWT, async (req, res, next) => {
 // GET /:threadId - get thread messages
 router.get('/:threadId', authenticateJWT, async (req, res, next) => {
   try {
-    const messages = await inboxService.getThreadMessages(req.params.threadId, req.user!.sub);
+    const messages = await inboxService.getThreadMessages(req.params.threadId, req.user!.sub, req.user!.tid);
     res.json({
       ok: true,
       data: messages,
@@ -183,7 +183,7 @@ router.post('/', authenticateJWT, async (req, res, next) => {
 // PATCH /:threadId/archive - toggle archive
 router.patch('/:threadId/archive', authenticateJWT, async (req, res, next) => {
   try {
-    const isArchived = await inboxService.toggleArchive(req.params.threadId, req.user!.sub);
+    const isArchived = await inboxService.toggleArchive(req.params.threadId, req.user!.sub, req.user!.tid);
     res.json({
       ok: true,
       data: { is_archived: isArchived },
@@ -212,7 +212,7 @@ router.patch('/:threadId/tag', authenticateJWT, async (req, res, next) => {
 // PATCH /:threadId/star - toggle star
 router.patch('/:threadId/star', authenticateJWT, async (req, res, next) => {
   try {
-    const isStarred = await inboxService.toggleStar(req.params.threadId, req.user!.sub);
+    const isStarred = await inboxService.toggleStar(req.params.threadId, req.user!.sub, req.user!.tid);
     res.json({
       ok: true,
       data: { is_starred: isStarred },

@@ -94,6 +94,8 @@ async function cleanup(): Promise<void> {
     await client.query(`DELETE FROM platform.audit_log WHERE tenant_id IN ($1, $2) AND action LIKE 'probe.%'`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.fan_out_deliveries WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.fan_out_runs WHERE idempotency_key LIKE 'probe-%'`);
+    // Inbox tables cascade from threads; scrub by subject prefix.
+    await client.query(`DELETE FROM platform.inbox_threads WHERE subject LIKE 'probe-inbox-%'`);
     await client.query(`DELETE FROM platform.dashboards WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.connections WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.users WHERE tenant_id IN ($1, $2) AND email LIKE 'probe-%'`, [TENANT_A, TENANT_B]);
@@ -535,6 +537,96 @@ maybe('db/rls-probe — cross-tenant isolation', () => {
     });
     expect(rows.length).toBe(1);
     expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  // ─── Inbox user_scope (migration 030) ─────────────────────
+  //
+  // Inbox tables are gated on `app.current_user_id`, not tenant.
+  // Verify the direct participant policy and the transitive policies
+  // on threads + messages all match user A only.
+
+  it('withUserContext(userA) sees only A inbox_thread_participants', async () => {
+    const { withUserContext, withAdminClient } = await importDb();
+    const threadId = await withAdminClient(async (c) => {
+      const t = await c.query(
+        `INSERT INTO platform.inbox_threads (subject) VALUES ('probe-inbox-subject') RETURNING id`
+      );
+      const tid = t.rows[0].id as string;
+      await c.query(
+        `INSERT INTO platform.inbox_thread_participants (thread_id, user_id) VALUES ($1, $2), ($1, $3)`,
+        [tid, fixture.userA, fixture.userB]
+      );
+      await c.query(
+        `INSERT INTO platform.inbox_messages (thread_id, sender_id, body)
+         VALUES ($1, $2, 'hello from A'), ($1, $3, 'hello from B')`,
+        [tid, fixture.userA, fixture.userB]
+      );
+      return tid;
+    });
+    const rows = await withUserContext(TENANT_A, fixture.userA, async (c) => {
+      return (await c.query(
+        `SELECT user_id FROM platform.inbox_thread_participants WHERE thread_id = $1`,
+        [threadId]
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].user_id).toBe(fixture.userA);
+  });
+
+  it('withUserContext(userA) sees inbox_threads only when a participant', async () => {
+    const { withUserContext, withAdminClient } = await importDb();
+    const threadId = await withAdminClient(async (c) => {
+      const t = await c.query(
+        `INSERT INTO platform.inbox_threads (subject) VALUES ('probe-inbox-user-b-only') RETURNING id`
+      );
+      const tid = t.rows[0].id as string;
+      // Only userB is a participant.
+      await c.query(
+        `INSERT INTO platform.inbox_thread_participants (thread_id, user_id) VALUES ($1, $2)`,
+        [tid, fixture.userB]
+      );
+      return tid;
+    });
+    // userA is NOT a participant — RLS hides this thread from userA.
+    const rows = await withUserContext(TENANT_A, fixture.userA, async (c) => {
+      return (await c.query(
+        `SELECT id FROM platform.inbox_threads WHERE id = $1`,
+        [threadId]
+      )).rows;
+    });
+    expect(rows.length).toBe(0);
+  });
+
+  it('withUserContext(userA) sees inbox_messages only in participating threads', async () => {
+    const { withUserContext, withAdminClient } = await importDb();
+    const { threadIdVisible, threadIdHidden } = await withAdminClient(async (c) => {
+      const vis = (await c.query(
+        `INSERT INTO platform.inbox_threads (subject) VALUES ('probe-inbox-msg-vis') RETURNING id`
+      )).rows[0].id as string;
+      const hid = (await c.query(
+        `INSERT INTO platform.inbox_threads (subject) VALUES ('probe-inbox-msg-hid') RETURNING id`
+      )).rows[0].id as string;
+      await c.query(
+        `INSERT INTO platform.inbox_thread_participants (thread_id, user_id) VALUES ($1, $2), ($3, $4)`,
+        [vis, fixture.userA, hid, fixture.userB]
+      );
+      await c.query(
+        `INSERT INTO platform.inbox_messages (thread_id, sender_id, body)
+         VALUES ($1, $2, 'visible'), ($3, $4, 'hidden')`,
+        [vis, fixture.userA, hid, fixture.userB]
+      );
+      return { threadIdVisible: vis, threadIdHidden: hid };
+    });
+    const rows = await withUserContext(TENANT_A, fixture.userA, async (c) => {
+      return (await c.query(
+        `SELECT thread_id, body FROM platform.inbox_messages
+          WHERE thread_id IN ($1, $2)`,
+        [threadIdVisible, threadIdHidden]
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].thread_id).toBe(threadIdVisible);
+    expect(rows[0].body).toBe('visible');
   });
 
   it('withAdminClient sees both tenants rows', async () => {
