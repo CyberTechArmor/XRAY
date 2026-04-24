@@ -59,6 +59,9 @@ export async function sendTemplateEmail(
   to: string,
   variables: Record<string, string>
 ): Promise<void> {
+  // platform.email_templates is on the no-RLS carve-out (migration 029
+  // header comment). Plain withClient is the right primitive — the
+  // template is a global catalog, not a per-tenant record.
   const template = await withClient(async (client) => {
     const result = await client.query(
       'SELECT subject, body_html, body_text FROM platform.email_templates WHERE template_key = $1',

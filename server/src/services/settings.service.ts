@@ -12,6 +12,10 @@ const CACHE_TTL_MS = 60_000; // 1 minute
 let cache: CachedSettings | null = null;
 
 async function loadSettings(): Promise<CachedSettings> {
+  // platform.platform_settings is on the no-RLS carve-out (migration 029
+  // header comment lists it alongside magic_links / email_templates /
+  // integrations). Plain withClient is the right primitive — there's
+  // no tenant concept here.
   const rows = await withClient(async (client) => {
     const result = await client.query(
       'SELECT key, value, is_secret FROM platform.platform_settings'
@@ -64,6 +68,8 @@ export async function updateSettings(
   updates: Record<string, string | null>,
   userId: string
 ): Promise<void> {
+  // Same as loadSettings — platform_settings is a global carve-out
+  // with no RLS; plain withClient.
   await withClient(async (client) => {
     for (const [key, value] of Object.entries(updates)) {
       // Determine if this key is a secret by checking existing record

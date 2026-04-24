@@ -146,8 +146,9 @@ export const DEFAULT_TEMPLATES: DefaultTemplate[] = [
 // Idempotent upsert: INSERT only when the key is missing. Admin-edited
 // templates are preserved. Safe to call on every boot.
 export async function seedDefaultTemplates(): Promise<{ inserted: number; skipped: number }> {
+  // platform.email_templates is on the no-RLS carve-out per migration
+  // 029. Boot-time seed runs before any tenant exists; plain withClient.
   return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     let inserted = 0;
     let skipped = 0;
     for (const tpl of DEFAULT_TEMPLATES) {
