@@ -127,7 +127,7 @@ router.get('/:id', authenticateJWT, requirePermission('dashboards.view'), async 
 // POST /:id/render - fetch dashboard content from n8n connection (JWT, dashboards.view)
 router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
   try {
-    const { withClient } = await import('../db/connection');
+    const { withAdminClient } = await import('../db/connection');
 
     // Separate SELECT then UPDATE to avoid RLS issues with UPDATE...RETURNING.
     // Step 4b: the SELECT handles BOTH scope='tenant' and scope='global'.
@@ -138,11 +138,15 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     //   tenant_* JWT claims load the rendering tenant's row.
     // The integration-gated / grant-gated permission check runs AFTER the
     // SELECT — the row SELECT itself doesn't try to encode it in WHERE.
-    const dashboard = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', $1, true)`, [String(req.user!.is_platform_admin)]);
-      if (req.user!.tid) {
-        await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [req.user!.tid]);
-      }
+    //
+    // Cross-tenant by design: platform admin renders other tenants' rows
+    // (admin_impersonation via-flag below), and every user can render
+    // Globals (tenant_id NULL on platform.dashboards — invisible under
+    // tenant-context RLS). The authoritative gate is the WHERE clause
+    // `d.tenant_id = $3 OR d.scope = 'global'` for non-admin users;
+    // admin-bypass removes the RLS filter that would otherwise hide
+    // Globals from them.
+    const dashboard = await withAdminClient(async (client) => {
       const baseSelect = `
         SELECT d.id, d.tenant_id AS dashboard_tenant_id, d.scope,
                d.name AS dashboard_name, d.status AS dashboard_status,
@@ -212,8 +216,8 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     // grant. Integration-connected Globals skip this branch; the
     // resolveAccessTokenForRender gate below serves as their auth.
     if (isGlobal && !dashboard.integration) {
-      const grant = await withClient(async (client) => {
-        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const { withTenantContext } = await import('../db/connection');
+      const grant = await withTenantContext(renderingTenantId, async (client) => {
         const r = await client.query(
           `SELECT 1 FROM platform.dashboard_tenant_grants
             WHERE dashboard_id = $1 AND tenant_id = $2`,
@@ -444,26 +448,28 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
         // still expect them (embed, portability, admin preview
         // fallback). Retiring those columns is a post-step cleanup.
         if (data && (data.html || data.css || data.js)) {
-          withClient(async (client) => {
-            await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-            await client.query(
-              `INSERT INTO platform.dashboard_render_cache
-                 (dashboard_id, tenant_id, view_html, view_css, view_js, rendered_at)
-               VALUES ($1, $2, $3, $4, $5, now())
-               ON CONFLICT (dashboard_id, tenant_id) DO UPDATE
-                 SET view_html = EXCLUDED.view_html,
-                     view_css = EXCLUDED.view_css,
-                     view_js = EXCLUDED.view_js,
-                     rendered_at = now()`,
-              [dashboard.id, renderingTenantId, data.html || '', data.css || '', data.js || '']
-            );
-            if (dashboard.scope === 'tenant') {
+          (async () => {
+            const { withTenantContext } = await import('../db/connection');
+            await withTenantContext(renderingTenantId, async (client) => {
               await client.query(
-                `UPDATE platform.dashboards SET view_html = $1, view_css = $2, view_js = $3 WHERE id = $4`,
-                [data.html || '', data.css || '', data.js || '', dashboard.id]
+                `INSERT INTO platform.dashboard_render_cache
+                   (dashboard_id, tenant_id, view_html, view_css, view_js, rendered_at)
+                 VALUES ($1, $2, $3, $4, $5, now())
+                 ON CONFLICT (dashboard_id, tenant_id) DO UPDATE
+                   SET view_html = EXCLUDED.view_html,
+                       view_css = EXCLUDED.view_css,
+                       view_js = EXCLUDED.view_js,
+                       rendered_at = now()`,
+                [dashboard.id, renderingTenantId, data.html || '', data.css || '', data.js || '']
               );
-            }
-          }).catch(() => {}); // fire-and-forget cache write
+              if (dashboard.scope === 'tenant') {
+                await client.query(
+                  `UPDATE platform.dashboards SET view_html = $1, view_css = $2, view_js = $3 WHERE id = $4`,
+                  [data.html || '', data.css || '', data.js || '', dashboard.id]
+                );
+              }
+            });
+          })().catch(() => {}); // fire-and-forget cache write
         }
 
         // Inject AI SDK bootstrap if AI is enabled for (user, dashboard)
@@ -488,8 +494,8 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     // tenant) first. For Tenant-scoped rows, fall back to the legacy
     // view_html/view_css/view_js columns if the cache row hasn't been
     // populated yet (e.g. first render ever, upstream was down).
-    const cached = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const { withTenantContext: withTenantContextCache } = await import('../db/connection');
+    const cached = await withTenantContextCache(renderingTenantId, async (client) => {
       const r = await client.query(
         `SELECT view_html, view_css, view_js FROM platform.dashboard_render_cache
           WHERE dashboard_id = $1 AND tenant_id = $2`,
@@ -554,9 +560,11 @@ router.get('/:id/access', authenticateJWT, requirePermission('dashboards.manage'
 // GET /:id/team-access - list ALL tenant users with their access status (JWT, dashboards.view)
 router.get('/:id/team-access', authenticateJWT, async (req, res, next) => {
   try {
-    const { withClient } = await import('../db/connection');
-    const result = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const { withAdminClient } = await import('../db/connection');
+    // Cross-tenant by design — platform admin can pull team-access for a
+    // dashboard owned by any tenant. The dashboards row might also be a
+    // Global (tenant_id NULL), which tenant-context RLS would hide.
+    const result = await withAdminClient(async (client) => {
       // Get the dashboard's tenant
       const dashRow = await client.query('SELECT tenant_id FROM platform.dashboards WHERE id = $1', [req.params.id]);
       if (dashRow.rows.length === 0) return [];
@@ -628,9 +636,11 @@ router.delete('/:id/access/:uid', authenticateJWT, requirePermission('dashboards
 // operations bind to the acting tenant's row in dashboard_shares.
 async function resolveDashboardTenant(dashboardId: string, user: any): Promise<string> {
   if (!user.is_platform_admin) return user.tid;
-  const { withClient } = await import('../db/connection');
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const { withAdminClient } = await import('../db/connection');
+  // Platform admin crossing into any tenant's dashboard — cross-tenant
+  // read by definition; Globals (tenant_id NULL) would also be hidden
+  // under tenant-context RLS.
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT tenant_id, scope FROM platform.dashboards WHERE id = $1',
       [dashboardId]
@@ -695,9 +705,13 @@ router.patch('/:id/share', authenticateJWT, async (req, res, next) => {
     }
     const { is_public } = req.body;
     const tenantIdForShare = await resolveDashboardTenant(req.params.id, req.user!);
-    const { withClient } = await import('../db/connection');
-    await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const { withAdminClient } = await import('../db/connection');
+    // Scope probe at top crosses the tenant/global boundary (Globals
+    // carry tenant_id=NULL on platform.dashboards). The writes below
+    // both target tenant-scoped tables (dashboard_shares or dashboards)
+    // filtered on tenantIdForShare — admin bypass here preserves the
+    // mixed-context pattern in one connection.
+    await withAdminClient(async (client) => {
       // Branch on scope: Globals carry is_public on dashboard_shares
       // (per-tenant); Tenant rows keep is_public on dashboards itself.
       const scopeRow = await client.query(
@@ -837,9 +851,11 @@ router.get('/:id/share', authenticateJWT, async (req, res, next) => {
     // DASHBOARD_NOT_FOUND ("Dashboard not found") — the symptom reported
     // on the VPS. Globals' share state lives on platform.dashboard_shares
     // keyed on (dashboard_id, sharing_tenant_id); look it up directly.
-    const { withClient } = await import('../db/connection');
-    const shareState = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const { withAdminClient } = await import('../db/connection');
+    // Scope probe crosses the tenant/global boundary; admin bypass is
+    // how Globals (tenant_id NULL on platform.dashboards) become
+    // visible from the sharing tenant's perspective.
+    const shareState = await withAdminClient(async (client) => {
       const dash = await client.query(
         'SELECT scope FROM platform.dashboards WHERE id = $1',
         [req.params.id]
