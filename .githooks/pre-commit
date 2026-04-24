@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Project pre-commit hook. To enable, run once:
+#   git config core.hooksPath .githooks
+#
+# Add more checks below as they come online.
+
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+"$ROOT/scripts/check-withclient-allowlist.sh" --staged
