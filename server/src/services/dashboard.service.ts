@@ -1093,6 +1093,31 @@ export async function updateTileImage(
 
 // ─── Embed ──────────────────────────────────────────────────────────────────
 
+// Columns projected on the embed-token render response. Explicitly
+// excludes `fetch_url`, `fetch_method`, `fetch_headers`,
+// `fetch_query_params`, `bridge_secret`, and any other upstream-fetch
+// config — an embed token is a RENDER capability, not a
+// config-disclosure one. Exported (and exercised in a dashboard.service
+// spec) so the contract is visible at the call site and locked by CI.
+export const EMBED_PROJECTED_COLUMNS = [
+  'id',
+  'tenant_id',
+  'name',
+  'description',
+  'status',
+  'scope',
+  'template_id',
+  'integration',
+  'is_public',
+  'public_token',
+  'view_html',
+  'view_css',
+  'view_js',
+  'tile_image_url',
+  'created_at',
+  'updated_at',
+] as const;
+
 export async function getEmbedDashboard(
   embedToken: string
 ): Promise<Dashboard> {
@@ -1118,8 +1143,16 @@ export async function getEmbedDashboard(
       throw new AppError(403, 'EMBED_EXPIRED', 'This embed has expired');
     }
 
+    // Step 7 (C1): embed endpoint is a RENDER capability, not a
+    // config-disclosure one. An embed token holder has the right to
+    // see the rendered HTML/CSS/JS and basic dashboard identity, but
+    // NOT the upstream fetch configuration — fetch_url + method +
+    // headers + query_params are platform-admin state that would leak
+    // tenant-controlled URLs and reveal the bridge topology. Project
+    // to the minimal render-ready shape via EMBED_PROJECTED_COLUMNS.
     const dashResult = await client.query(
-      'SELECT * FROM platform.dashboards WHERE id = $1',
+      `SELECT ${EMBED_PROJECTED_COLUMNS.join(', ')}
+       FROM platform.dashboards WHERE id = $1`,
       [embed.dashboard_id]
     );
 
