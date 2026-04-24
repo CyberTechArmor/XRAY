@@ -51,11 +51,10 @@ router.get('/_health', async (_req, res) => {
   let apiKeyConfigured = false;
 
   try {
-    const { withClient } = await import('../db/connection');
+    const { withAdminClient } = await import('../db/connection');
 
     tables = await probe('tables-present', async () => {
-      return await withClient(async (client) => {
-        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      return await withAdminClient(async (client) => {
         const tbl = await client.query(
           `SELECT table_name FROM information_schema.tables
            WHERE table_schema = 'platform' AND table_name = ANY($1::text[])`,
@@ -70,8 +69,7 @@ router.get('/_health', async (_req, res) => {
 
     if (tables['ai_model_pricing']) {
       catalog = await probe('model-catalog-count', async () => {
-        return await withClient(async (client) => {
-          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        return await withAdminClient(async (client) => {
           const r = await client.query(`SELECT COUNT(*)::int as c FROM platform.ai_model_pricing WHERE is_active`);
           return r.rows[0]?.c ?? 0;
         });
@@ -80,16 +78,14 @@ router.get('/_health', async (_req, res) => {
 
     if (tables['ai_settings_versions']) {
       settingsCount = await probe('settings-versions-count', async () => {
-        return await withClient(async (client) => {
-          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        return await withAdminClient(async (client) => {
           const r = await client.query(`SELECT COUNT(*)::int as c FROM platform.ai_settings_versions`);
           return r.rows[0]?.c ?? 0;
         });
       }, 0);
 
       currentModel = await probe('current-model-id', async () => {
-        return await withClient(async (client) => {
-          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        return await withAdminClient(async (client) => {
           const r = await client.query(
             `SELECT model_id FROM platform.ai_settings_versions ORDER BY effective_at DESC LIMIT 1`
           );
