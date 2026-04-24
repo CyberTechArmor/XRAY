@@ -1,4 +1,4 @@
-import { withClient, withTransaction } from '../db/connection';
+import { withClient, withAdminClient, withAdminTransaction } from '../db/connection';
 import { generateCode, generateToken, hashToken, hashRefreshToken, generateUUID } from '../lib/crypto';
 import { config } from '../config';
 import { AppError } from '../middleware/error-handler';
@@ -38,7 +38,10 @@ export function normalizeSlug(input: string): string {
 }
 
 async function getUserPermissions(userId: string): Promise<string[]> {
-  return withClient(async (client) => {
+  // Called mid-login before the caller's tenant context is bound — the
+  // lookup is keyed on user_id (which is unique across tenants), so
+  // admin bypass is the correct explicit scope.
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT p.key
        FROM platform.permissions p
@@ -71,7 +74,8 @@ async function getUserPermissions(userId: string): Promise<string[]> {
 }
 
 async function getUserFlags(userId: string): Promise<{ has_admin: boolean; has_billing: boolean; has_replay: boolean }> {
-  return withClient(async (client) => {
+  // Same rationale as getUserPermissions — mid-login user lookup by id.
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT has_admin, has_billing, has_replay FROM platform.users WHERE id = $1`,
       [userId]
@@ -92,6 +96,8 @@ async function createMagicLink(
   const tokenHash = hashToken(token);
   const expiresAt = new Date(Date.now() + config.magicLink.expiryMinutes * 60_000);
 
+  // platform.magic_links is on the bypass-only carve-out list per
+  // migration 029 (no RLS); stays on plain withClient.
   await withClient(async (client) => {
     await client.query(
       `INSERT INTO platform.magic_links (email, code, token_hash, purpose, tenant_id, metadata, expires_at)
@@ -106,7 +112,11 @@ async function createMagicLink(
 // ─── First-boot setup ───────────────────────────────────────────────────────
 
 export async function getSetupStatus(): Promise<{ setupRequired: boolean }> {
-  return withClient(async (client) => {
+  // First-boot check — the platform may have zero users yet, so no
+  // tenant or admin context exists. plain withClient. The COUNT
+  // returns 0 even with RLS active since the bootstrap seed creates
+  // the first user outside tenant scope.
+  return withAdminClient(async (client) => {
     const result = await client.query('SELECT COUNT(*) FROM platform.users');
     const count = parseInt(result.rows[0].count, 10);
     return { setupRequired: count === 0 };
@@ -118,7 +128,10 @@ export async function firstBootSetup(input: {
   name: string;
   tenantName: string;
 }): Promise<TokenPair> {
-  return withTransaction(async (client) => {
+  // Platform bootstrap — zero users exist yet; admin bypass is the
+  // correct (and only sensible) context for the initial seeds +
+  // first tenant creation.
+  return withAdminTransaction(async (client) => {
     // Only allowed when zero users exist
     const countResult = await client.query('SELECT COUNT(*) FROM platform.users');
     if (parseInt(countResult.rows[0].count, 10) > 0) {
@@ -289,9 +302,10 @@ export async function initiateSignup(input: {
   name: string;
   tenantName: string;
 }): Promise<{ message: string }> {
-  // Check if email already exists
-  const existing = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Pre-signup existence checks run BEFORE a tenant exists, and
+  // deliberately scan every tenant for email / name / slug collisions.
+  // Admin bypass is the correct explicit scope for those reads.
+  const existing = await withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT id FROM platform.users WHERE email = $1',
       [input.email]
@@ -304,8 +318,7 @@ export async function initiateSignup(input: {
   }
 
   // Check if tenant name already exists (case-insensitive)
-  const existingTenant = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const existingTenant = await withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT id FROM platform.tenants WHERE LOWER(name) = LOWER($1)',
       [input.tenantName]
@@ -324,8 +337,7 @@ export async function initiateSignup(input: {
   if (!derivedSlug) {
     throw new AppError(400, 'INVALID_TENANT_NAME', 'Organization name must contain at least one letter or number.');
   }
-  const existingSlug = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const existingSlug = await withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT id FROM platform.tenants WHERE slug = $1',
       [derivedSlug]
@@ -355,8 +367,8 @@ export async function initiateSignup(input: {
 
 export async function initiateLogin(email: string): Promise<{ message: string }> {
   // Check if user exists — find ALL active accounts for this email
-  const users = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // across every tenant. Admin bypass explicit.
+  const users = await withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT id, tenant_id, name FROM platform.users WHERE email = $1 AND status = $2',
       [email, 'active']
@@ -389,6 +401,7 @@ export async function verifyCode(input: {
   email: string;
   code: string;
 }): Promise<MagicLink> {
+  // magic_links is on the carve-out (no RLS); plain withClient.
   return withClient(async (client) => {
     // Read the most recent magic link for this email regardless of
     // expiry/used state so we can return a specific error code for
@@ -445,6 +458,7 @@ export async function verifyCode(input: {
 export async function verifyToken(token: string): Promise<MagicLink> {
   const tokenHash = hashToken(token);
 
+  // magic_links is on the carve-out (no RLS); plain withClient.
   return withClient(async (client) => {
     // Look up the magic link by token regardless of used/expiry so we
     // can branch the error code — UI uses MAGIC_LINK_EXPIRED /
@@ -484,8 +498,9 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
     throw new AppError(400, 'INVALID_METADATA', 'Signup metadata missing');
   }
 
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // completeSignup creates a brand-new tenant + first user; no tenant
+  // context exists yet. Admin bypass explicit.
+  return withAdminTransaction(async (client) => {
     // Check if this is the first user on the platform (platform admin bootstrap)
     const userCountResult = await client.query('SELECT COUNT(*) FROM platform.users');
     const isFirstUser = parseInt(userCountResult.rows[0].count, 10) === 0;
@@ -635,8 +650,10 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
 }
 
 export async function completeLogin(magicLink: MagicLink, selectedTenantId?: string): Promise<TokenPair & { tenants?: { id: string; name: string; role: string }[] }> {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Magic-link consumption + user lookup spans every tenant that owns
+  // the email (multi-tenant accounts). Admin bypass explicit — we pick
+  // the tenant BEFORE binding to its context.
+  return withAdminTransaction(async (client) => {
     const userResult = await client.query(
       `SELECT u.*, r.slug as role_slug, t.name as tenant_name
        FROM platform.users u
@@ -763,8 +780,10 @@ export async function completeLogin(magicLink: MagicLink, selectedTenantId?: str
 }
 
 export async function loginToTenant(email: string, tenantId: string): Promise<TokenPair> {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Tenant switching path — finds the user record for this email in
+  // the target tenant without having been bound to that tenant's
+  // context yet. Admin bypass explicit.
+  return withAdminTransaction(async (client) => {
     const userResult = await client.query(
       `SELECT u.*, r.slug as role_slug
        FROM platform.users u
@@ -847,7 +866,8 @@ export async function loginToTenant(email: string, tenantId: string): Promise<To
 }
 
 export async function initiateRecovery(email: string): Promise<{ message: string }> {
-  const user = await withClient(async (client) => {
+  // Pre-recovery lookup by email — crosses tenants by construction.
+  const user = await withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT id, tenant_id, name FROM platform.users WHERE email = $1 AND status = $2',
       [email, 'active']
@@ -875,10 +895,10 @@ export async function initiateRecovery(email: string): Promise<{ message: string
 }
 
 export async function refreshSession(refreshTokenHash: string): Promise<TokenPair> {
-  return withTransaction(async (client) => {
-    // Bypass RLS — refresh is cookie-based, no JWT context available yet
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-
+  // Refresh is cookie-based — no JWT context available yet. The
+  // session lookup JOINs user_sessions + users + roles, which requires
+  // cross-tenant visibility until we've resolved the session's tenant.
+  return withAdminTransaction(async (client) => {
     // Find existing session
     const sessionResult = await client.query(
       `SELECT s.*, u.role_id, u.is_owner, u.email, u.tenant_id, r.slug as role_slug
@@ -939,8 +959,10 @@ export async function refreshSession(refreshTokenHash: string): Promise<TokenPai
 }
 
 export async function logout(userId: string): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Deletes every user_sessions row for this user. Admin bypass —
+  // user_sessions is RLS-gated and logout may be invoked in contexts
+  // where the session's tenant context isn't already bound.
+  await withAdminClient(async (client) => {
     await client.query(
       'DELETE FROM platform.user_sessions WHERE user_id = $1',
       [userId]
@@ -957,8 +979,9 @@ export async function beginPasskeyAuth(email?: string): Promise<unknown> {
   let userId: string | null = null;
 
   if (email) {
-    // Get passkeys for this specific user
-    const result = await withClient(async (client) => {
+    // Get passkeys for this specific user — pre-auth email lookup
+    // spans every tenant, and user_passkeys is RLS-gated.
+    const result = await withAdminClient(async (client) => {
       const userResult = await client.query(
         'SELECT id FROM platform.users WHERE email = $1 AND status = $2',
         [email, 'active']
@@ -982,7 +1005,8 @@ export async function beginPasskeyAuth(email?: string): Promise<unknown> {
 
   const options = await webauthn.generateAuthOptions(allowCredentials);
 
-  // Store challenge with a unique key (UUID) to avoid collisions
+  // Store challenge with a unique key (UUID) to avoid collisions.
+  // platform_settings is on the carve-out (no RLS) — plain withClient.
   const challengeKey = 'passkey_challenge_' + generateUUID();
   await withClient(async (client) => {
     await client.query(
@@ -1004,7 +1028,9 @@ export async function completePasskeyAuth(body: any): Promise<{ accessToken: str
   let b64 = credentialId.replace(/-/g, '+').replace(/_/g, '/');
   while (b64.length % 4) b64 += '=';
 
-  const credential = await withClient(async (client) => {
+  // Credential → user resolution spans tenants (a passkey uniquely
+  // identifies a user; we don't know the tenant until after the look-up).
+  const credential = await withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT p.*, u.id as uid, u.email, u.tenant_id, u.name
        FROM platform.user_passkeys p
@@ -1020,7 +1046,8 @@ export async function completePasskeyAuth(body: any): Promise<{ accessToken: str
     throw new AppError(401, 'INVALID_CREDENTIAL', 'Passkey not recognized');
   }
 
-  // Find the stored challenge
+  // Find the stored challenge — platform_settings is on the no-RLS
+  // carve-out; plain withClient.
   const challengeData = await withClient(async (client) => {
     const result = await client.query(
       `SELECT key, value FROM platform.platform_settings
@@ -1051,8 +1078,10 @@ export async function completePasskeyAuth(body: any): Promise<{ accessToken: str
       );
 
       if (verification.verified) {
-        // Update counter
-        await withClient(async (client) => {
+        // Update counter. user_passkeys is RLS-gated — and we haven't
+        // bound a tenant context yet, the user's tenant was just
+        // resolved above. Admin bypass explicit.
+        await withAdminClient(async (client) => {
           await client.query(
             'UPDATE platform.user_passkeys SET counter = $1, last_used_at = now() WHERE id = $2',
             [verification.authenticationInfo.newCounter, credential.id]
@@ -1077,8 +1106,9 @@ export async function createSession(
   tenantId: string,
   deviceInfo?: Record<string, unknown>
 ): Promise<TokenPair> {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Session creation runs mid-login before the caller has bound tenant
+  // context; reads users / roles / permissions and writes user_sessions.
+  return withAdminTransaction(async (client) => {
     const userResult = await client.query(
       `SELECT u.*, r.slug as role_slug
        FROM platform.users u
