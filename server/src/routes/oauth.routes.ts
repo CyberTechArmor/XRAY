@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { withClient } from '../db/connection';
+import { withTenantContext, withAdminClient } from '../db/connection';
 import { encryptSecret } from '../lib/encrypted-column';
 import { verifyOAuthState } from '../lib/oauth-state';
 import { exchangeAuthorizationCode, OAuthExchangeError } from '../lib/oauth-tokens';
@@ -97,9 +97,7 @@ router.get('/callback', async (req: Request, res: Response) => {
   // source_type=slug row (legacy pre-step-4 data) before inserting a
   // new one — avoids leaving orphan rows for tenants who were
   // previously manually provisioned.
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
-
+  await withTenantContext(claims.t, async (client) => {
     const existing = await client.query(
       `SELECT id FROM platform.connections
         WHERE tenant_id = $1 AND (integration_id = $2 OR source_type = $3)
@@ -181,9 +179,10 @@ async function getIntegrationByIdWithSecret(id: string) {
   // getIntegrationWithSecret (which keys on slug). We accept the small
   // duplication because the callback's auth model is "state JWT says
   // integration_id is X; trust that and look up by id."
-  const { withClient } = await import('../db/connection');
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // platform.integrations is a global catalog (no RLS / bypass-only per
+  // migration 029's carve-out list), so an admin checkout is the right
+  // helper — there's no tenant to scope to on the callback path.
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT * FROM platform.integrations WHERE id = $1',
       [id]
