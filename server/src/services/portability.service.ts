@@ -1,4 +1,4 @@
-import { withClient } from '../db/connection';
+import { withAdminClient } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import * as auditService from './audit.service';
 import archiver from 'archiver';
@@ -25,8 +25,7 @@ export async function exportPlatform(opts: ExportOptions, userId?: string): Prom
   const data: Record<string, unknown> = {};
   const imageUrls: Set<string> = new Set();
 
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
 
     // ── Tenants + members + billing + notes ──
     if (opts.tenants !== false) {
@@ -268,8 +267,7 @@ export async function importPlatform(zipBuffer: Buffer, userId?: string): Promis
 
   const result: ImportResult = { imported: {}, skipped: {}, errors: [] };
 
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
 
     // ── Import roles (before users, as users reference roles) ──
     if (dataFiles.roles) {
