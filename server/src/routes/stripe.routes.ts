@@ -102,9 +102,8 @@ router.get('/plan', authenticateJWT, async (req, res, next) => {
       const gateConfigured2 = gateProductsRaw2 !== null;
       if (!gateConfigured2) {
         // Gate never configured — use plan_tier as fallback
-        const { withClient } = await import('../db/connection');
-        const bs = await withClient(async (client) => {
-          await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+        const { withTenantContext } = await import('../db/connection');
+        const bs = await withTenantContext(req.user!.tid, async (client) => {
           const r = await client.query('SELECT * FROM platform.billing_state WHERE tenant_id = $1', [req.user!.tid]);
           return r.rows[0];
         });
@@ -183,9 +182,8 @@ router.post('/checkout', authenticateJWT, requirePermission('billing.manage'), a
     const tenant = await tenantService.getTenant(req.user!.tid);
 
     // Get user email for new customers
-    const { withClient } = await import('../db/connection');
-    const userRow = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const { withTenantContext } = await import('../db/connection');
+    const userRow = await withTenantContext(req.user!.tid, async (client) => {
       const r = await client.query('SELECT email FROM platform.users WHERE id = $1', [req.user!.sub]);
       return r.rows[0];
     });
@@ -328,10 +326,9 @@ router.post('/admin/product-toggles', authenticateJWT, async (req, res, next) =>
     // Same broadcast pattern as gate-products — fan a billing:updated
     // event out so tenant billing pages re-fetch /subscribable.
     try {
-      const { withClient } = await import('../db/connection');
+      const { withAdminClient } = await import('../db/connection');
       const { broadcastToTenant } = await import('../ws');
-      const tenants = await withClient(async (client) => {
-        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const tenants = await withAdminClient(async (client) => {
         const r = await client.query('SELECT id FROM platform.tenants');
         return r.rows.map((row: any) => row.id);
       });
@@ -362,10 +359,9 @@ router.post('/admin/gate-products', authenticateJWT, async (req, res, next) => {
 
     // Broadcast billing change to ALL connected tenant users
     try {
-      const { withClient } = await import('../db/connection');
+      const { withAdminClient } = await import('../db/connection');
       const { broadcastToTenant } = await import('../ws');
-      const tenants = await withClient(async (client) => {
-        await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+      const tenants = await withAdminClient(async (client) => {
         const r = await client.query('SELECT id FROM platform.tenants');
         return r.rows.map((row: any) => row.id);
       });
@@ -387,7 +383,7 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
       return res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'Platform admin only' } });
     }
     const { getSetting } = await import('../services/settings.service');
-    const { withClient } = await import('../db/connection');
+    const { withAdminClient } = await import('../db/connection');
 
     // Load gate products config (simple array of product IDs)
     const gateProductsRaw = await getSetting('stripe_gate_products');
@@ -397,8 +393,10 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
     }
     const gateProductIds = new Set(gateProductIdsList);
 
-    // Load billing override settings
-    const overrideResult = await withClient(async (client) => {
+    // Load billing override settings. platform_settings is a global
+    // table (bypass-only carve-out per migration 029) — admin helper
+    // for clarity.
+    const overrideResult = await withAdminClient(async (client) => {
       const r = await client.query(
         `SELECT key, value FROM platform.platform_settings WHERE key LIKE 'billing.override.%' AND value = 'true'`
       );
@@ -410,8 +408,7 @@ router.get('/admin/billing', authenticateJWT, async (req, res, next) => {
       return overrides;
     });
 
-    const result = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const result = await withAdminClient(async (client) => {
       return client.query(
         `SELECT t.id AS tenant_id, t.name AS tenant_name, t.stripe_customer_id,
                 bs.plan_tier, bs.payment_status, bs.stripe_subscription_id,
@@ -524,9 +521,8 @@ router.post('/admin/link-customer', authenticateJWT, async (req, res, next) => {
     if (!tenantId || !stripeCustomerId) {
       return res.status(400).json({ ok: false, error: { code: 'MISSING_FIELDS', message: 'tenantId and stripeCustomerId required' } });
     }
-    const { withClient } = await import('../db/connection');
-    await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const { withAdminClient } = await import('../db/connection');
+    await withAdminClient(async (client) => {
       await client.query('UPDATE platform.tenants SET stripe_customer_id = $1, updated_at = now() WHERE id = $2', [stripeCustomerId, tenantId]);
       await client.query(
         `INSERT INTO platform.billing_state (tenant_id, payment_status, plan_tier, updated_at)
