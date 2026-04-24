@@ -33,7 +33,14 @@ async function importDb() {
   return await import('./connection');
 }
 
-async function setup(): Promise<{ dashA: string; dashB: string; connA: string; connB: string }> {
+interface Fixture {
+  dashA: string; dashB: string;
+  connA: string; connB: string;
+  userA: string; userB: string;
+  roleId: string;
+}
+
+async function setup(): Promise<Fixture> {
   const { withAdminClient } = await importDb();
   return withAdminClient(async (client) => {
     await client.query(
@@ -43,6 +50,9 @@ async function setup(): Promise<{ dashA: string; dashB: string; connA: string; c
        ON CONFLICT (id) DO NOTHING`,
       [TENANT_A, TENANT_B]
     );
+    const roleId = (await client.query(
+      `SELECT id FROM platform.roles ORDER BY is_system DESC LIMIT 1`
+    )).rows[0].id;
     const dashA = (await client.query(
       `INSERT INTO platform.dashboards (tenant_id, name) VALUES ($1, 'probe-dash-a') RETURNING id`,
       [TENANT_A]
@@ -61,13 +71,29 @@ async function setup(): Promise<{ dashA: string; dashB: string; connA: string; c
        VALUES ($1, 'probe-conn-b', 'http', 'probe.b') RETURNING id`,
       [TENANT_B]
     )).rows[0].id;
-    return { dashA, dashB, connA, connB };
+    const userA = (await client.query(
+      `INSERT INTO platform.users (tenant_id, email, name, role_id, status)
+       VALUES ($1, 'probe-user-a@example.test', 'Probe User A', $2, 'active') RETURNING id`,
+      [TENANT_A, roleId]
+    )).rows[0].id;
+    const userB = (await client.query(
+      `INSERT INTO platform.users (tenant_id, email, name, role_id, status)
+       VALUES ($1, 'probe-user-b@example.test', 'Probe User B', $2, 'active') RETURNING id`,
+      [TENANT_B, roleId]
+    )).rows[0].id;
+    return { dashA, dashB, connA, connB, userA, userB, roleId };
   });
 }
 
 async function cleanup(): Promise<void> {
   const { withAdminClient } = await importDb();
   await withAdminClient(async (client) => {
+    // FK-order-safe teardown: children first, then dashboards/connections,
+    // then users, then tenants. audit_log / fan_out_deliveries don't have
+    // ON DELETE CASCADE on every side so we scrub them explicitly.
+    await client.query(`DELETE FROM platform.audit_log WHERE tenant_id IN ($1, $2) AND action LIKE 'probe.%'`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.fan_out_deliveries WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.fan_out_runs WHERE idempotency_key LIKE 'probe-%'`);
     await client.query(`DELETE FROM platform.dashboards WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.connections WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.users WHERE tenant_id IN ($1, $2) AND email LIKE 'probe-%'`, [TENANT_A, TENANT_B]);
@@ -79,7 +105,7 @@ async function cleanup(): Promise<void> {
 }
 
 maybe('db/rls-probe — cross-tenant isolation', () => {
-  let fixture: { dashA: string; dashB: string; connA: string; connB: string };
+  let fixture: Fixture;
 
   beforeAll(async () => {
     fixture = await setup();
@@ -208,6 +234,307 @@ maybe('db/rls-probe — cross-tenant isolation', () => {
       )).rows;
     });
     expect(rows.length).toBe(0);
+  });
+
+  // ─── Widened coverage (step 7 B2) ────────────────────────
+  //
+  // One assertion per RLS-enabled tenant-scoped table not already
+  // covered above. Each test seeds one row in A and one row in B via
+  // admin bypass, then asserts that withTenantContext(A) sees exactly
+  // one row keyed to TENANT_A.
+
+  it('withTenantContext(A) sees only A users', async () => {
+    const { withTenantContext } = await importDb();
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.users WHERE email LIKE 'probe-user-%'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A billing_state', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.billing_state (tenant_id, plan_tier, dashboard_limit, payment_status)
+         VALUES ($1, 'free', 0, 'none'), ($2, 'free', 0, 'none')
+         ON CONFLICT (tenant_id) DO NOTHING`,
+        [TENANT_A, TENANT_B]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.billing_state WHERE tenant_id IN ($1, $2)`,
+        [TENANT_A, TENANT_B]
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A audit_log rows', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.audit_log (tenant_id, action) VALUES ($1, 'probe.a'), ($2, 'probe.b')`,
+        [TENANT_A, TENANT_B]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.audit_log WHERE action LIKE 'probe.%'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A user_sessions', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.user_sessions (user_id, tenant_id, refresh_token_hash, expires_at)
+         VALUES ($1, $2, 'probe-sess-a-' || $5, now() + interval '1 day'),
+                ($3, $4, 'probe-sess-b-' || $5, now() + interval '1 day')`,
+        [fixture.userA, TENANT_A, fixture.userB, TENANT_B, Date.now().toString()]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.user_sessions WHERE refresh_token_hash LIKE 'probe-sess-%'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A dashboard_access', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.dashboard_access (dashboard_id, user_id, tenant_id)
+         VALUES ($1, $2, $3), ($4, $5, $6)
+         ON CONFLICT (dashboard_id, user_id) DO NOTHING`,
+        [fixture.dashA, fixture.userA, TENANT_A, fixture.dashB, fixture.userB, TENANT_B]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.dashboard_access WHERE dashboard_id IN ($1, $2)`,
+        [fixture.dashA, fixture.dashB]
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A dashboard_sources', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.dashboard_sources (dashboard_id, tenant_id, source_key, table_name)
+         VALUES ($1, $2, 'probe', 'probe_a'), ($3, $4, 'probe', 'probe_b')`,
+        [fixture.dashA, TENANT_A, fixture.dashB, TENANT_B]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.dashboard_sources WHERE source_key = 'probe'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A connection_tables', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.connection_tables (connection_id, tenant_id, table_name)
+         VALUES ($1, $2, 'probe-tbl-a'), ($3, $4, 'probe-tbl-b')`,
+        [fixture.connA, TENANT_A, fixture.connB, TENANT_B]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.connection_tables WHERE table_name LIKE 'probe-tbl-%'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A invitations', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.invitations (tenant_id, email, role_id, invited_by, expires_at)
+         VALUES ($1, 'probe-inv-a@example.test', $3, $5, now() + interval '1 day'),
+                ($2, 'probe-inv-b@example.test', $4, $6, now() + interval '1 day')`,
+        [TENANT_A, TENANT_B, fixture.roleId, fixture.roleId, fixture.userA, fixture.userB]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.invitations WHERE email LIKE 'probe-inv-%'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A user_passkeys', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.user_passkeys (user_id, tenant_id, credential_id, public_key)
+         VALUES ($1, $2, decode('0100', 'hex'), decode('abcd', 'hex')),
+                ($3, $4, decode('0200', 'hex'), decode('abcd', 'hex'))`,
+        [fixture.userA, TENANT_A, fixture.userB, TENANT_B]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.user_passkeys WHERE credential_id IN (decode('0100', 'hex'), decode('0200', 'hex'))`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A dashboard_embeds', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    const stamp = Date.now().toString();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.dashboard_embeds (dashboard_id, tenant_id, embed_token)
+         VALUES ($1, $2, 'probe-embed-a-' || $5), ($3, $4, 'probe-embed-b-' || $5)`,
+        [fixture.dashA, TENANT_A, fixture.dashB, TENANT_B, stamp]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.dashboard_embeds WHERE embed_token LIKE 'probe-embed-%'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A api_keys', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    const stamp = Date.now().toString();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.api_keys (tenant_id, name, key_prefix, key_hash, created_by)
+         VALUES ($1, 'probe-a', 'pbA', 'probe-hash-a-' || $5, $3),
+                ($2, 'probe-b', 'pbB', 'probe-hash-b-' || $5, $4)`,
+        [TENANT_A, TENANT_B, fixture.userA, fixture.userB, stamp]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.api_keys WHERE key_hash LIKE 'probe-hash-%'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A webhooks', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.webhooks (tenant_id, name, target_url, created_by)
+         VALUES ($1, 'probe-wh-a', 'https://example.test/a', $3),
+                ($2, 'probe-wh-b', 'https://example.test/b', $4)`,
+        [TENANT_A, TENANT_B, fixture.userA, fixture.userB]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.webhooks WHERE name LIKE 'probe-wh-%'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A file_uploads', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.file_uploads (tenant_id, uploaded_by, original_name, stored_name, context_type)
+         VALUES ($1, $3, 'probe-a.txt', 'probe-a-stored', 'general'),
+                ($2, $4, 'probe-b.txt', 'probe-b-stored', 'general')`,
+        [TENANT_A, TENANT_B, fixture.userA, fixture.userB]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.file_uploads WHERE stored_name LIKE 'probe-%-stored'`
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A dashboard_tenant_grants', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    await withAdminClient(async (c) => {
+      await c.query(
+        `INSERT INTO platform.dashboard_tenant_grants (dashboard_id, tenant_id)
+         VALUES ($1, $2), ($3, $4)
+         ON CONFLICT (dashboard_id, tenant_id) DO NOTHING`,
+        [fixture.dashA, TENANT_A, fixture.dashB, TENANT_B]
+      );
+    });
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.dashboard_tenant_grants WHERE dashboard_id IN ($1, $2)`,
+        [fixture.dashA, fixture.dashB]
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
+  });
+
+  it('withTenantContext(A) sees only A fan_out_deliveries', async () => {
+    const { withTenantContext, withAdminClient } = await importDb();
+    const stamp = Date.now().toString();
+    const runId = await withAdminClient(async (c) => {
+      const integrationRow = (await c.query(
+        `SELECT id FROM platform.integrations LIMIT 1`
+      )).rows[0];
+      // If no integrations exist in this DB the assertion is a no-op;
+      // fan_out_runs requires one as a parent FK.
+      if (!integrationRow) return null;
+      const r = await c.query(
+        `INSERT INTO platform.fan_out_runs (integration_id, idempotency_key, target_url)
+         VALUES ($1, 'probe-run-' || $2, 'https://example.test/fan-out')
+         RETURNING id`,
+        [integrationRow.id, stamp]
+      );
+      const id = r.rows[0].id as string;
+      await c.query(
+        `INSERT INTO platform.fan_out_deliveries (fan_out_id, tenant_id, idempotency_key, status)
+         VALUES ($1, $2, 'probe-del-a-' || $4, 'pending'),
+                ($1, $3, 'probe-del-b-' || $4, 'pending')`,
+        [id, TENANT_A, TENANT_B, stamp]
+      );
+      return id;
+    });
+    if (!runId) return;
+    const rows = await withTenantContext(TENANT_A, async (c) => {
+      return (await c.query(
+        `SELECT tenant_id FROM platform.fan_out_deliveries WHERE fan_out_id = $1`,
+        [runId]
+      )).rows;
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].tenant_id).toBe(TENANT_A);
   });
 
   it('withAdminClient sees both tenants rows', async () => {
