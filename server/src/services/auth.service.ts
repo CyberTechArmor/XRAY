@@ -301,6 +301,12 @@ export async function initiateSignup(input: {
   email: string;
   name: string;
   tenantName: string;
+  // When present, swaps the email template to the branded
+  // "tenant_invitation" copy ("you've been invited") instead of the
+  // default "signup_verification" copy ("verify your email"). Routes
+  // through the same magic-link + completeSignup machinery — only the
+  // outbound email differs.
+  invitation?: { inviterName: string };
 }): Promise<{ message: string }> {
   // Pre-signup existence checks run BEFORE a tenant exists, and
   // deliberately scan every tenant for email / name / slug collisions.
@@ -353,12 +359,20 @@ export async function initiateSignup(input: {
     tenantName: input.tenantName,
   });
 
-  // Fire-and-forget: don't block the response on SMTP
-  sendTemplateEmail('signup_verification', input.email, {
+  // Fire-and-forget: don't block the response on SMTP. Choose
+  // template based on whether this signup originates from a platform
+  // admin invitation (admin.service.inviteTenantOwner) or self-signup.
+  const templateKey = input.invitation ? 'tenant_invitation' : 'signup_verification';
+  const variables: Record<string, string> = {
     name: input.name,
     code,
     link: `${config.webauthn.origin}/auth/verify?token=${token}&purpose=signup`,
-  }).catch((err) => {
+  };
+  if (input.invitation) {
+    variables.inviter_name = input.invitation.inviterName;
+    variables.tenant_name = input.tenantName;
+  }
+  sendTemplateEmail(templateKey, input.email, variables).catch((err) => {
     console.error('Failed to send signup email:', err);
   });
 

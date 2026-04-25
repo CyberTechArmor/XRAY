@@ -106,9 +106,10 @@ export async function listAllTenants(query: { page: number; limit: number }) {
 
 // Admin-driven "invite a tenant owner" — routes through the same
 // signup magic-link path a normal self-signup uses, so completeSignup
-// creates the tenant + user + billing_state atomically. Sends the
-// signup_verification email today; commit (v) will rebrand this
-// path as `tenant_invitation` once the template is seeded.
+// creates the tenant + user + billing_state atomically. Step 7 (C5)
+// branded the outbound email as `tenant_invitation` (vs. the default
+// `signup_verification` for self-signups) so the recipient's mailbox
+// reads "you've been invited" instead of "verify your email".
 export async function inviteTenantOwner(input: {
   email: string;
   name: string;
@@ -116,10 +117,26 @@ export async function inviteTenantOwner(input: {
   invitedByUserId: string;
   invitedByTenantId: string;
 }): Promise<{ message: string; email: string; tenantName: string }> {
+  // Look up the inviter's display name for the email body. The
+  // inviter is a platform admin (gated by the route's admin check)
+  // and lives in some tenant; admin bypass for the look-up.
+  const inviterRow = await withAdminClient(async (client) => {
+    const r = await client.query(
+      `SELECT name, email FROM platform.users WHERE id = $1`,
+      [input.invitedByUserId]
+    );
+    return r.rows[0] || null;
+  });
+  const inviterName: string =
+    (inviterRow?.name && inviterRow.name.trim().length > 0)
+      ? inviterRow.name
+      : (inviterRow?.email || 'Your XRay administrator');
+
   const result = await authService.initiateSignup({
     email: input.email,
     name: input.name,
     tenantName: input.tenantName,
+    invitation: { inviterName },
   });
 
   auditService.log({
