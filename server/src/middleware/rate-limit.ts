@@ -70,3 +70,20 @@ export function ipHash(req: Request): string {
   if (!ip) return '';
   return createHash('sha256').update(`${ip}|${config.jwtSecret}`).digest('hex');
 }
+
+// Step 10: User-Agent hash with the same salt convention. Used to
+// fingerprint magic-link issuance (migration 037) so consumption
+// from a different device fails LINK_FINGERPRINT_MISMATCH.
+export function uaHash(req: Request): string {
+  const ua = (req.headers['user-agent'] as string) || '';
+  if (!ua) return '';
+  return createHash('sha256').update(`${ua}|${config.jwtSecret}`).digest('hex');
+}
+
+// Convenience: returns the pair the magic-link issuance + verify
+// paths need. Either side can be empty when the relevant header
+// is absent — the verify side uses skip-on-NULL semantics so an
+// empty hash never falsely matches.
+export function requestFingerprint(req: Request): { ipHash: string; uaHash: string } {
+  return { ipHash: ipHash(req), uaHash: uaHash(req) };
+}
