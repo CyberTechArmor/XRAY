@@ -80,6 +80,22 @@ Roadmap allocates 12-15 commits. Items, in suggested order:
    Operator flips to `true` in production via Admin → Platform
    Settings (already shipped).
 
+5. **`migrations/035_auth_attempts.sql`** — new
+   `platform.auth_attempts` for the 24h per-user counter:
+   ```
+   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+   email_lower TEXT NOT NULL,
+   attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+   ip_hash TEXT,
+   success BOOLEAN NOT NULL DEFAULT FALSE
+   ```
+   Index on `(email_lower, attempted_at)`. **No RLS** — carve-out,
+   pre-tenant lookup path (the rate limiter runs before user_id is
+   known). Add to the `withClient` allow-list in
+   `scripts/check-withclient-allowlist.sh` if the rate-limit
+   middleware uses `withClient` directly; prefer
+   `withAdminClient` so the carve-out exception isn't needed.
+
 ### B. TOTP service + backup codes
 
 5. **`services/totp.service.ts`** (new). Uses `otplib` (or
