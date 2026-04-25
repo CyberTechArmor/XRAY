@@ -108,11 +108,14 @@ async function getSigningSecret(): Promise<string> {
 
   if (!value) {
     const fresh = randomBytes(32).toString('hex');
-    // Pass user_id 'system' marker — updateSettings logs the writer
-    // to platform_settings.updated_by. The bootstrap writer is the
-    // server itself, not a user; use a sentinel string.
+    // updateSettings.updated_by is a UUID FK with no NOT NULL — pass
+    // null for system-driven writes. Passing a non-UUID sentinel
+    // crashes the INSERT with `invalid input syntax for type uuid`,
+    // which is what blocked sign-in pre-fix: every verify call hit
+    // sendTokenPair → issueCsrfCookie → getSigningSecret → seed →
+    // INSERT crash → unhandled error → INTERNAL_ERROR response.
     try {
-      await updateSettings({ csrf_signing_secret: fresh }, 'system');
+      await updateSettings({ csrf_signing_secret: fresh }, null);
     } catch {
       // If two boots race the seed, one INSERT wins via ON CONFLICT
       // DO UPDATE; both end up reading the winning value below.
