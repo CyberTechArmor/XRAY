@@ -2844,6 +2844,441 @@ Browser-side smoke:
    enrollment flow before issuing a session.
 
 
+## Step 10 — Auth surface area cleanup (shipped)
+
+Closes the cookie-auth surface gaps left after step 9: CSRF
+double-submit on every state-changing request, magic-link
+IP/UA fingerprint binding, platform-admin impersonation
+(start/stop with persistent banner), GDPR Art. 17 account
+deletion, GDPR Art. 20 user data export. Session rotation on
+auth state change is implicit — every transition (login,
+MFA-verify, impersonation start, impersonation stop) inserts
+a fresh `user_sessions` row via `createSession`, and
+`refreshSession` already rotated on refresh from step 6.
+
+### Commit trail (14 commits on `claude/xray-hardening-step-10-4RQgy`)
+
+| # | Concern | Ref |
+|---|---|---|
+| 0 | kickoff doc — per-commit plan + open decisions | `.claude/step-10-kickoff.md` |
+| 1 | migration 036 — `user_sessions.impersonator_user_id` | `migrations/036_user_sessions_impersonator.sql` |
+| 2 | migration 037 — `magic_links.issuer_ip_hash + issuer_ua_hash` | `migrations/037_magic_link_fingerprint.sql` |
+| 3 | migration 038 — `csrf_signing_secret` (lazy-seed) | `migrations/038_csrf_signing_secret.sql` |
+| 4 | CSRF middleware (issue + verify + skip-list) | `middleware/csrf.ts`, `index.ts`, `routes/auth.routes.ts`, `routes/user.routes.ts`, `routes/invitation.routes.ts` |
+| 5 | frontend CSRF mirror + skip-list refinement | `frontend/app.js`, `middleware/csrf.ts` |
+| 6 | impersonation.service — start / stop / isImpersonating | `services/impersonation.service.ts`, `services/jwt.service.ts`, `middleware/auth.ts` |
+| 7 | impersonate routes — start / stop | `routes/admin.routes.ts` |
+| 8 | frontend impersonation CTA + persistent banner | `bundles/general.json`, `frontend/app.js`, `frontend/app.css` |
+| 9 | magic-link IP/UA fingerprint binding | `middleware/rate-limit.ts`, `services/auth.service.ts`, `routes/auth.routes.ts`, `frontend/app.js` |
+| 10 | `deleteOwnAccount` + `DELETE /api/users/me` | `services/user.service.ts`, `routes/user.routes.ts` |
+| 11 | `exportUser` + `GET /api/users/me/export` (Art. 20) | `services/portability.service.ts`, `routes/user.routes.ts` |
+| 12 | frontend Account → Privacy card | `bundles/general.json` |
+| 13 | `csrf.test.ts` — issuance + verify + skip-list specs | `middleware/csrf.test.ts` |
+
+The kickoff allocated 10–13 commits; final landed shape is 13
+plus the kickoff doc (commit 0). One-concern-per-commit
+discipline preserved end-to-end; the only deviation is commit
+3a (`migration 038 lazy-seed fix`) folded into commit 3's
+history immediately after the SQL-side seed turned out to be
+incompatible with `lib/crypto`'s AES-256-GCM envelope.
+
+### What shipped
+
+**Migrations.** Three idempotent migrations land alone before
+any app code:
+
+- 036 `user_sessions.impersonator_user_id` (UUID, FK to users
+  with ON DELETE SET NULL, partial index WHERE NOT NULL).
+  Audit-metadata column. RLS policies on `user_sessions` are
+  unchanged — the impersonation row lives in the target
+  tenant's scope, which is the correct shape for tenant-side
+  visibility.
+- 037 `magic_links.issuer_ip_hash + issuer_ua_hash` (TEXT
+  NULL on both). Skip-on-NULL upgrade path keeps in-flight
+  pre-migration links + admin-driven invite links consumable
+  from any device. New issuance always populates.
+- 038 `csrf_signing_secret` — body intentionally a no-op +
+  documentation comment. The CSRF middleware lazy-seeds via
+  `settings.service.updateSettings` on first use. The
+  pre-migration seed attempt (commit 3) wrote a raw hex value,
+  but `getSetting()` runs `decrypt()` on `is_secret=true`
+  rows and pgcrypto can't produce the AES-256-GCM envelope
+  `lib/crypto` uses. Migration kept (not deleted) so the
+  036/037/038/039+ sequence stays contiguous and a future
+  rotation lands cleanly.
+
+**CSRF middleware (`middleware/csrf.ts`).** Double-submit
+cookie pattern. Issuance: `issueCsrfCookie(res)` sets
+`xsrf_token = <random>.<hmac(random, csrf_signing_secret)>`
+(path `/`, SameSite=Lax, Secure in production, NOT HttpOnly
+so the SPA can read it). Wired into every refresh-cookie
+issuance: auth.routes `sendTokenPair` + the totp/confirm
+admin-forced-enrollment branch, user.routes switch-tenant,
+invitation.routes accept, admin.routes impersonate
+start/stop. Logout clears both cookies.
+
+Verify: `verifyCsrf` mounted globally in `index.ts` after
+`cookieParser`, before route mounting. State-changing methods
+require `req.headers['x-csrf-token'] === req.cookies.xsrf_token`
+plus an HMAC signature check on the cookie payload. Skip
+list:
+
+- GET / HEAD / OPTIONS (no state change).
+- `Authorization: Bearer ...` (any prefix). Cross-origin JS
+  can't set Authorization without CORS preflight which our
+  allow-list rejects, so JWT and API-key bearers are both
+  CSRF-immune.
+- `/api/health`, `/api/embed/*`, `/api/share/*` (already on
+  the rate-limit `isPublicSurface` predicate).
+- `/api/stripe/webhook`, `/api/webhooks/*` (sender-signed).
+- `/api/admin/import` (operator-CLI raw-zip path; not a
+  browser session).
+- Unauthenticated bootstrap: `/api/auth/setup`, `/signup`,
+  `/verify`, `/verify-token`, `/login/begin`, `/passkey/begin`,
+  `/passkey/finish`, `/totp/verify`, `/refresh`,
+  `/api/invitations/accept`. They enter without a CSRF cookie
+  AND without an existing session to leverage in a CSRF
+  attack.
+
+`/api/auth/refresh` deserves the longer note: SameSite=Lax on
+the refresh cookie + the CORS allow-list cover the CSRF
+surface, and gating it would lock every existing session out
+at the moment of deploy. Documented in the middleware header.
+
+The HMAC secret lazy-seeds via `settings.service.updateSettings`
+on first issuance — that path runs through the `crypto`
+envelope so `getSetting()` round-trips correctly. 60-second
+in-process cache on the verify path keeps the hot path at one
+HMAC compute per request.
+
+**Frontend CSRF mirror.** `frontend/app.js` `api._fetch`
+reads `document.cookie['xsrf_token']` and mirrors it to
+`X-CSRF-Token` on every request. Retry-after-refresh re-reads
+the cookie so a fresh issuance from `/api/auth/refresh` is
+picked up without a page reload.
+
+**Session rotation on auth state change.** Implicit, not a
+new helper. `completeLogin` short-circuits to
+`mfaPendingResponse` BEFORE creating a session row when MFA
+is required, so `completeMfaVerify` → `createSession` is the
+first row insert — there's no pre-MFA refresh token to rotate.
+Impersonation start / stop both insert fresh rows via the
+service-layer logic. Refresh continues to rotate via the
+existing `UPDATE user_sessions SET refresh_token_hash` from
+step 6's `refreshSession`.
+
+**Platform-admin impersonation (`services/impersonation.service.ts`).**
+Three exports:
+
+- `startImpersonation({ adminUserId, targetTenantId,
+  targetUserId })` mints a NEW `user_sessions` row owned by
+  the target user with `impersonator_user_id` stamped to the
+  admin id. Defence in depth at the DB layer: re-verifies the
+  caller's `role_slug = 'platform_admin'` and that the
+  target's `tenant_id` matches the route parameter (a route
+  can't splice a user from tenant A onto tenant B). Tenant
+  must be active. Target's permissions + flags are projected
+  — the admin's platform-admin posture deliberately does NOT
+  leak into the impersonation seat. Access-token JWT carries
+  an `imp = { admin_id, admin_email }` claim so the SPA
+  renders the persistent red banner without an extra
+  round-trip.
+- `stopImpersonation({ impersonationRefreshTokenHash,
+  adminUserId })` locates the impersonation session by
+  refresh-token-hash AND the NOT-NULL `impersonator_user_id`
+  matching the JWT's `imp.admin_id` — a forged `imp` claim
+  against a non-impersonation session is rejected. Mints a
+  fresh session for the admin and deletes the impersonation
+  row. Pre-existing admin sessions on other devices are
+  deliberately not rotated.
+- `isImpersonating(refreshTokenHash)` — boolean probe.
+
+Both paths emit paired `audit_log` entries: target-tenant
+scope ("admin X impersonated user Y") and admin-home-tenant
+scope when distinct ("admin X started impersonation in tenant
+T"). All writes run under `withAdminTransaction` — no
+`withClient` allow-list change.
+
+**Impersonate routes (`routes/admin.routes.ts`).** Two
+endpoints under the existing `requirePermission('platform.admin')`
+gate:
+
+- `POST /api/admin/impersonate/:tenantId/:userId` — start;
+  blocks nested impersonation with 409 ALREADY_IMPERSONATING.
+- `POST /api/admin/impersonate/stop` — requires `req.user.imp`
+  truthy. Tears down the impersonation row, restores admin
+  identity.
+
+Both routes set the new refresh cookie + a fresh CSRF cookie.
+
+**Frontend impersonation UI.** `bundles/general.json`
+admin_tenants view: per-member Impersonate button alongside
+the existing Remove button (uses the existing
+`window.__xrayConfirm` for the "Sign in as X on behalf of"
+prompt). `frontend/app.js`:
+
+- `getImpClaim()` decodes the access token (no signature
+  check — server is the source of truth) to read the `imp`
+  claim. Used as a UX hint, not a security boundary.
+- `renderImpersonationBanner()` inserts a fixed-top red bar
+  with "Stop impersonating" button. Idempotent. Hooked into
+  `enterApp()` so every entry path renders correctly.
+- `window.__xrayApplyImpersonationTokens()` is the bridge
+  from the admin-tenants click handler back to the token
+  store; full reload after token swap so every view
+  re-fetches under the target identity.
+
+`frontend/app.css`: `.impersonation-banner` rule — fixed top,
+loud red (#b91c1c), z-index above sidebar. `body:has(.impersonation-banner)
+#app-shell` adds 36px top padding so the banner doesn't
+overlap the existing header.
+
+**Magic-link IP/UA binding.** `middleware/rate-limit.ts`
+gains `uaHash()` + `requestFingerprint()` helpers mirroring
+the step-9 `ipHash()` salt convention (sha256 with the
+JWT_SECRET salt; the table never carries raw IP/UA).
+
+`services/auth.service.ts`: `createMagicLink` takes an
+optional `MagicLinkFingerprint` and populates `issuer_ip_hash`
+/ `issuer_ua_hash` on insert. `initiateLogin`,
+`initiateSignup`, `initiateRecovery` thread the fingerprint
+through. `initiateSignup` from `admin.service.inviteTenantOwner`
+deliberately omits the fingerprint — the recipient's device
+differs from the request originator, so leaving the row's
+fingerprint NULL keeps consumption open.
+
+`verifyCode` and `verifyToken`: skip-on-NULL gate. When BOTH
+row columns AND BOTH incoming hashes are present, mismatch
+decrements the per-link `attempts` counter and throws 400
+LINK_FINGERPRINT_MISMATCH with `attempts_remaining` in
+`error.details`. Independent from step 9's per-link
+5-attempt cap — both apply.
+
+`frontend/app.js` adds `LINK_FINGERPRINT_MISMATCH` to the
+retryable-error set in `showVerifyError` so the auth modal
+renders the "Resend code" CTA alongside the device-mismatch
+copy.
+
+**Account deletion (`services/user.service.deleteOwnAccount`).**
+`withTenantTransaction` body:
+
+- Resolves the user, rejects if already deactivated.
+- Tenant-owner gate: 409 OWNER_DELETE_BLOCKED when the
+  caller is `is_owner=true` AND the tenant has any other
+  active member. The UI surface for "transfer ownership
+  first" IS the error code — the tenant-ownership-transfer
+  surface is out of scope for step 10.
+- Cascade-clears: `user_sessions`, `user_passkeys`,
+  `user_totp_secrets`, `user_backup_codes`,
+  `inbox_thread_participants`. `user_backup_codes` also
+  FK-cascades on `user_id`, but the explicit DELETE
+  survives any future schema change.
+- Soft-deletes: `status='deactivated'`, `email = email ||
+  '.deactivated.' || epoch` so the `(tenant_id, email)`
+  UNIQUE constraint frees the original address for a future
+  signup.
+- Audit-logs `user.account.delete` after commit. Hard-purge
+  of deactivated rows past the retention window is a future
+  scheduled task (out of scope for step 10).
+
+`DELETE /api/users/me` reads `(sub, tid)` from the JWT,
+forwards to `deleteOwnAccount`, clears both refresh and
+CSRF cookies.
+
+**User data export (`services/portability.service.exportUser`).**
+Reuses the platform-export shape — manifest + `data/*.json`
+in a ZIP — but every query is filtered by `user_id`, never
+tenant scope alone:
+
+- `user.json` — own row + role slug/name.
+- `sessions.json` — sessions for this user
+  (`refresh_token_hash` excluded).
+- `passkeys.json` — `id`, `device_name`, `transports`,
+  `counter`, `backed_up`, timestamps. `credential_id` and
+  `public_key` deliberately excluded — exporting them gives
+  the user nothing actionable and grows the
+  credential-confusion surface.
+- `totp.json` — `confirmed_at` + `created_at` marker only;
+  the encrypted secret never leaves the DB.
+- `backup_codes.json` — `id` + `used_at` + `created_at`;
+  bcrypt hashes omitted.
+- `audit_log.json` — rows where this user was actor OR
+  resource.
+- `inbox_messages.json` — messages the user sent
+  (`sender_id` filter).
+- `dashboard_access.json` — explicit per-user access grants
+  (the dashboards table has no `created_by` column today;
+  per-user provenance is captured by `dashboard_access`).
+
+Manifest carries `kind='user-export'` to distinguish from
+the admin-driven platform export. Audit-logs
+`user.export.request` with size + section count post-build.
+
+`GET /api/users/me/export` streams the ZIP with
+`Content-Disposition: attachment; filename="xray-export-<user_id>-<YYYYMMDD>.zip"`.
+CSRF skipped (GET-bypass).
+
+**Frontend Privacy card.** `bundles/general.json` account
+view gains a Privacy & data card under the existing Security
+card. "Download my data" → `GET /api/users/me/export` (with
+explicit Bearer auth, sidesteps `api._fetch`'s JSON-decode
+path) → save via `createObjectURL` + auto-click anchor.
+"Delete my account" → typed-confirmation prompt (user types
+their email to confirm, destructive-action standard shape) →
+`DELETE /api/users/me`. On `OWNER_DELETE_BLOCKED`, surface
+the "transfer ownership first" message inline. On success,
+clear localStorage and redirect to `/`.
+
+### What didn't ship (deliberately)
+
+Per the kickoff's "Step 10 must NOT do" list:
+
+- **No new MFA work** — closed in step 9.
+- **No privacy policy / T&C / cookie banner** — step 11.
+- **No pipeline DB changes / backups** — step 12.
+- **No `withClient` allow-list changes** — every new code
+  path uses `withTenantContext` / `withTenantTransaction` /
+  `withAdminClient` / `withAdminTransaction` per CLAUDE.md.
+- **No tenant ownership-transfer UI.** The
+  `OWNER_DELETE_BLOCKED` error is the UI signal — the actual
+  transfer surface is a separate task.
+- **No hard-purge scheduled task for deactivated users.**
+  Soft-delete is the step-10 deliverable; the cron job for
+  the 30-day-after purge is a follow-up (deferred to step 13's
+  mini-queue cleanup bundle).
+- **No `rotateSession(sessionId)` standalone helper.** The
+  kickoff anticipated one but every transition turned out to
+  insert a fresh `user_sessions` row via `createSession`, so
+  the helper would have had no caller.
+
+### Acceptance
+
+- `npx tsc --noEmit`: clean.
+- `npm test`: step-9 baseline + 7 new specs in
+  `middleware/csrf.test.ts` (issuance round-trip; safe-method,
+  Bearer, public-surface, webhook bypasses; missing-token +
+  mismatched-pair rejection; matched-pair pass).
+- `withClient` direct-call count unchanged from step 7's
+  9-file allow-list.
+- CSRF — state-changing request without `X-CSRF-Token` →
+  403 CSRF_INVALID. Bearer + webhook bypass works.
+- Impersonation — Admin → Tenants → Members → Impersonate
+  swaps to target identity + red banner; Stop restores
+  admin. Paired audit_log entries on each transition.
+- Magic-link IP/UA mismatch — issue from device A, consume
+  from device B → 400 LINK_FINGERPRINT_MISMATCH,
+  attempts_remaining decremented.
+- Account deletion (non-owner) → user.status='deactivated',
+  sessions/passkeys/TOTP/backup-codes empty for that user.
+- Account deletion (owner with other active members) →
+  409 OWNER_DELETE_BLOCKED.
+- Data export — GET /api/users/me/export returns a valid
+  ZIP with `manifest.json` carrying `kind='user-export'`.
+
+### Operator manual-verification (run before opening signups)
+
+Items the fake-pool tests can't exercise:
+
+1. **Real-browser CSRF round-trip.** DevTools → Cookies:
+   confirm `xsrf_token` (path /, NOT HttpOnly) appears
+   alongside `refresh_token`. Make a state-changing request;
+   confirm `X-CSRF-Token` matches the cookie. Manually
+   delete the cookie and retry → expect 403.
+2. **Impersonation end-to-end.** As platform admin, Admin →
+   Tenants → click into a tenant → Members → Impersonate a
+   non-owner. Confirm app reloads with target's perms +
+   red banner. Verify paired audit_log entries (start). Stop
+   → app reloads as admin, banner gone, paired stop entries.
+3. **Magic-link fingerprint check on a real device pair.**
+   Request a code on Chrome → consume from Firefox on the
+   same machine. Different UAs → expect
+   LINK_FINGERPRINT_MISMATCH.
+4. **GDPR export sanity.** Account → Privacy → Download my
+   data → unzip → confirm `manifest.json` has
+   `kind: 'user-export'`, only the calling user's rows are
+   present.
+
+### Env changes
+
+None. CSRF signing secret auto-provisions via the lazy-seed
+path on first cookie issuance. No new env vars, no Dockerfile
+or docker-compose changes.
+
+### Deploy order on the VPS
+
+Standard `update.sh`:
+
+1. Step 4 re-runs `migrations/*.sql`; migrations 036 / 037 /
+   038 land in order. Idempotent.
+2. Step 5 rebuilds the server container.
+3. Sanity-check the migrations:
+   ```
+   docker exec -i xray-postgres psql -U xray -d xray <<SQL
+   SELECT column_name FROM information_schema.columns
+    WHERE table_schema='platform' AND table_name='user_sessions'
+      AND column_name='impersonator_user_id';
+   SELECT column_name FROM information_schema.columns
+    WHERE table_schema='platform' AND table_name='magic_links'
+      AND column_name IN ('issuer_ip_hash','issuer_ua_hash');
+   SQL
+   ```
+   Expected: each query returns one row.
+4. After first browser-side state-changing request, confirm
+   the lazy-seed wrote `csrf_signing_secret`:
+   ```
+   SELECT key, is_secret, length(value) > 0 AS has_value
+     FROM platform.platform_settings
+    WHERE key = 'csrf_signing_secret';
+   ```
+   Expected: one row, `is_secret=true`, `has_value=true`.
+5. Operator runs the manual-verification items above.
+
+### Backwards-compat note for in-flight sessions
+
+Pre-deploy sessions have a refresh cookie but no CSRF cookie.
+The skip-list explicitly leaves `/api/auth/refresh` ungated
+for exactly this reason — SameSite=Lax + the CORS allow-list
+cover the CSRF surface there. After the next refresh tick
+(driven by the SPA's `startTokenRefresh` poll), the
+`xsrf_token` cookie is issued and subsequent state-changing
+calls work normally. No user-visible disruption.
+
+In-flight magic links issued pre-migration-037 have NULL
+fingerprint columns — verify side hits the skip-on-NULL
+branch and consumption proceeds normally.
+
+### Verify on VPS after deploy
+
+```sql
+-- Step 10 columns present:
+SELECT column_name FROM information_schema.columns
+ WHERE table_schema = 'platform'
+   AND ((table_name = 'user_sessions' AND column_name = 'impersonator_user_id')
+     OR (table_name = 'magic_links' AND column_name LIKE 'issuer_%_hash'))
+ ORDER BY table_name, column_name;
+
+-- Lazy-seeded CSRF secret present after first request:
+SELECT key FROM platform.platform_settings WHERE key = 'csrf_signing_secret';
+
+-- Partial index on impersonator_user_id:
+SELECT indexname, indexdef FROM pg_indexes
+ WHERE schemaname = 'platform' AND tablename = 'user_sessions'
+   AND indexname = 'idx_user_sessions_impersonator';
+```
+
+### After step 10 — production-ready?
+
+**No.** Step 10 closes the auth-surface gaps. Still required:
+
+- **Step 11** — privacy & compliance docs.
+- **Step 12** — pipeline DB Model D + automated backups +
+  tested restore drill + `PROBE_RLS=1` in CI.
+
+After step 12 the system meets the production-readiness gate
+described below. Step 10 is two of four pre-launch steps
+closed (8, 9, 10 shipped; 11, 12 remaining).
+
+
 ## Roadmap — steps 8 through 21
 
 Forward-looking. Each row is one Claude Code session unless
@@ -2856,7 +3291,7 @@ everything after that is hygiene + post-launch upgrades.
 |---|---|---|---|
 | 8 | CI plumbing | 6 (shipped) | Dependabot, GitHub secret scanning, gitleaks pre-commit, CodeQL workflow, Trivy image scan, `engines.node` + `typecheck` script. See "Step 8 — CI plumbing (shipped)" above. |
 | 9 | Brute-force + MFA hardening | 14 (shipped) | App-layer rate limiting (100/60s IP+device, 20/24h per email on `/api/auth/*`); TOTP enrollment + verify + backup codes alongside existing passkey path; magic-link per-link attempt counter + "N attempts left" banner; passkey enumeration guard; `require_mfa_for_platform_admins` flag in `platform_settings`. See "Step 9 — Brute-force + MFA hardening (shipped)" above. |
-| 10 | Auth surface area cleanup | 10-13 | CSRF (double-submit token); session rotation on login + impersonation start/stop; impersonation start/stop UI + persistent banner; magic-link IP/UA binding; account-deletion cascade endpoint; GDPR Art. 20 data-export endpoint. |
+| 10 | Auth surface area cleanup | 13 (shipped) | CSRF (double-submit token); session rotation on auth state change (implicit via `createSession` at every transition); impersonation start/stop UI + persistent banner; magic-link IP/UA fingerprint binding; account-deletion cascade endpoint (soft-delete); GDPR Art. 20 data-export endpoint. See "Step 10 — Auth surface area cleanup (shipped)" above. |
 | 11 | Privacy & compliance docs | 10-12 | `policy_documents` versioned append-only table; admin markdown editor in Admin → Policies; public `/legal/<slug>` routes; `policy_acceptances` table + re-acceptance modal on version bump; cookie banner on landing; slugs: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. |
 | 12 | Pipeline DB Model D + backups + PROBE_RLS in CI | 12-15 | Per `.claude/pipeline-hardening-notes.md` Model D: `tenant_id` + RLS + `app.current_tenant` per-workflow; `pipeline_user` role split (no ownership); pg_basebackup + WAL archiving + documented + tested restore drill in `docs/operator.md`; GitHub Actions runs `PROBE_RLS=1 npx vitest run src/db/rls-probe.test.ts` against ephemeral Postgres on every PR. **PRODUCTION READY AFTER THIS STEP.** |
 
