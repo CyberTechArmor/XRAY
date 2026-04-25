@@ -66,10 +66,16 @@ export async function getAllSettings(): Promise<Record<string, string | null>> {
 
 export async function updateSettings(
   updates: Record<string, string | null>,
-  userId: string
+  userId: string | null,
 ): Promise<void> {
   // Same as loadSettings — platform_settings is a global carve-out
   // with no RLS; plain withClient.
+  //
+  // userId is the writer's UUID and lands on platform_settings.updated_by
+  // (which has FK platform.users(id), nullable). System-driven writes
+  // (e.g. CSRF middleware lazy-seeding csrf_signing_secret on first use)
+  // pass null — passing a non-UUID sentinel like 'system' would crash
+  // the INSERT with `invalid input syntax for type uuid`.
   await withClient(async (client) => {
     for (const [key, value] of Object.entries(updates)) {
       // Determine if this key is a secret by checking existing record
