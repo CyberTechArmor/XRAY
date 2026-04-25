@@ -12,6 +12,12 @@ export interface JWTPayload {
   is_platform_admin: boolean;
   has_admin: boolean;
   has_billing: boolean;
+  // Step 10: when set, the request is running under
+  // platform-admin impersonation. `sub`/`tid`/`permissions` are
+  // the TARGET user's claims; `imp` carries the originating
+  // admin's identity so the SPA renders the banner and so audit
+  // helpers can attribute writes to "X on behalf of Y".
+  imp?: { admin_id: string; admin_email: string };
   iat: number;
   exp: number;
 }
