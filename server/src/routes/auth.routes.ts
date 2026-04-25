@@ -8,6 +8,7 @@ import { AppError } from '../middleware/error-handler';
 import * as authService from '../services/auth.service';
 import * as totpService from '../services/totp.service';
 import * as backupCodesService from '../services/backup-codes.service';
+import { recordAuthAttempt, attachAttemptCounters } from '../middleware/auth-attempts';
 import { withAdminClient } from '../db/connection';
 
 const router = Router();
@@ -132,6 +133,7 @@ router.post('/signup', async (req, res, next) => {
 
 // POST /verify - verify code for signup completion or login verification (no auth)
 router.post('/verify', async (req, res, next) => {
+  const emailLower = (req.body?.email as string | undefined)?.toLowerCase().trim() || '';
   try {
     const data = validateBody(verifySchema, req.body);
     const magicLink = await authService.verifyCode(data);
@@ -141,6 +143,11 @@ router.post('/verify', async (req, res, next) => {
     } else {
       tokens = await authService.completeLogin(magicLink);
     }
+    // Step 9: success on primary factor — record true even if MFA
+    // gate diverts. The per-email-24h counter only locks on
+    // success=false rows, so a successful primary attempt resets
+    // the bucket on the next successful verify.
+    await recordAuthAttempt(emailLower, req, true);
     // Step 9 MFA gate: primary auth succeeded but second factor required.
     if (isMfaPending(tokens)) {
       sendMfaPending(res, req, tokens);
@@ -148,15 +155,18 @@ router.post('/verify', async (req, res, next) => {
     }
     // If multi-tenant, return tenant list for user to pick
     if ((tokens as any).tenants) {
+      const body: Record<string, unknown> = { tenants: (tokens as any).tenants, email: magicLink.email };
+      attachAttemptCounters(req, body);
       res.json({
         ok: true,
-        data: { tenants: (tokens as any).tenants, email: magicLink.email },
+        data: body,
         meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
       });
       return;
     }
     sendTokenPair(res, tokens, req);
   } catch (err) {
+    if (emailLower) await recordAuthAttempt(emailLower, req, false);
     next(err);
   }
 });
@@ -226,24 +236,29 @@ router.post('/login/begin', async (req, res, next) => {
 
 // POST /login/complete - complete passkey auth (no auth)
 router.post('/login/complete', async (req, res, next) => {
+  const emailLower = (req.body?.email as string | undefined)?.toLowerCase().trim() || '';
   try {
     const data = validateBody(verifySchema, req.body);
     const magicLink = await authService.verifyCode(data);
     const tokens = await authService.completeLogin(magicLink);
+    await recordAuthAttempt(emailLower, req, true);
     if (isMfaPending(tokens)) {
       sendMfaPending(res, req, tokens);
       return;
     }
     if ((tokens as any).tenants) {
+      const body: Record<string, unknown> = { tenants: (tokens as any).tenants, email: magicLink.email };
+      attachAttemptCounters(req, body);
       res.json({
         ok: true,
-        data: { tenants: (tokens as any).tenants, email: magicLink.email },
+        data: body,
         meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
       });
       return;
     }
     sendTokenPair(res, tokens, req);
   } catch (err) {
+    if (emailLower) await recordAuthAttempt(emailLower, req, false);
     next(err);
   }
 });

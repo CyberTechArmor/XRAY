@@ -1,43 +1,72 @@
+import { Request } from 'express';
 import rateLimit from 'express-rate-limit';
+import { createHash } from 'crypto';
+import { config } from '../config';
 
-const ipKey = (req: any) => req.ip || req.socket.remoteAddress || 'no-ip';
+// Step 9 IP+device tier. The first defence against high-volume
+// scripted abuse: 100 requests per 60s per (IP, device-fingerprint)
+// pair. Fingerprint is hash(IP + UA + Accept-Language) so a
+// botfarm rotating IPs but reusing one UA still buckets under the
+// same key from the rate-limiter's perspective. Window is in-memory
+// — restarts reset it, which is fine for a 60s window: the bot is
+// already throttled before the next restart.
+//
+// Skipped routes (separate buckets handled by per-route limiters or
+// public/embed semantics that don't share auth surface):
+//   /api/health     — operator probe; never gated.
+//   /api/embed/*    — public render token surface.
+//   /api/share/*    — public share-token surface.
+//
+// 429 body matches the rest of the API's error envelope so the
+// frontend can surface a generic "you're being rate-limited" toast.
+//
+// Pre-step-9 this file exported four narrow limiters
+// (passkeyRateLimit / authRateLimit / apiRateLimit / magicLinkRateLimit)
+// but they were never wired up in index.ts ("Rate limiting removed").
+// Step 9 collapses them into one global limiter that gates every
+// request and pairs with the per-email-24h limiter in
+// middleware/auth-attempts.ts for the auth surface.
 
-// Passkey auth: 60 requests per 15 minutes per IP
-export const passkeyRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 60,
-  keyGenerator: ipKey,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many passkey requests, please try again later' } },
-});
+function deviceFingerprint(req: Request): string {
+  const ip = req.ip || req.socket.remoteAddress || 'no-ip';
+  const ua = (req.headers['user-agent'] as string) || '';
+  const lang = (req.headers['accept-language'] as string) || '';
+  return createHash('sha256').update(`${ip}|${ua}|${lang}`).digest('hex');
+}
 
-// General auth (login, signup, verify, etc.): 2000 requests per 15 minutes per IP
-export const authRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 2000,
-  keyGenerator: ipKey,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
-});
+// Helper shared with auth-attempts.ts: routes that should skip both
+// the IP-device limiter and the auth-attempts ledger.
+export function isPublicSurface(req: Request): boolean {
+  const p = req.path;
+  return (
+    p === '/api/health' ||
+    p.startsWith('/api/embed/') ||
+    p.startsWith('/api/share/')
+  );
+}
 
-// API endpoints: 200 requests per 15 minutes per IP
-export const apiRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 200,
-  keyGenerator: ipKey,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
-});
-
-// Magic link / code requests: 10 per minute per email (600/hour)
-export const magicLinkRateLimit = rateLimit({
+export const globalIpDeviceLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 10,
-  keyGenerator: (req) => req.body?.email || req.ip || req.socket.remoteAddress || 'no-ip',
-  standardHeaders: true,
+  max: 100,
+  keyGenerator: deviceFingerprint,
+  standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Too many code requests. Please try again later.' } },
+  skip: isPublicSurface,
+  message: {
+    ok: false,
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Too many requests. Please slow down and try again.',
+    },
+  },
 });
+
+// Hashed IP for the auth_attempts ledger. Same salt-with-
+// server-secret pattern so the table never carries raw addresses;
+// cross-attempt linkage is preserved (same IP → same hash) but
+// reverse lookup needs the secret.
+export function ipHash(req: Request): string {
+  const ip = req.ip || req.socket.remoteAddress || '';
+  if (!ip) return '';
+  return createHash('sha256').update(`${ip}|${config.jwtSecret}`).digest('hex');
+}
