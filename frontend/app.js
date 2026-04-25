@@ -14,6 +14,64 @@
   window.__xrayGetAccessToken = function() { return accessToken; };
   window.__xrayGetUser = function() { return currentUser; };
 
+  // Step 10: decode the access token (no signature check — server is the
+  // source of truth) so the SPA can branch on the impersonation `imp` claim
+  // without an extra round-trip. Returns { admin_id, admin_email } or null.
+  function getImpClaim() {
+    if (!accessToken) return null;
+    try {
+      var parts = accessToken.split('.');
+      if (parts.length < 2) return null;
+      var payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+      return (payload && payload.imp && typeof payload.imp.admin_id === 'string') ? payload.imp : null;
+    } catch (e) { return null; }
+  }
+
+  // Renders / removes the persistent red banner that warns the operator
+  // they're acting on behalf of another user. Idempotent — safe to call
+  // after every token swap.
+  function renderImpersonationBanner() {
+    var imp = getImpClaim();
+    var existing = document.getElementById('impersonation-banner');
+    if (!imp) { if (existing) existing.remove(); return; }
+    var targetEmail = (currentUser && currentUser.email) || 'this user';
+    if (existing) {
+      existing.querySelector('.imp-text').textContent =
+        'You are signed in as ' + targetEmail + ' on behalf of ' + imp.admin_email + '.';
+      return;
+    }
+    var bar = document.createElement('div');
+    bar.id = 'impersonation-banner';
+    bar.className = 'impersonation-banner';
+    bar.innerHTML =
+      '<span class="imp-text">You are signed in as ' + targetEmail +
+      ' on behalf of ' + imp.admin_email + '.</span>' +
+      '<button id="imp-stop-btn" class="btn sm">Stop impersonating</button>';
+    document.body.insertBefore(bar, document.body.firstChild);
+    document.getElementById('imp-stop-btn').onclick = function() {
+      api.post('/api/admin/impersonate/stop').then(function(r) {
+        if (!r.ok) {
+          if (window.__xrayAlert) window.__xrayAlert((r.error && r.error.message) || 'Failed to stop impersonation');
+          return;
+        }
+        accessToken = r.data.accessToken;
+        // Full reload so the entire app re-fetches /me + bundles + perms
+        // under the restored admin identity. Cleaner than rebuilding the
+        // sidebar + WebSocket + replay session inline.
+        window.location.reload();
+      });
+    };
+  }
+
+  // Called from the admin Tenants → Impersonate button. Swaps the access
+  // token in-place and reloads so every mounted view re-fetches under the
+  // new identity. Refresh + CSRF cookies have already been issued by the
+  // server in the impersonate response.
+  window.__xrayApplyImpersonationTokens = function(newAccessToken) {
+    accessToken = newAccessToken;
+    window.location.reload();
+  };
+
   // ─── AI admin view registration (inlined from frontend/ai/admin.js) ────────
   // Inlined into app.js so that platforms that miss the /ai/ subdirectory in
   // their deploy pipeline still get the admin AI view. The standalone file
@@ -1990,6 +2048,7 @@
       if (!d.ok) { logout(); return; }
       currentUser = d.data;
       document.getElementById('user-name').textContent = currentUser.name || currentUser.email;
+      renderImpersonationBanner();
       buildSidebar();
       buildMobileNav();
       loadBundle();

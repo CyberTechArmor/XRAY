@@ -463,3 +463,34 @@ input[type="file"]::file-selector-button:hover,input[type='file']::file-selector
   .meet-header-btn span { display: none; }
   .meet-header-btn { padding: 6px 8px !important; }
 }
+
+/* Step 10: persistent impersonation banner. Pinned to the top of the
+   document body so it sits above the app shell on every view. The
+   colour is deliberately loud — the operator should never lose track
+   that they are acting on behalf of another user. */
+.impersonation-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #b91c1c;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+}
+.impersonation-banner .imp-text { flex: 0 1 auto; max-width: calc(100% - 220px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.impersonation-banner .btn { background: #fff; color: #b91c1c; border: none; font-weight: 600; }
+.impersonation-banner .btn:hover { background: rgba(255,255,255,0.9); }
+
+/* Bump the app shell down so the banner doesn't overlap the header.
+   --header-h is the existing CSS var that the sidebar / app layout
+   already keys on; we don't need to reflow the whole layout, just
+   nudge the body padding when an impersonation is live. */
+body:has(.impersonation-banner) #app-shell { padding-top: 36px; }
