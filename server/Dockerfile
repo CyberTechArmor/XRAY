@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM node:25-alpine AS builder
 WORKDIR /app
 COPY server/package.json server/package-lock.json* ./
 RUN npm ci
@@ -6,7 +6,7 @@ COPY server/tsconfig.json ./
 COPY server/src ./src
 RUN npm run build
 
-FROM node:20-alpine
+FROM node:25-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 COPY server/package.json server/package-lock.json* ./
