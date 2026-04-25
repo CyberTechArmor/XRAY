@@ -5,7 +5,9 @@ import { validateBody, validateQuery, userUpdateSchema, paginationSchema } from 
 import * as userService from '../services/user.service';
 import * as authService from '../services/auth.service';
 import * as portabilityService from '../services/portability.service';
+import * as policyService from '../services/policy.service';
 import { issueCsrfCookie, clearCsrfCookie } from '../middleware/csrf';
+import { AppError } from '../middleware/error-handler';
 
 const router = Router();
 
@@ -81,6 +83,68 @@ router.get('/me/export', authenticateJWT, async (req, res, next) => {
       `attachment; filename="xray-export-${req.user!.sub}-${stamp}.zip"`,
     );
     res.send(buf);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Step 11: policy status + acceptance ──────────────────────────
+//
+// GET /me/policy-status — returns the array of required slugs the
+// caller has not yet accepted at the latest published version.
+// Frontend re-acceptance modal polls this on app boot and on
+// every successful refresh; an empty array means the user is up
+// to date.
+router.get('/me/policy-status', authenticateJWT, async (req, res, next) => {
+  try {
+    const pending = await policyService.pendingForUser(req.user!.sub, req.user!.tid);
+    res.json({
+      ok: true,
+      data: { pending },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /me/policy-accept — body { slug, version }. Idempotent on
+// the (user, slug, version) UNIQUE. Returns the updated pending
+// list so the modal can clear remaining slugs in a single
+// round-trip when batching multiple acceptances.
+router.post('/me/policy-accept', authenticateJWT, async (req, res, next) => {
+  try {
+    const { slug, version } = req.body ?? {};
+    if (!slug || typeof slug !== 'string') {
+      throw new AppError(400, 'INVALID_SLUG', 'slug is required');
+    }
+    const v = typeof version === 'number' ? version : parseInt(version, 10);
+    if (!Number.isFinite(v) || v < 1) {
+      throw new AppError(400, 'INVALID_VERSION', 'version must be a positive integer');
+    }
+    await policyService.recordAcceptance(req.user!.sub, req.user!.tid, slug, v, req);
+    const pending = await policyService.pendingForUser(req.user!.sub, req.user!.tid);
+    res.json({
+      ok: true,
+      data: { pending },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /me/policy-acceptances — caller's full acceptance history,
+// newest first. Backs the "view history" modal in Account →
+// Privacy linking each (slug, version) to the archived public page.
+router.get('/me/policy-acceptances', authenticateJWT, async (req, res, next) => {
+  try {
+    const acceptances = await policyService.listMyAcceptances(req.user!.sub, req.user!.tid);
+    res.json({
+      ok: true,
+      data: { acceptances },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
   } catch (err) {
     next(err);
   }
