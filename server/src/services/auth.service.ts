@@ -22,6 +22,10 @@ interface MagicLink {
   metadata: Record<string, unknown> | null;
   used: boolean;
   attempts: number;
+  // max_attempts column added by migration 033 (default 5). The
+  // per-link cap is independent of the per-day per-user cap (20)
+  // enforced by the rate-limit middleware in step 9 — both apply.
+  max_attempts: number;
   expires_at: string;
 }
 
@@ -442,21 +446,44 @@ export async function verifyCode(input: {
       throw new AppError(400, 'MAGIC_LINK_EXPIRED', 'This code has expired. Please request a new one.');
     }
 
-    if (magicLink.attempts >= config.magicLink.maxAttempts) {
-      // Mark as used to prevent further attempts
+    // Step 9: enforce the per-row max_attempts column (migration 033,
+    // default 5). config.magicLink.maxAttempts is no longer the gate —
+    // the column lets the operator tune per-link severity without a
+    // server restart. attempts_remaining is surfaced on every failure
+    // so the auth modal can render "N attempts left."
+    const maxAttempts = magicLink.max_attempts ?? config.magicLink.maxAttempts;
+
+    if (magicLink.attempts >= maxAttempts) {
+      // Mark as used so a fresh attempt with the same code can't slip
+      // past the cap on a race.
       await client.query(
         'UPDATE platform.magic_links SET used = true WHERE id = $1',
         [magicLink.id]
       );
-      throw new AppError(400, 'MAX_ATTEMPTS', 'Maximum verification attempts exceeded. Please request a new code.');
+      throw new AppError(
+        400,
+        'MAX_ATTEMPTS',
+        'Maximum verification attempts exceeded. Please request a new code.',
+        { attempts_remaining: 0 }
+      );
     }
 
     if (magicLink.code !== input.code) {
-      await client.query(
-        'UPDATE platform.magic_links SET attempts = attempts + 1 WHERE id = $1',
-        [magicLink.id]
+      const updated = await client.query(
+        `UPDATE platform.magic_links
+            SET attempts = attempts + 1,
+                used = (attempts + 1 >= $2)
+          WHERE id = $1
+        RETURNING attempts, used`,
+        [magicLink.id, maxAttempts]
       );
-      throw new AppError(400, 'INVALID_CODE', 'Incorrect verification code');
+      const newAttempts: number = updated.rows[0]?.attempts ?? magicLink.attempts + 1;
+      const remaining = Math.max(0, maxAttempts - newAttempts);
+      const code = remaining === 0 ? 'MAX_ATTEMPTS' : 'INVALID_CODE';
+      const message = remaining === 0
+        ? 'Maximum verification attempts exceeded. Please request a new code.'
+        : 'Incorrect verification code';
+      throw new AppError(400, code, message, { attempts_remaining: remaining });
     }
 
     // Mark as used
