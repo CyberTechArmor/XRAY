@@ -2107,6 +2107,17 @@
     }).catch(function() {});
   }
 
+  // Step 11: bridge so landing.js's cookie banner can record the
+  // server-side acceptance row for a logged-in visitor. landing.js
+  // doesn't have direct access to api._fetch / accessToken, so we
+  // expose a thin helper here. No-op when no access token is in
+  // memory (logged-out landing visit).
+  window.__xrayRecordCookieAcceptance = function(version, choices) {
+    if (!accessToken || !version) return;
+    api.post('/api/users/me/policy-accept', { slug: 'cookie_policy', version: version }).catch(function() {});
+    void choices; // categories live in localStorage; server only tracks the policy version
+  };
+
   function showPolicyAcceptModal(pending) {
     if (document.getElementById('policy-accept-overlay')) return;
     var overlay = document.createElement('div');
