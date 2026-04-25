@@ -1082,6 +1082,21 @@
   // ── API helper ──
   var _refreshPromise = null; // mutex: only one refresh at a time
   var _lastRefreshTime = 0;   // debounce: skip refresh if one just completed
+  // Step 10: read the xsrf_token cookie and mirror it into the
+  // X-CSRF-Token header on every state-changing request. Server
+  // verifies cookie===header AND that the cookie HMAC validates
+  // against platform_settings.csrf_signing_secret. GET/HEAD bypass
+  // the check server-side, so the header is harmless on safe
+  // methods and we set it unconditionally to keep the wrapper
+  // simple.
+  function readCsrfCookie() {
+    try {
+      var match = document.cookie.split(';').map(function(s) { return s.trim(); })
+        .find(function(s) { return s.indexOf('xsrf_token=') === 0; });
+      return match ? decodeURIComponent(match.slice('xsrf_token='.length)) : '';
+    } catch (e) { return ''; }
+  }
+
   var api = {
     _fetch: function(method, url, body) {
       var tokenAtCall = accessToken; // capture token at call time
@@ -1091,12 +1106,16 @@
         credentials: 'include'
       };
       if (accessToken) opts.headers['Authorization'] = 'Bearer ' + accessToken;
+      var csrf = readCsrfCookie();
+      if (csrf) opts.headers['X-CSRF-Token'] = csrf;
       if (body) opts.body = JSON.stringify(body);
       return fetch(url, opts).then(function(r) {
         if (r.status === 401 && tokenAtCall) {
           // If token already changed (another concurrent call refreshed), just retry
           if (accessToken && accessToken !== tokenAtCall) {
             opts.headers['Authorization'] = 'Bearer ' + accessToken;
+            var csrfRetry = readCsrfCookie();
+            if (csrfRetry) opts.headers['X-CSRF-Token'] = csrfRetry;
             return fetch(url, opts).then(function(r2) { return r2.json().catch(function() { return { ok: false }; }); });
           }
           return api.refresh().then(function(ok) {
@@ -1109,6 +1128,8 @@
               logout(); return { ok: false, error: { message: 'Session expired' } };
             }
             opts.headers['Authorization'] = 'Bearer ' + accessToken;
+            var csrfRetry = readCsrfCookie();
+            if (csrfRetry) opts.headers['X-CSRF-Token'] = csrfRetry;
             return fetch(url, opts).then(function(r2) { return r2.json().catch(function() { return { ok: false }; }); });
           });
         }

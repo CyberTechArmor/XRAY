@@ -20,8 +20,11 @@ import { config } from '../config';
 //
 // Skip list:
 //   - GET / HEAD / OPTIONS — no state change.
-//   - Authorization: Bearer xray_* — API keys are header-auth and
-//     not subject to cross-site cookie replay.
+//   - Authorization: Bearer ... — any bearer-auth request is
+//     CSRF-immune. Cross-origin JS can't set the Authorization
+//     header without CORS preflight, and our CORS allow-list
+//     restricts origin to webauthn.origin. Covers both API-key
+//     paths (xray_*) and JWT-authenticated paths.
 //   - /api/health, /api/embed/*, /api/share/* — public surfaces
 //     (already on the rate-limit isPublicSurface predicate).
 //   - /api/stripe/webhook — sender-signed (Stripe's signature).
@@ -29,10 +32,49 @@ import { config } from '../config';
 //   - /api/admin/import — operator-controlled tenant import path
 //     accepts raw application/zip; the operator drives this from
 //     a CLI, not a browser session. CSRF would just break it.
+//   - Unauthenticated bootstrap paths that issue a session
+//     cookie (signup, verify, magic-link, passkey begin/finish,
+//     invitation accept, first-boot setup). They are entered
+//     before any CSRF cookie can exist, and they don't read an
+//     existing session — there's no cookie to leverage in a CSRF
+//     attack against these endpoints.
 
 const CSRF_COOKIE = 'xsrf_token';
 const CSRF_HEADER = 'x-csrf-token';
-const API_KEY_PREFIX = 'xray_';
+
+// Unauthenticated bootstrap paths: these run before any CSRF
+// cookie exists and can't be CSRF-targeted (no existing session
+// to leverage). Listed exactly to keep the skip surface tight.
+const BOOTSTRAP_PATHS = new Set<string>([
+  '/api/auth/setup',
+  '/api/auth/signup',
+  '/api/auth/verify',
+  '/api/auth/verify-token',
+  '/api/auth/login/begin',
+  '/api/auth/passkey/begin',
+  '/api/auth/passkey/finish',
+  '/api/auth/totp/verify', // accepts mfa-pending interim token, not a session cookie
+  '/api/auth/refresh', // refresh path is gated separately — see note below
+  '/api/invitations/accept',
+]);
+
+// /api/auth/refresh deserves a longer note: it IS the canonical
+// CSRF target (cookie-only auth → cross-site POST mints fresh
+// tokens). However:
+//   1. The refresh cookie has SameSite=Lax + path=/api/auth.
+//      SameSite=Lax blocks cross-site POSTs from auto-submitting
+//      with the cookie attached. That's the primary defence.
+//   2. The xsrf_token cookie has path=/, so a cross-site POST
+//      can't read it to put it in the header — but a cross-site
+//      POST also can't SET headers without preflight, which CORS
+//      would block.
+//   3. Pre-step-10 sessions have a refresh_token cookie but no
+//      CSRF cookie; gating /api/auth/refresh on CSRF would lock
+//      every existing session out at the moment of deploy.
+// Net: leaving /api/auth/refresh on the skip list is the correct
+// trade-off. SameSite=Lax + the CORS allow-list together cover
+// the CSRF surface; gating it would cause a deploy-time outage
+// for every active session.
 
 // In-process cache for the HMAC secret. settings.service has its
 // own 60-second TTL cache, but the verify path is on every
@@ -140,13 +182,14 @@ function pathBypassesCsrf(req: Request): boolean {
   // Operator-CLI import path (raw application/zip body, not a
   // browser session).
   if (p === '/api/admin/import') return true;
+  // Unauthenticated bootstrap paths.
+  if (BOOTSTRAP_PATHS.has(p)) return true;
   return false;
 }
 
-function authIsBearerApiKey(req: Request): boolean {
+function authIsBearer(req: Request): boolean {
   const h = req.headers.authorization;
-  if (!h?.startsWith('Bearer ')) return false;
-  return h.slice(7).startsWith(API_KEY_PREFIX);
+  return !!h && h.startsWith('Bearer ');
 }
 
 // Verify middleware — mount globally after cookieParser + body
@@ -155,7 +198,7 @@ function authIsBearerApiKey(req: Request): boolean {
 export function verifyCsrf(req: Request, _res: Response, next: NextFunction): void {
   if (methodIsSafe(req.method)) return next();
   if (pathBypassesCsrf(req)) return next();
-  if (authIsBearerApiKey(req)) return next();
+  if (authIsBearer(req)) return next();
 
   const cookieValue = (req.cookies as Record<string, string> | undefined)?.[CSRF_COOKIE];
   const headerValue = req.headers[CSRF_HEADER];
