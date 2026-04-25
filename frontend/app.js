@@ -1730,7 +1730,7 @@
   function showVerifyError(code, msg, details) {
     var errEl = document.getElementById('verify-err');
     if (!errEl) { showAuthErr('verify-err', msg); return; }
-    var retryable = code === 'MAGIC_LINK_EXPIRED' || code === 'MAGIC_LINK_USED' || code === 'MAX_ATTEMPTS' || code === 'LINK_FINGERPRINT_MISMATCH';
+    var retryable = code === 'MAGIC_LINK_EXPIRED' || code === 'MAGIC_LINK_USED' || code === 'MAX_ATTEMPTS';
     errEl.innerHTML = '';
     var msgSpan = document.createElement('span');
     var fullMsg = msg;
