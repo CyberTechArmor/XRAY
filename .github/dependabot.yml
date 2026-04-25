@@ -1,0 +1,34 @@
+version: 2
+
+updates:
+  # Server npm deps. Group non-major bumps into one PR; majors still
+  # open one PR each so they get individual review.
+  - package-ecosystem: "npm"
+    directory: "/server"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    groups:
+      server-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # server/Dockerfile base image (node:20-alpine). Trivy in CI is
+  # the same-day gate; this just keeps the pinned tag rolling.
+  - package-ecosystem: "docker"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
