@@ -1,15 +1,143 @@
+import jwt from 'jsonwebtoken';
 import { withClient, withAdminClient, withAdminTransaction } from '../db/connection';
 import { generateCode, generateToken, hashToken, hashRefreshToken, generateUUID } from '../lib/crypto';
 import { config } from '../config';
 import { AppError } from '../middleware/error-handler';
 import { signAccessToken, signRefreshToken } from './jwt.service';
 import { sendTemplateEmail } from './email.service';
+import { getSetting } from './settings.service';
+import { hasConfirmedTotp, verifyTotp } from './totp.service';
+import { verifyAndConsumeBackupCode } from './backup-codes.service';
 import * as auditService from './audit.service';
 
 interface TokenPair {
   accessToken: string;
   refreshToken: string;
   sessionId: string;
+}
+
+// Step 9: when primary auth (passkey or magic-link) succeeds but the
+// MFA gate requires a second factor, we return a MfaPendingResult
+// instead of a TokenPair. The caller (route layer) keys off the
+// `mfa_required` flag to redirect the UI into the TOTP step. The
+// `mfa_token` is a short-lived JWT carrying { sub, tid, scope:
+// 'mfa-pending' } — accepted by /api/auth/totp/verify and by the
+// enrollment endpoints when scope is 'mfa-enroll'.
+//
+// 'verify'  → user has TOTP enrolled, must enter a code or backup.
+// 'enroll'  → user is a platform admin, require_mfa_for_platform_admins
+//             is true, and they don't yet have TOTP enrolled. They must
+//             enroll before login completes.
+interface MfaPendingResult {
+  accessToken: '';
+  refreshToken: '';
+  sessionId: '';
+  mfa_required: 'verify' | 'enroll';
+  mfa_token: string;
+}
+
+const MFA_PENDING_EXPIRY = '5m';
+
+function signMfaPendingToken(
+  userId: string,
+  tenantId: string,
+  scope: 'mfa-pending' | 'mfa-enroll'
+): string {
+  return jwt.sign(
+    { sub: userId, tid: tenantId, scope },
+    config.jwtSecret,
+    { expiresIn: MFA_PENDING_EXPIRY } as jwt.SignOptions
+  );
+}
+
+interface MfaTokenClaims {
+  sub: string;
+  tid: string;
+  scope: 'mfa-pending' | 'mfa-enroll';
+}
+
+export function verifyMfaPendingToken(
+  token: string,
+  expectedScope: 'mfa-pending' | 'mfa-enroll' = 'mfa-pending'
+): MfaTokenClaims {
+  let decoded: any;
+  try {
+    decoded = jwt.verify(token, config.jwtSecret);
+  } catch {
+    throw new AppError(401, 'INVALID_MFA_TOKEN', 'MFA challenge expired or invalid. Please log in again.');
+  }
+  if (
+    !decoded ||
+    typeof decoded !== 'object' ||
+    typeof decoded.sub !== 'string' ||
+    typeof decoded.tid !== 'string' ||
+    decoded.scope !== expectedScope
+  ) {
+    throw new AppError(401, 'INVALID_MFA_TOKEN', 'MFA challenge expired or invalid. Please log in again.');
+  }
+  return { sub: decoded.sub, tid: decoded.tid, scope: decoded.scope };
+}
+
+// Step 9 MFA gate. Run after primary-factor success (verifyCode →
+// completeLogin path, completePasskeyAuth path, loginToTenant path).
+// Returns the next step the auth flow needs to take:
+//
+//   'pass'   → no MFA required, issue full session.
+//   'verify' → user has confirmed TOTP, prompt for code.
+//   'enroll' → admin path with require_mfa_for_platform_admins=true
+//              and no TOTP yet — force enrollment before session.
+async function evaluateMfaGate(
+  userId: string,
+  tenantId: string,
+  isPlatformAdmin: boolean
+): Promise<'pass' | 'verify' | 'enroll'> {
+  if (await hasConfirmedTotp(userId, tenantId)) return 'verify';
+  if (isPlatformAdmin) {
+    const v = await getSetting('require_mfa_for_platform_admins');
+    if (v === 'true') return 'enroll';
+  }
+  return 'pass';
+}
+
+function mfaPendingResponse(
+  userId: string,
+  tenantId: string,
+  decision: 'verify' | 'enroll'
+): MfaPendingResult {
+  return {
+    accessToken: '',
+    refreshToken: '',
+    sessionId: '',
+    mfa_required: decision,
+    mfa_token: signMfaPendingToken(userId, tenantId, decision === 'enroll' ? 'mfa-enroll' : 'mfa-pending'),
+  };
+}
+
+function isMfaPending(r: unknown): r is MfaPendingResult {
+  return !!r && typeof r === 'object' && 'mfa_required' in (r as object);
+}
+
+// Step 9: complete MFA after the interim session token. Accepts
+// either a 6-digit TOTP code or a backup code (xxxx-xxxx-xxxx).
+// Returns the full TokenPair on success.
+export async function completeMfaVerify(
+  mfaToken: string,
+  code: string
+): Promise<TokenPair> {
+  const claims = verifyMfaPendingToken(mfaToken, 'mfa-pending');
+  // Try TOTP first (numeric 6-digit), fall back to backup code.
+  let ok = false;
+  const trimmed = code.trim();
+  if (/^\d{6}$/.test(trimmed)) {
+    ok = await verifyTotp(claims.sub, claims.tid, trimmed);
+  }
+  if (!ok) {
+    ok = await verifyAndConsumeBackupCode(claims.sub, claims.tid, trimmed);
+  }
+  if (!ok) {
+    throw new AppError(400, 'INVALID_CODE', 'Incorrect verification code');
+  }
+  return createSession(claims.sub, claims.tid);
 }
 
 interface MagicLink {
@@ -690,7 +818,10 @@ export async function completeSignup(magicLink: MagicLink): Promise<TokenPair> {
   });
 }
 
-export async function completeLogin(magicLink: MagicLink, selectedTenantId?: string): Promise<TokenPair & { tenants?: { id: string; name: string; role: string }[] }> {
+export async function completeLogin(
+  magicLink: MagicLink,
+  selectedTenantId?: string
+): Promise<TokenPair & { tenants?: { id: string; name: string; role: string }[] } | MfaPendingResult> {
   // Magic-link consumption + user lookup spans every tenant that owns
   // the email (multi-tenant accounts). Admin bypass explicit — we pick
   // the tenant BEFORE binding to its context.
@@ -779,6 +910,16 @@ export async function completeLogin(magicLink: MagicLink, selectedTenantId?: str
 
     const isPlatformAdmin = user.role_slug === 'platform_admin';
 
+    // Step 9 MFA gate. If the user has TOTP enrolled, OR is an admin
+    // on a platform with require_mfa_for_platform_admins=true and no
+    // TOTP yet, hold off on issuing a session and return a
+    // MfaPendingResult instead. The route layer surfaces the
+    // mfa_required flag + interim mfa_token to the client.
+    const mfaDecision = await evaluateMfaGate(user.id, user.tenant_id, isPlatformAdmin);
+    if (mfaDecision !== 'pass') {
+      return mfaPendingResponse(user.id, user.tenant_id, mfaDecision);
+    }
+
     // Create session
     const refreshToken = signRefreshToken();
     const refreshTokenHash = hashRefreshToken(refreshToken);
@@ -820,7 +961,7 @@ export async function completeLogin(magicLink: MagicLink, selectedTenantId?: str
   });
 }
 
-export async function loginToTenant(email: string, tenantId: string): Promise<TokenPair> {
+export async function loginToTenant(email: string, tenantId: string): Promise<TokenPair | MfaPendingResult> {
   // Tenant switching path — finds the user record for this email in
   // the target tenant without having been bound to that tenant's
   // context yet. Admin bypass explicit.
@@ -863,6 +1004,14 @@ export async function loginToTenant(email: string, tenantId: string): Promise<To
     const permissions = permResult.rows.map((r: { key: string }) => r.key);
 
     const isPlatformAdmin = user.role_slug === 'platform_admin';
+
+    // Step 9 MFA gate — same logic as completeLogin. Tenant switching
+    // re-evaluates the gate so the second factor stays enforced even
+    // if the user picks a tenant from the multi-tenant chooser.
+    const mfaDecision = await evaluateMfaGate(user.id, user.tenant_id, isPlatformAdmin);
+    if (mfaDecision !== 'pass') {
+      return mfaPendingResponse(user.id, user.tenant_id, mfaDecision);
+    }
 
     // Create session
     const refreshToken = signRefreshToken();
@@ -1061,7 +1210,9 @@ export async function beginPasskeyAuth(email?: string): Promise<unknown> {
   return options;
 }
 
-export async function completePasskeyAuth(body: any): Promise<{ accessToken: string; refreshToken: string; sessionId: string }> {
+export async function completePasskeyAuth(
+  body: any
+): Promise<TokenPair | MfaPendingResult> {
   const webauthn = await import('../lib/webauthn');
 
   // Find the credential - convert base64url to base64 with proper padding
@@ -1073,9 +1224,10 @@ export async function completePasskeyAuth(body: any): Promise<{ accessToken: str
   // identifies a user; we don't know the tenant until after the look-up).
   const credential = await withAdminClient(async (client) => {
     const result = await client.query(
-      `SELECT p.*, u.id as uid, u.email, u.tenant_id, u.name
+      `SELECT p.*, u.id as uid, u.email, u.tenant_id, u.name, r.slug as role_slug
        FROM platform.user_passkeys p
        JOIN platform.users u ON u.id = p.user_id
+       JOIN platform.roles r ON r.id = u.role_id
        WHERE p.credential_id = decode($1, 'base64')
        AND u.status = 'active'`,
       [b64]
@@ -1130,6 +1282,20 @@ export async function completePasskeyAuth(body: any): Promise<{ accessToken: str
           // Clean up used challenge
           await client.query('DELETE FROM platform.platform_settings WHERE key = $1', [row.key]);
         });
+
+        // Step 9 MFA gate. Passkey alone counts as the primary factor;
+        // if the user has TOTP enrolled, or is an admin on a strict
+        // platform with no TOTP yet, hold the session and return an
+        // MfaPendingResult to the route layer.
+        const isPlatformAdmin = credential.role_slug === 'platform_admin';
+        const mfaDecision = await evaluateMfaGate(
+          credential.uid,
+          credential.tenant_id,
+          isPlatformAdmin
+        );
+        if (mfaDecision !== 'pass') {
+          return mfaPendingResponse(credential.uid, credential.tenant_id, mfaDecision);
+        }
 
         // Create session tokens
         return createSession(credential.uid, credential.tenant_id);
