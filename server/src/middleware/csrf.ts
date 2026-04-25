@@ -51,8 +51,12 @@ const BOOTSTRAP_PATHS = new Set<string>([
   '/api/auth/verify',
   '/api/auth/verify-token',
   '/api/auth/login/begin',
+  '/api/auth/login/complete',
+  '/api/auth/magic-link',
+  '/api/auth/recover',
+  '/api/auth/select-tenant',
   '/api/auth/passkey/begin',
-  '/api/auth/passkey/finish',
+  '/api/auth/passkey/complete',
   '/api/auth/totp/verify', // accepts mfa-pending interim token, not a session cookie
   '/api/auth/refresh', // refresh path is gated separately — see note below
   '/api/invitations/accept',
