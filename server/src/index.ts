@@ -155,6 +155,18 @@ app.get('/share/:token', (_req, res) => {
   });
 });
 
+// Step 11: serve the SPA shell for /legal and /legal/<slug>[/v/<n>]
+// so logged-out visitors hit the public legal-pages handler in
+// frontend/app.js. The SPA fallback below also covers this, but
+// the explicit route makes the surface visible and parallels the
+// /share + /invite handlers above.
+app.get(/^\/legal(\/.*)?$/, (_req, res) => {
+  const indexPage = path.resolve(__dirname, '../../frontend/index.html');
+  res.sendFile(indexPage, (err: Error) => {
+    if (err) res.status(404).end();
+  });
+});
+
 // Serve invite page (serves the main index.html for /invite/:token)
 app.get('/invite/:token', (_req, res) => {
 

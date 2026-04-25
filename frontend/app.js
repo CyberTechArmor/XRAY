@@ -4060,8 +4060,151 @@
     return true;
   }
 
+  // ── Step 11: public legal page handler (/legal/<slug>) ──
+  // Renders policy_documents content for logged-out + logged-in
+  // visitors. Lazy-loads `marked` from a CDN; falls back to plain
+  // <pre> rendering if the CDN is unreachable so the page always
+  // shows the policy text.
+  function handleLegalPage() {
+    var pathname = window.location.pathname;
+    var m = pathname.match(/^\/legal\/?([a-zA-Z0-9_\-]+)?\/?(?:v\/(\d+))?\/?$/);
+    if (!m) return false;
+    var slug = m[1] || '';
+    var version = m[2] ? parseInt(m[2], 10) : null;
+
+    var landing = document.getElementById('landing-screen');
+    if (landing) landing.style.display = 'none';
+
+    var container = document.createElement('div');
+    container.id = 'legal-page';
+    container.style.cssText = 'min-height:100vh;background:var(--bg,#08090c);color:var(--t1,#f0f1f4);font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;flex-direction:column;';
+    var header = '<div style="height:56px;flex-shrink:0;background:var(--bg2,#0f1117);border-bottom:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;padding:0 24px;gap:12px">'
+      + '<a href="/" style="text-decoration:none;display:flex;align-items:center;gap:8px;color:#fff;font-size:16px;font-weight:700;letter-spacing:-0.02em">'
+      + '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:24px;height:24px"><path d="M50 8 L62 28 A28 28 0 0 1 78 50 L98 50 A48 48 0 0 0 50 2 Z" fill="#3ee8b5"/><path d="M78 50 A28 28 0 0 1 62 72 L50 92 A48 48 0 0 0 98 50 Z" fill="#3ee8b5"/><path d="M62 72 A28 28 0 0 1 38 72 L50 50 Z" fill="#3ee8b5"/><path d="M38 72 L28 92 A48 48 0 0 1 2 50 L22 50 A28 28 0 0 0 38 72 Z" fill="#3ee8b5"/><path d="M22 50 A28 28 0 0 1 38 28 L50 8 A48 48 0 0 0 2 50 Z" fill="#3ee8b5"/><circle cx="50" cy="50" r="12" fill="#3ee8b5"/></svg>'
+      + '<span><span style="color:#fff">X</span><span style="color:#3ee8b5">Ray</span></span></a>'
+      + '<div style="flex:1"></div>'
+      + '<a href="/legal" style="color:var(--t2,#8e91a0);font-size:13px;text-decoration:none">All policies</a>'
+      + '</div>';
+    container.innerHTML = header
+      + '<div id="legal-content" style="max-width:760px;width:100%;margin:0 auto;padding:48px 24px 96px;flex:1;line-height:1.65;font-size:15px"><div style="color:var(--t2,#8e91a0)">Loading…</div></div>';
+    document.body.insertBefore(container, document.body.firstChild);
+
+    var content = document.getElementById('legal-content');
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, function(c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]);
+      });
+    }
+
+    function renderMarkdown(md, doc, isHistorical) {
+      var fragment = '';
+      if (doc && doc.is_placeholder) {
+        fragment += '<div style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);border-radius:8px;padding:14px 18px;margin-bottom:24px;color:#f59e0b;font-size:14px"><strong>Placeholder</strong> — this document has not yet been finalised. The operator must publish a real version before opening signups.</div>';
+      }
+      if (isHistorical) {
+        fragment += '<div style="background:rgba(99,102,241,0.10);border:1px solid rgba(99,102,241,0.30);border-radius:8px;padding:12px 16px;margin-bottom:20px;color:#a5b4fc;font-size:13px">You are viewing an archived version (v' + escapeHtml(String(doc.version)) + '). <a href="/legal/' + encodeURIComponent(doc.slug) + '" style="color:#c7d2fe">View latest</a>.</div>';
+      }
+      var heading = doc ? '<h1 style="font-size:32px;font-weight:700;margin:0 0 8px;color:#fff;letter-spacing:-0.02em">' + escapeHtml(doc.title) + '</h1>'
+                          + '<div style="color:var(--t2,#8e91a0);font-size:13px;margin-bottom:32px">Version ' + escapeHtml(String(doc.version)) + ' · published ' + escapeHtml(new Date(doc.published_at).toLocaleDateString()) + '</div>' : '';
+      function plainFallback() {
+        return '<pre style="white-space:pre-wrap;font-family:inherit;background:transparent;border:0;padding:0;margin:0">' + escapeHtml(md) + '</pre>';
+      }
+      function applyMarkdown(html) {
+        content.innerHTML = fragment + heading + '<div class="legal-md">' + html + '</div>';
+        // Style images / links / tables in the rendered markdown
+        var styleTag = document.createElement('style');
+        styleTag.textContent = '.legal-md h1{font-size:26px;margin:36px 0 12px;color:#fff}.legal-md h2{font-size:20px;margin:32px 0 10px;color:#fff}.legal-md h3{font-size:16px;margin:24px 0 8px;color:#fff}.legal-md p{margin:0 0 14px;color:var(--t1,#f0f1f4)}.legal-md ul,.legal-md ol{margin:0 0 14px;padding-left:24px}.legal-md li{margin:0 0 6px}.legal-md a{color:#3ee8b5}.legal-md code{background:rgba(255,255,255,0.06);padding:2px 6px;border-radius:4px;font-size:0.92em}.legal-md pre{background:var(--bg2,#0f1117);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:12px 14px;overflow-x:auto}.legal-md hr{border:0;border-top:1px solid rgba(255,255,255,0.08);margin:24px 0}';
+        if (!document.getElementById('legal-md-style')) {
+          styleTag.id = 'legal-md-style';
+          document.head.appendChild(styleTag);
+        }
+      }
+      if (window.marked && typeof window.marked.parse === 'function') {
+        try {
+          // marked v9+ default behaviour escapes HTML in the markdown
+          // source — XSS-safe enough for the body_md surface where
+          // operators write policy text. If the operator pastes raw
+          // <script>, marked encodes it as literal text in <code>.
+          var html = window.marked.parse(md, { breaks: false, gfm: true });
+          applyMarkdown(html);
+        } catch (e) {
+          applyMarkdown(plainFallback());
+        }
+      } else {
+        // Fallback: render the markdown source as preformatted text
+        applyMarkdown(plainFallback());
+      }
+    }
+
+    function loadMarkedAnd(callback) {
+      if (window.marked && typeof window.marked.parse === 'function') return callback();
+      var existing = document.getElementById('xray-marked-script');
+      if (existing) {
+        existing.addEventListener('load', callback);
+        existing.addEventListener('error', callback);
+        return;
+      }
+      var s = document.createElement('script');
+      s.id = 'xray-marked-script';
+      s.src = 'https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js';
+      s.onload = callback;
+      s.onerror = function() {
+        // Network failure / offline / blocked CDN: render plain text fallback.
+        callback();
+      };
+      document.head.appendChild(s);
+    }
+
+    function fetchAndRender(url, opts) {
+      fetch(url).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) {
+          var msg = (d.error && d.error.message) || 'This policy is not available.';
+          content.innerHTML = '<div style="color:#ef4444;font-size:15px;text-align:center;padding:60px 0">' + escapeHtml(msg) + ' <a href="/legal" style="color:#3ee8b5">Back to all policies</a></div>';
+          return;
+        }
+        if (Array.isArray(d.data && d.data.policies)) {
+          renderIndex(d.data.policies);
+          return;
+        }
+        document.title = (d.data.title || 'Legal') + ' — XRay';
+        loadMarkedAnd(function() {
+          renderMarkdown(d.data.body_md || '', d.data, !!opts && !!opts.historical);
+        });
+      }).catch(function() {
+        content.innerHTML = '<div style="color:#ef4444;font-size:15px;text-align:center;padding:60px 0">Failed to load policy. <a href="/legal" style="color:#3ee8b5">Try again</a></div>';
+      });
+    }
+
+    function renderIndex(policies) {
+      document.title = 'Legal — XRay';
+      var html = '<h1 style="font-size:32px;font-weight:700;margin:0 0 24px;color:#fff;letter-spacing:-0.02em">Legal</h1>';
+      html += '<p style="color:var(--t2,#8e91a0);margin:0 0 32px">Versioned, published policies governing your use of XRay.</p>';
+      html += '<div style="display:flex;flex-direction:column;gap:8px">';
+      (policies || []).forEach(function(p) {
+        html += '<a href="/legal/' + encodeURIComponent(p.slug) + '" style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;background:var(--bg2,#0f1117);border:1px solid rgba(255,255,255,0.08);border-radius:10px;text-decoration:none;color:inherit;transition:border-color 0.15s">'
+          + '<div><div style="font-size:15px;font-weight:600;color:#fff">' + escapeHtml(p.title) + (p.is_placeholder ? ' <span style="font-size:11px;color:#f59e0b;font-weight:500;margin-left:6px">PLACEHOLDER</span>' : '') + '</div>'
+          + '<div style="font-size:12px;color:var(--t2,#8e91a0);margin-top:4px">v' + escapeHtml(String(p.version)) + ' · ' + escapeHtml(new Date(p.published_at).toLocaleDateString()) + '</div></div>'
+          + '<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>'
+          + '</a>';
+      });
+      html += '</div>';
+      content.innerHTML = html;
+    }
+
+    if (!slug) {
+      fetchAndRender('/api/legal');
+    } else if (version) {
+      fetchAndRender('/api/legal/' + encodeURIComponent(slug) + '/v/' + encodeURIComponent(String(version)), { historical: true });
+    } else {
+      fetchAndRender('/api/legal/' + encodeURIComponent(slug));
+    }
+
+    return true;
+  }
+
   // Check if we're on a special page before running normal app init
-  if (!handleSharePage() && !handleInvitePage()) {
+  if (!handleSharePage() && !handleInvitePage() && !handleLegalPage()) {
     init();
   }
 })();
