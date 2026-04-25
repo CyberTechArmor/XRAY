@@ -1510,6 +1510,10 @@
     }).then(function(r) {
       btn.disabled = false;
       if (!r) return;
+      if (r.ok && r.data && r.data.mfa_required) {
+        showMfaStep(r.data.mfa_required, r.data.mfa_token);
+        return;
+      }
       if (r.ok && r.data && r.data.accessToken) {
         accessToken = r.data.accessToken;
         enterApp();
@@ -1612,8 +1616,18 @@
       if (!d.ok) {
         var errCode = d.error && d.error.code;
         var msg = (d.error && d.error.message) || 'Invalid code.';
-        showVerifyError(errCode, msg);
+        var details = (d.error && d.error.details) || {};
+        showVerifyError(errCode, msg, details);
         return;
+      }
+      // Step 9 MFA gate.
+      if (d.data && d.data.mfa_required) {
+        showMfaStep(d.data.mfa_required, d.data.mfa_token);
+        return;
+      }
+      // Surface the per-day "N attempts left" banner (≤10) on the success path.
+      if (typeof d.data.attempts_remaining === 'number') {
+        showAttemptsRemainingBanner(d.data.attempts_remaining);
       }
       // Multi-tenant: show tenant picker
       if (d.data.tenants && d.data.tenants.length > 1) {
@@ -1630,13 +1644,22 @@
   // failure is due to an expired/used magic link. Clicking resends via
   // the same endpoint that initiated the flow (signup vs. login) so the
   // user can recover without retyping anything.
-  function showVerifyError(code, msg) {
+  //
+  // Step 9: details.attempts_remaining (per-link, from migration 033's
+  // max_attempts column) is appended to the message so the user sees
+  // "N attempts left" alongside the "Resend code" CTA.
+  function showVerifyError(code, msg, details) {
     var errEl = document.getElementById('verify-err');
     if (!errEl) { showAuthErr('verify-err', msg); return; }
     var retryable = code === 'MAGIC_LINK_EXPIRED' || code === 'MAGIC_LINK_USED' || code === 'MAX_ATTEMPTS';
     errEl.innerHTML = '';
     var msgSpan = document.createElement('span');
-    msgSpan.textContent = msg;
+    var fullMsg = msg;
+    if (details && typeof details.attempts_remaining === 'number') {
+      fullMsg += ' (' + details.attempts_remaining + ' attempt' +
+        (details.attempts_remaining === 1 ? '' : 's') + ' left)';
+    }
+    msgSpan.textContent = fullMsg;
     errEl.appendChild(msgSpan);
     if (retryable && pendingEmail) {
       var btn = document.createElement('button');
@@ -1694,6 +1717,10 @@
         api.post('/api/auth/select-tenant', { email: email, tenantId: tid }).then(function(d) {
           list.querySelectorAll('.tenant-picker-btn').forEach(function(b) { b.disabled = false; });
           if (!d.ok) { showAuthErr('tenant-picker-err', (d.error && d.error.message) || 'Failed to select organization.'); return; }
+          if (d.data && d.data.mfa_required) {
+            showMfaStep(d.data.mfa_required, d.data.mfa_token);
+            return;
+          }
           accessToken = d.data.accessToken;
           enterApp();
         }).catch(function() {
@@ -1702,6 +1729,122 @@
         });
       };
     });
+  }
+
+  // ── Step-9 helpers: MFA second-factor + per-day attempts banner ──
+  //
+  // showMfaStep(kind, mfaToken):
+  //   kind 'verify' — user has a confirmed TOTP. Prompt for code (or
+  //   backup code), POST /api/auth/totp/verify, finalize session.
+  //   kind 'enroll' — admin path, MFA required and not yet enrolled.
+  //   Call /totp/enroll for QR + secret, prompt for first code, POST
+  //   /totp/confirm. The confirm response carries the full session
+  //   token (server-side createSession) plus the 8 backup codes.
+  function showMfaStep(kind, mfaToken) {
+    showLandingForm('totp');
+    var titleEl = document.getElementById('totp-step-title');
+    var subEl = document.getElementById('totp-step-sub');
+    var enrollWrap = document.getElementById('totp-enroll-wrap');
+    var codeEl = document.getElementById('totp-step-code');
+    var backupWrap = document.getElementById('totp-step-backup-wrap');
+    var btnVerify = document.getElementById('btn-totp-step');
+    var errEl = document.getElementById('totp-err');
+    if (errEl) { errEl.textContent = ''; errEl.style.display = 'none'; }
+    backupWrap.style.display = 'none';
+    codeEl.value = '';
+
+    if (kind === 'verify') {
+      titleEl.textContent = 'Two-factor authentication';
+      subEl.textContent = 'Enter the 6-digit code from your authenticator (or a backup code).';
+      enrollWrap.style.display = 'none';
+      btnVerify.textContent = 'Verify';
+      btnVerify.onclick = function() {
+        var code = codeEl.value.trim();
+        if (!code) { showTotpErr('Enter the code.'); return; }
+        showTotpErr('');
+        btnVerify.disabled = true;
+        api.post('/api/auth/totp/verify', { mfa_token: mfaToken, code: code })
+          .then(function(d) {
+            btnVerify.disabled = false;
+            if (!d.ok) { showTotpErr((d.error && d.error.message) || 'Incorrect code.'); return; }
+            accessToken = d.data.accessToken;
+            enterApp();
+          }).catch(function() { btnVerify.disabled = false; showTotpErr('Network error.'); });
+      };
+      codeEl.focus();
+      return;
+    }
+
+    // kind === 'enroll'
+    titleEl.textContent = 'Set up two-factor authentication';
+    subEl.textContent = 'Your administrator requires TOTP for platform admins. Scan the QR with an authenticator app, then enter the 6-digit code.';
+    enrollWrap.style.display = '';
+    btnVerify.textContent = 'Confirm enrollment';
+    btnVerify.disabled = true;
+    api.post('/api/auth/totp/enroll', { mfa_token: mfaToken }).then(function(r) {
+      if (!r.ok || !r.data) { showTotpErr((r.error && r.error.message) || 'Failed to start enrollment.'); return; }
+      document.getElementById('totp-step-qr').src = r.data.qr_data_url;
+      document.getElementById('totp-step-secret').textContent = r.data.secret;
+      btnVerify.disabled = false;
+      codeEl.focus();
+    });
+    btnVerify.onclick = function() {
+      var code = codeEl.value.trim();
+      if (!/^\d{6}$/.test(code)) { showTotpErr('Enter the 6-digit code from the app.'); return; }
+      showTotpErr('');
+      btnVerify.disabled = true;
+      api.post('/api/auth/totp/confirm', { mfa_token: mfaToken, code: code })
+        .then(function(d) {
+          btnVerify.disabled = false;
+          if (!d.ok || !d.data || !d.data.confirmed) {
+            showTotpErr((d.error && d.error.message) || 'Incorrect code.');
+            return;
+          }
+          var codes = d.data.backup_codes || [];
+          var grid = document.getElementById('totp-step-backup-codes');
+          grid.innerHTML = codes.map(function(c) {
+            return '<div style="padding:6px 8px;background:rgba(255,255,255,.08);border-radius:3px">' + c + '</div>';
+          }).join('');
+          backupWrap.style.display = '';
+          enrollWrap.style.display = 'none';
+          btnVerify.style.display = 'none';
+          var doneBtn = document.getElementById('btn-totp-step-backup-done');
+          var confirmCb = document.getElementById('totp-step-backup-confirm');
+          confirmCb.checked = false;
+          doneBtn.disabled = true;
+          confirmCb.onchange = function() { doneBtn.disabled = !confirmCb.checked; };
+          doneBtn.onclick = function() {
+            if (d.data.accessToken) {
+              accessToken = d.data.accessToken;
+              enterApp();
+            }
+          };
+        }).catch(function() { btnVerify.disabled = false; showTotpErr('Network error.'); });
+    };
+  }
+  function showTotpErr(msg) {
+    var el = document.getElementById('totp-err');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.display = msg ? '' : 'none';
+  }
+  function showAttemptsRemainingBanner(remaining) {
+    // Per-day per-email counter banner. Triggers ≤10. Distinct from
+    // the per-link counter — this one is "you have N tries today
+    // before you're locked out" rather than "this code accepts N
+    // more guesses." Render as a top-of-modal warning bar so the
+    // user sees it during the next code request.
+    var modal = document.querySelector('.land-modal-body') || document.getElementById('loginModal');
+    if (!modal) return;
+    var existing = modal.querySelector('#attempts-remaining-banner');
+    if (existing) existing.remove();
+    var bar = document.createElement('div');
+    bar.id = 'attempts-remaining-banner';
+    bar.style.cssText = 'background:rgba(255,180,0,.15);border:1px solid rgba(255,180,0,.4);color:#ffd47a;padding:8px 12px;border-radius:4px;margin-bottom:12px;font-size:13px';
+    bar.textContent = remaining === 0
+      ? 'No more sign-in attempts allowed today. Try again tomorrow.'
+      : remaining + ' sign-in attempt' + (remaining === 1 ? '' : 's') + ' remaining today.';
+    modal.insertBefore(bar, modal.firstChild);
   }
 
   // ── OAuth callback return handler ──
@@ -1736,6 +1879,12 @@
     document.getElementById('landing-screen').style.display = 'none';
     api.post('/api/auth/verify-token', { token: token }).then(function(d) {
       if (d.ok && d.data) {
+        if (d.data.mfa_required) {
+          document.getElementById('landing-screen').style.display = '';
+          openModal('totp');
+          showMfaStep(d.data.mfa_required, d.data.mfa_token);
+          return;
+        }
         if (d.data.tenants && d.data.tenants.length > 1) {
           document.getElementById('landing-screen').style.display = '';
           openModal('tenant-picker');

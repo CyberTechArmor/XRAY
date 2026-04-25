@@ -173,6 +173,31 @@
       <div id="tenant-picker-err" class="auth-err"></div>
       <div id="tenant-picker-list" class="tenant-picker-list"></div>
     </div>
+
+    <!-- Step-9 MFA second-factor form. Activated when /verify, /verify-token,
+         /select-tenant, /login/complete, or /passkey/complete returns
+         { mfa_required, mfa_token } instead of a session. -->
+    <div id="land-totp" style="display:none">
+      <h2 id="totp-step-title">Two-factor authentication</h2>
+      <p class="modal-sub" id="totp-step-sub">Enter the 6-digit code from your authenticator app.</p>
+      <div id="totp-err" class="auth-err"></div>
+      <div id="totp-enroll-wrap" style="display:none;margin:16px 0">
+        <div style="text-align:center"><img id="totp-step-qr" alt="QR" style="width:180px;height:180px;background:#fff;padding:8px;border-radius:6px"></div>
+        <div style="font-size:12px;color:var(--t3,#999);text-align:center;margin-top:6px">Scan with Google Authenticator, 1Password, or Authy</div>
+        <div style="font-size:12px;color:var(--t2,#bbb);margin-top:10px">Or enter this secret manually:</div>
+        <div id="totp-step-secret" style="font-family:ui-monospace,monospace;background:rgba(255,255,255,.06);padding:6px 10px;border-radius:4px;margin-top:4px;word-break:break-all"></div>
+      </div>
+      <div class="fg"><label>6-digit code</label><input type="text" id="totp-step-code" placeholder="000000" maxlength="14" autocomplete="one-time-code" inputmode="text" style="text-align:center;font-size:20px;letter-spacing:.2em"></div>
+      <div style="font-size:12px;color:var(--t3,#999);margin:-4px 0 12px">Or use a backup code (xxxx-xxxx-xxxx).</div>
+      <button class="btn-p" id="btn-totp-step">Verify</button>
+      <div id="totp-step-backup-wrap" style="display:none;margin-top:16px;padding:14px;background:rgba(255,255,255,.05);border-radius:6px">
+        <div style="font-weight:600;margin-bottom:6px">Save your backup codes</div>
+        <div style="font-size:12px;color:var(--t2,#bbb);margin-bottom:10px">Each code works once. They let you sign in if you lose your authenticator.</div>
+        <div id="totp-step-backup-codes" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:ui-monospace,monospace;font-size:13px;margin-bottom:12px"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="totp-step-backup-confirm"> I have saved these codes</label>
+        <button class="btn-p" id="btn-totp-step-backup-done" disabled style="margin-top:10px">Continue</button>
+      </div>
+    </div>
   </div>
 </div>
 

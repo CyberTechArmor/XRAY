@@ -19,7 +19,7 @@
 
   /* ── Show form within modal ── */
   window.showLandingForm = function(name) {
-    var forms = ['land-login','land-signup','land-setup','land-verify','land-tenant-picker'];
+    var forms = ['land-login','land-signup','land-setup','land-verify','land-tenant-picker','land-totp'];
     for (var i=0;i<forms.length;i++) {
       var el = document.getElementById(forms[i]);
       if(el) el.style.display = forms[i] === 'land-'+name ? '' : 'none';
