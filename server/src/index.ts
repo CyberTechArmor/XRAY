@@ -36,6 +36,7 @@ import aiRoutes from './routes/ai.routes';
 import adminAiRoutes from './routes/admin.ai.routes';
 import oauthRoutes from './routes/oauth.routes';
 import integrationRoutes from './routes/integration.routes';
+import legalRoutes from './routes/legal.routes';
 import { finalizeStaleActiveSessions } from './services/replay.service';
 import { startScheduler as startOauthScheduler } from './lib/oauth-scheduler';
 import { warnIfUnconfigured as warnIfPipelineJwtUnconfigured } from './lib/pipeline-jwt';
@@ -132,6 +133,10 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/admin/ai', adminAiRoutes);
 app.use('/api/oauth', oauthRoutes);
 app.use('/api/integrations', integrationRoutes);
+// Step 11: public legal-pages surface (GET-only, no auth, no CSRF).
+// Backed by the policy_documents carve-out so logged-out visitors
+// can read the latest published version of any policy slug.
+app.use('/api/legal', legalRoutes);
 if (uploadRoutes) app.use('/api/uploads', uploadRoutes);
 
 // Serve frontend static files (fallback when nginx is not in front)
