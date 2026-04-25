@@ -1164,6 +1164,7 @@ export async function logout(userId: string): Promise<void> {
 
 export async function beginPasskeyAuth(email?: string): Promise<unknown> {
   const webauthn = await import('../lib/webauthn');
+  const { createHash } = await import('crypto');
 
   let allowCredentials: { id: Buffer; transports?: string[] }[] = [];
   let userId: string | null = null;
@@ -1190,6 +1191,31 @@ export async function beginPasskeyAuth(email?: string): Promise<unknown> {
         id: r.credential_id,
         transports: r.transports,
       }));
+    } else {
+      // Step 9 passkey-enumeration guard. Without this branch the
+      // response distinguishes "unknown email" (no DB row) from
+      // "known email with passkey" (populated allowCredentials)
+      // from "known email without passkey" (empty list, but the DB
+      // lookup still happened so the timing is closer). We close
+      // the shape gap by always returning ONE deterministic dummy
+      // credential id derived from hash(email + JWT_SECRET) when
+      // we don't have a real one to offer.
+      //
+      // The dummy id is 32 bytes (matches the typical webauthn
+      // credential length) and is stable per-email so a retry
+      // produces the same shape — an attacker can't fingerprint a
+      // user by re-requesting the options endpoint and seeing the
+      // id change.
+      //
+      // The browser will fail at WebAuthn time because no
+      // authenticator on the user's device actually owns this id.
+      // That's the desired outcome: indistinguishable response
+      // shape, indistinguishable lookup timing, the protocol
+      // itself does the actual rejection.
+      const dummy = createHash('sha256')
+        .update(`passkey-enum-guard|${email}|${config.jwtSecret}`)
+        .digest();
+      allowCredentials = [{ id: dummy }];
     }
   }
 
