@@ -77,7 +77,10 @@ Guardrails:
   `services/settings.service.ts`, `services/email.service.ts`,
   `services/email-templates.ts`, `services/meet.service.ts`,
   `services/rbac.service.ts`, `services/role.service.ts`,
-  `services/tenant.service.ts`. All touch carve-out / unauth paths.
+  `services/tenant.service.ts`, `services/policy.service.ts`. All
+  touch carve-out / unauth paths. (Step 11 added `policy.service.ts`
+  for the `policy_documents` public-read carve-out backing
+  `/api/legal/<slug>`.)
 - **RLS policies live in `init.sql` + `migrations/*.sql`.** Any new
   tenant-scoped table needs a `tenant_isolation` policy and a
   `platform_admin_bypass` policy before the application layer starts
