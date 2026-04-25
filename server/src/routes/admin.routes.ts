@@ -182,7 +182,14 @@ function setRefreshCookie(res: any, refreshToken: string) {
 
 router.post('/impersonate/stop', async (req, res, next) => {
   try {
-    if (!req.user!.imp || !req.user!.imp.admin_id) {
+    // req.user is the JWTPayload | ApiKeyPayload union; only the
+    // JWT path carries the `imp` claim. Narrow with `in` so an API
+    // key reaching this route (which would have to bear the
+    // platform.admin scope to pass the requirePermission guard
+    // upstream) is rejected as "not impersonating" rather than
+    // raising a type error at the access site.
+    const imp = req.user && 'imp' in req.user ? req.user.imp : undefined;
+    if (!imp || !imp.admin_id) {
       return res.status(400).json({
         ok: false,
         error: { code: 'NOT_IMPERSONATING', message: 'Current session is not an impersonation session' },
@@ -197,7 +204,7 @@ router.post('/impersonate/stop', async (req, res, next) => {
     }
     const tokens = await impersonationService.stopImpersonation({
       impersonationRefreshTokenHash: hashRefreshToken(rawToken),
-      adminUserId: req.user!.imp.admin_id,
+      adminUserId: imp.admin_id,
     });
     setRefreshCookie(res, tokens.refreshToken);
     await issueCsrfCookie(res);
@@ -213,7 +220,8 @@ router.post('/impersonate/stop', async (req, res, next) => {
 
 router.post('/impersonate/:tenantId/:userId', async (req, res, next) => {
   try {
-    if (req.user!.imp) {
+    const imp = req.user && 'imp' in req.user ? req.user.imp : undefined;
+    if (imp) {
       // Block nested impersonation. The operator should /stop first.
       return res.status(409).json({
         ok: false,
