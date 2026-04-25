@@ -186,6 +186,14 @@ function pathBypassesCsrf(req: Request): boolean {
   // Operator-CLI import path (raw application/zip body, not a
   // browser session).
   if (p === '/api/admin/import') return true;
+  // Session-replay beacon: fired from the unload handler via
+  // navigator.sendBeacon, which cannot set X-CSRF-Token (Beacon
+  // API has no header support). The route is fire-and-forget
+  // telemetry; the session id is unguessable random so cross-
+  // site abuse can't target a known session. The sync-XHR
+  // finalize fallback (same handler) carries an Authorization
+  // Bearer header and is covered by the Bearer bypass below.
+  if (p.startsWith('/api/v1/replay/sessions/') && p.endsWith('/beacon')) return true;
   // Unauthenticated bootstrap paths.
   if (BOOTSTRAP_PATHS.has(p)) return true;
   return false;

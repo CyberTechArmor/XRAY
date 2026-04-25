@@ -629,35 +629,21 @@ export async function verifyCode(input: {
       );
     }
 
-    // Step 10: fingerprint check. Both row columns AND both
-    // incoming hashes must be present for the gate to engage —
-    // skip-on-NULL keeps pre-migration links + admin-driven invite
-    // links consumable from any device. A mismatch decrements the
-    // per-link attempts counter so a determined attacker still
-    // hits the per-link 5-attempt lockout.
-    const rowIp = (magicLink as any).issuer_ip_hash as string | null | undefined;
-    const rowUa = (magicLink as any).issuer_ua_hash as string | null | undefined;
-    const inIp = input.fingerprint?.ipHash || '';
-    const inUa = input.fingerprint?.uaHash || '';
-    const fingerprintArmed = !!rowIp && !!rowUa && !!inIp && !!inUa;
-    if (fingerprintArmed && (rowIp !== inIp || rowUa !== inUa)) {
-      const updated = await client.query(
-        `UPDATE platform.magic_links
-            SET attempts = attempts + 1,
-                used = (attempts + 1 >= $2)
-          WHERE id = $1
-        RETURNING attempts`,
-        [magicLink.id, maxAttempts]
-      );
-      const newAttempts: number = updated.rows[0]?.attempts ?? magicLink.attempts + 1;
-      const remaining = Math.max(0, maxAttempts - newAttempts);
-      throw new AppError(
-        400,
-        'LINK_FINGERPRINT_MISMATCH',
-        'This code was requested from a different device. Please request a new one from this device.',
-        { attempts_remaining: remaining }
-      );
-    }
+    // Step 10: fingerprint capture. Migration 037 columns are still
+    // populated on issuance for forensic value (we know which IP+UA
+    // requested each code). The original step-10 design rejected
+    // mismatches with LINK_FINGERPRINT_MISMATCH but the operator
+    // workflow legitimately straddles devices (request on laptop,
+    // type code on phone, click email link from a different default
+    // browser, etc.) and the rejection blocked sign-in even on the
+    // platform admin path. The 6-digit-paste flow has no phishing
+    // vector beyond the user typing the code into a wrong tab — the
+    // per-link 5-attempt cap (step 9) covers brute-force.
+    //
+    // Enforcement is deferred to a future operator-flippable
+    // platform setting (`enforce_magic_link_fingerprint`). Until
+    // then, the row's hashes are write-only — see verifyToken for
+    // the same posture on the click-through path.
 
     if (magicLink.code !== input.code) {
       const updated = await client.query(
@@ -717,20 +703,10 @@ export async function verifyToken(
       throw new AppError(400, 'MAGIC_LINK_EXPIRED', 'This link has expired. Please request a new one.');
     }
 
-    // Step 10: fingerprint check, same skip-on-NULL semantics as
-    // verifyCode. Click-through-link consumption from a different
-    // device is the canonical phishing-or-leaked-link signal.
-    const rowIp = (magicLink as any).issuer_ip_hash as string | null | undefined;
-    const rowUa = (magicLink as any).issuer_ua_hash as string | null | undefined;
-    const inIp = fingerprint?.ipHash || '';
-    const inUa = fingerprint?.uaHash || '';
-    if (rowIp && rowUa && inIp && inUa && (rowIp !== inIp || rowUa !== inUa)) {
-      throw new AppError(
-        400,
-        'LINK_FINGERPRINT_MISMATCH',
-        'This link was opened on a different device. Please request a new one from your original device.',
-      );
-    }
+    // Step 10: fingerprint capture only — see verifyCode header
+    // comment for the rationale. Migration 037 columns stay
+    // populated on issuance; enforcement deferred to a future
+    // operator-flippable platform setting.
 
     // Mark as used
     await client.query(
