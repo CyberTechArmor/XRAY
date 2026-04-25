@@ -1,4 +1,4 @@
-import { withClient, withTransaction } from '../db/connection';
+import { withAdminClient, withAdminTransaction } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 import { encrypt } from '../lib/crypto';
 import { encryptSecret, decryptSecret } from '../lib/encrypted-column';
@@ -31,8 +31,7 @@ function decryptDashboardRow<T extends { id: string; bridge_secret?: unknown }>(
 // ─── Tenants ──────────────────────────────────────────────
 
 export async function listAllTenants(query: { page: number; limit: number }) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const offset = (query.page - 1) * query.limit;
     const countResult = await client.query('SELECT COUNT(*) FROM platform.tenants');
     const total = parseInt(countResult.rows[0].count, 10);
@@ -107,9 +106,10 @@ export async function listAllTenants(query: { page: number; limit: number }) {
 
 // Admin-driven "invite a tenant owner" — routes through the same
 // signup magic-link path a normal self-signup uses, so completeSignup
-// creates the tenant + user + billing_state atomically. Sends the
-// signup_verification email today; commit (v) will rebrand this
-// path as `tenant_invitation` once the template is seeded.
+// creates the tenant + user + billing_state atomically. Step 7 (C5)
+// branded the outbound email as `tenant_invitation` (vs. the default
+// `signup_verification` for self-signups) so the recipient's mailbox
+// reads "you've been invited" instead of "verify your email".
 export async function inviteTenantOwner(input: {
   email: string;
   name: string;
@@ -117,10 +117,26 @@ export async function inviteTenantOwner(input: {
   invitedByUserId: string;
   invitedByTenantId: string;
 }): Promise<{ message: string; email: string; tenantName: string }> {
+  // Look up the inviter's display name for the email body. The
+  // inviter is a platform admin (gated by the route's admin check)
+  // and lives in some tenant; admin bypass for the look-up.
+  const inviterRow = await withAdminClient(async (client) => {
+    const r = await client.query(
+      `SELECT name, email FROM platform.users WHERE id = $1`,
+      [input.invitedByUserId]
+    );
+    return r.rows[0] || null;
+  });
+  const inviterName: string =
+    (inviterRow?.name && inviterRow.name.trim().length > 0)
+      ? inviterRow.name
+      : (inviterRow?.email || 'Your XRay administrator');
+
   const result = await authService.initiateSignup({
     email: input.email,
     name: input.name,
     tenantName: input.tenantName,
+    invitation: { inviterName },
   });
 
   auditService.log({
@@ -142,8 +158,7 @@ export async function inviteTenantOwner(input: {
 }
 
 export async function createTenant(input: { name: string; slug: string }) {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminTransaction(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.tenants (name, slug) VALUES ($1, $2) RETURNING *`,
       [input.name, input.slug]
@@ -162,8 +177,7 @@ export async function createTenant(input: { name: string; slug: string }) {
 }
 
 export async function getTenantDetail(tenantId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const tenantResult = await client.query('SELECT * FROM platform.tenants WHERE id = $1', [tenantId]);
     if (tenantResult.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Tenant not found');
     const tenant = tenantResult.rows[0];
@@ -191,8 +205,7 @@ export async function updateTenantPlan(tenantId: string, input: {
   connectorLimit?: number;
   paymentStatus?: string;
 }) {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminTransaction(async (client) => {
 
     // Check tenant exists
     const tenant = await client.query('SELECT id, name FROM platform.tenants WHERE id = $1', [tenantId]);
@@ -220,8 +233,7 @@ export async function updateTenantPlan(tenantId: string, input: {
 // ─── Tenant Status & Members ──────────────────────────────
 
 export async function updateTenantStatus(tenantId: string, status: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `UPDATE platform.tenants SET status = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [status, tenantId]
@@ -233,8 +245,7 @@ export async function updateTenantStatus(tenantId: string, status: string) {
 }
 
 export async function listTenantMembers(tenantId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT u.id, u.email, u.name, u.is_owner, u.status, u.last_login_at, u.created_at,
               r.name AS role_name, r.slug AS role_slug
@@ -249,8 +260,7 @@ export async function listTenantMembers(tenantId: string) {
 }
 
 export async function addTenantMember(tenantId: string, input: { name: string; email: string; role: string }) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     // Verify tenant exists
     const tenant = await client.query('SELECT id FROM platform.tenants WHERE id = $1', [tenantId]);
     if (tenant.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Tenant not found');
@@ -287,8 +297,7 @@ export async function addTenantMember(tenantId: string, input: { name: string; e
 }
 
 export async function removeTenantMember(tenantId: string, userId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     // Check user exists and belongs to this tenant
     const user = await client.query(
       'SELECT id, is_owner, email, name FROM platform.users WHERE id = $1 AND tenant_id = $2',
@@ -318,8 +327,7 @@ export async function removeTenantMember(tenantId: string, userId: string) {
 // ─── Dashboards ───────────────────────────────────────────
 
 export async function listAllDashboards(query: { page: number; limit: number }) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const offset = (query.page - 1) * query.limit;
     const countResult = await client.query('SELECT COUNT(*) FROM platform.dashboards');
     const total = parseInt(countResult.rows[0].count, 10);
@@ -336,8 +344,7 @@ export async function listAllDashboards(query: { page: number; limit: number }) 
 }
 
 export async function getDashboardDetail(dashboardId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT d.*, t.name AS tenant_name, o.email AS owner_email
        FROM platform.dashboards d
@@ -393,8 +400,7 @@ export async function createDashboard(
       'Bridge signing secret is required when integration is set. Use the Generate button in the builder or paste a value.'
     );
   }
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_body, fetch_query_params, tile_image_url, template_id, integration, params, bridge_secret, scope)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
@@ -428,8 +434,7 @@ export async function createDashboard(
 }
 
 export async function updateDashboard(dashboardId: string, updates: Record<string, unknown>) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
 
     // Bridge-secret consistency check. Fetch current state so we can
     // reason about the resulting row: if integration will be non-empty
@@ -538,8 +543,7 @@ export async function listDashboardGrants(dashboardId: string): Promise<Array<{
   granted_by_email: string | null;
   created_at: string;
 }>> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT g.tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
               g.granted_by, u.email AS granted_by_email, g.created_at
@@ -559,8 +563,7 @@ export async function grantDashboardToTenant(
   tenantId: string,
   grantedByUserId: string
 ): Promise<{ dashboard_id: string; tenant_id: string; granted_by: string; created_at: string }> {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminTransaction(async (client) => {
 
     // Guard: only apply grants to Custom Globals. Integration Globals
     // gate via connection and a grant row here is noise; tenant-scoped
@@ -609,8 +612,7 @@ export async function revokeDashboardGrant(
   tenantId: string,
   revokedByUserId: string
 ): Promise<void> {
-  await withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminTransaction(async (client) => {
     await client.query(
       `DELETE FROM platform.dashboard_tenant_grants WHERE dashboard_id = $1 AND tenant_id = $2`,
       [dashboardId, tenantId]
@@ -627,8 +629,7 @@ export async function revokeDashboardGrant(
 }
 
 export async function deleteDashboard(dashboardId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'DELETE FROM platform.dashboards WHERE id = $1 RETURNING id, name, tenant_id',
       [dashboardId]
@@ -643,7 +644,7 @@ export async function deleteDashboard(dashboardId: string) {
 // ─── Connection Templates ────────────────────────────────
 
 export async function listConnectionTemplates() {
-  return withClient(async (client) => {
+  return withAdminClient(async (client) => {
     const result = await client.query('SELECT * FROM platform.connection_templates ORDER BY name');
     return result.rows;
   });
@@ -653,7 +654,7 @@ export async function createConnectionTemplate(input: {
   name: string; description?: string; fetchMethod?: string;
   fetchUrl?: string; fetchHeaders?: Record<string, string>; fetchBody?: unknown;
 }) {
-  return withClient(async (client) => {
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.connection_templates (name, description, fetch_method, fetch_url, fetch_headers, fetch_body)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
@@ -670,7 +671,7 @@ export async function createConnectionTemplate(input: {
 }
 
 export async function deleteConnectionTemplate(templateId: string) {
-  return withClient(async (client) => {
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'DELETE FROM platform.connection_templates WHERE id = $1 RETURNING id',
       [templateId]
@@ -688,8 +689,7 @@ export async function fetchDashboardContent(
   adminUserId?: string,
   options?: { targetTenantId?: string }
 ) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     // Step 4b: d.scope + nullable d.tenant_id. For Globals, the admin
     // must specify a targetTenantId (which tenant's credentials to
     // render under); the preview UI's tenant-picker supplies it.
@@ -886,8 +886,7 @@ export async function fetchDashboardContent(
 // ─── Connections ──────────────────────────────────────────
 
 export async function listAllConnections(query: { page: number; limit: number }) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const offset = (query.page - 1) * query.limit;
     const countResult = await client.query('SELECT COUNT(*) FROM platform.connections');
     const total = parseInt(countResult.rows[0].count, 10);
@@ -907,8 +906,7 @@ export async function createConnection(input: {
   sourceDetail?: string; pipelineRef?: string;
   description?: string; connectionDetails?: string; imageUrl?: string;
 }) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.connections (tenant_id, name, source_type, source_detail, pipeline_ref, description, connection_details, image_url)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
@@ -922,8 +920,7 @@ export async function createConnection(input: {
 }
 
 export async function updateConnection(connectionId: string, updates: Record<string, unknown>) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -958,8 +955,7 @@ export async function updateConnection(connectionId: string, updates: Record<str
 }
 
 export async function registerTable(connectionId: string, input: { tableName: string; description?: string }) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const conn = await client.query('SELECT tenant_id FROM platform.connections WHERE id = $1', [connectionId]);
     if (conn.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
     const result = await client.query(
@@ -972,8 +968,7 @@ export async function registerTable(connectionId: string, input: { tableName: st
 }
 
 export async function deleteConnection(connectionId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'DELETE FROM platform.connections WHERE id = $1 RETURNING id, tenant_id',
       [connectionId]
@@ -987,8 +982,7 @@ export async function deleteConnection(connectionId: string) {
 // ─── Connection Comments ─────────────────────────────────
 
 export async function listConnectionComments(connectionId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT c.*, u.name AS author_name, u.email AS author_email
        FROM platform.connection_comments c
@@ -1002,8 +996,7 @@ export async function listConnectionComments(connectionId: string) {
 }
 
 export async function createConnectionComment(connectionId: string, authorId: string, content: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.connection_comments (connection_id, author_id, content) VALUES ($1, $2, $3) RETURNING *`,
       [connectionId, authorId, content]
@@ -1015,8 +1008,7 @@ export async function createConnectionComment(connectionId: string, authorId: st
 }
 
 export async function deleteConnectionComment(commentId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'DELETE FROM platform.connection_comments WHERE id = $1 RETURNING id',
       [commentId]
@@ -1030,8 +1022,7 @@ export async function deleteConnectionComment(commentId: string) {
 // ─── Tenant Notes ────────────────────────────────────────
 
 export async function listTenantNotes(tenantId: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT n.*, u.name AS author_name, u.email AS author_email
        FROM platform.tenant_notes n
@@ -1045,8 +1036,7 @@ export async function listTenantNotes(tenantId: string) {
 }
 
 export async function createTenantNote(tenantId: string, authorId: string, content: string) {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.tenant_notes (tenant_id, author_id, content) VALUES ($1, $2, $3) RETURNING *`,
       [tenantId, authorId, content]
@@ -1058,7 +1048,7 @@ export async function createTenantNote(tenantId: string, authorId: string, conte
 }
 
 export async function updateTenantNote(noteId: string, content: string) {
-  return withClient(async (client) => {
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `UPDATE platform.tenant_notes SET content = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [content, noteId]
@@ -1071,7 +1061,7 @@ export async function updateTenantNote(noteId: string, content: string) {
 }
 
 export async function deleteTenantNote(noteId: string) {
-  return withClient(async (client) => {
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'DELETE FROM platform.tenant_notes WHERE id = $1 RETURNING id',
       [noteId]
@@ -1085,7 +1075,7 @@ export async function deleteTenantNote(noteId: string) {
 // ─── Settings ─────────────────────────────────────────────
 
 export async function getAllSettings() {
-  return withClient(async (client) => {
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT key, value, is_secret, updated_at FROM platform.platform_settings ORDER BY key'
     );
@@ -1099,7 +1089,7 @@ export async function getAllSettings() {
 }
 
 export async function updateSettings(updates: Record<string, string | null>) {
-  const result = await withClient(async (client) => {
+  const result = await withAdminClient(async (client) => {
     for (const [key, value] of Object.entries(updates)) {
       const existing = await client.query(
         'SELECT is_secret FROM platform.platform_settings WHERE key = $1', [key]
@@ -1124,7 +1114,7 @@ export async function updateSettings(updates: Record<string, string | null>) {
 // ─── Email Templates ─────────────────────────────────────
 
 export async function listEmailTemplates() {
-  return withClient(async (client) => {
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT template_key, subject, variables, description, updated_at FROM platform.email_templates ORDER BY template_key'
     );
@@ -1133,7 +1123,7 @@ export async function listEmailTemplates() {
 }
 
 export async function getEmailTemplate(templateKey: string) {
-  return withClient(async (client) => {
+  return withAdminClient(async (client) => {
     const result = await client.query(
       'SELECT * FROM platform.email_templates WHERE template_key = $1',
       [templateKey]
@@ -1146,7 +1136,7 @@ export async function getEmailTemplate(templateKey: string) {
 export async function updateEmailTemplate(templateKey: string, updates: {
   subject?: string; bodyHtml?: string; bodyText?: string;
 }) {
-  return withClient(async (client) => {
+  return withAdminClient(async (client) => {
     const fields: string[] = ['updated_at = now()'];
     const values: unknown[] = [];
     let idx = 1;
@@ -1174,8 +1164,7 @@ export async function resetEmailTemplate(templateKey: string): Promise<Record<st
   if (!tpl) {
     throw new AppError(404, 'NOT_DEFAULTED', `No default body ships for template '${templateKey}'`);
   }
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `UPDATE platform.email_templates
           SET subject = $1, body_html = $2, body_text = $3, variables = $4,
@@ -1207,8 +1196,7 @@ export async function resetEmailTemplate(templateKey: string): Promise<Record<st
 
 export async function sendTestEmail(templateKey: string, userId: string) {
   const { sendTemplateEmail } = await import('./email.service');
-  const user = await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  const user = await withAdminClient(async (client) => {
     const result = await client.query('SELECT email, name FROM platform.users WHERE id = $1', [userId]);
     return result.rows[0];
   });

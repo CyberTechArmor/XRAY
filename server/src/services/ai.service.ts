@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { withClient, getPool } from '../db/connection';
+import { withAdminClient, getPool } from '../db/connection';
 import type { PoolClient } from '../db/connection';
 import { getSetting } from './settings.service';
 import { AppError } from '../middleware/error-handler';
@@ -75,8 +75,7 @@ export interface AiMessage {
 // ─── Settings (platform-wide, versioned) ────────────────────────────────────
 
 export async function getCurrentSettings(): Promise<AiSettings> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT id, model_id, system_prompt, guardrails, per_user_daily_cap, enabled,
               note, author_user_id, effective_at
@@ -91,8 +90,7 @@ export async function getCurrentSettings(): Promise<AiSettings> {
 }
 
 export async function listSettingsVersions(): Promise<AiSettings[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT v.id, v.model_id, v.system_prompt, v.guardrails, v.per_user_daily_cap,
               v.enabled, v.note, v.author_user_id, v.effective_at,
@@ -126,8 +124,7 @@ export async function createSettingsVersion(
     throw new AppError(400, 'INVALID_CAP', 'per_user_daily_cap must be between 0 and 100000');
   }
 
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `INSERT INTO platform.ai_settings_versions
        (model_id, system_prompt, guardrails, per_user_daily_cap, enabled, note, author_user_id)
@@ -151,8 +148,7 @@ export async function createSettingsVersion(
 // ─── Per-dashboard + per-user toggles ───────────────────────────────────────
 
 export async function getDashboardEnabled(dashboardId: string): Promise<boolean> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT enabled FROM platform.ai_dashboard_settings WHERE dashboard_id = $1`,
       [dashboardId]
@@ -166,8 +162,7 @@ export async function setDashboardEnabled(
   enabled: boolean,
   updatedBy: string
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       `INSERT INTO platform.ai_dashboard_settings (dashboard_id, enabled, updated_by, updated_at)
        VALUES ($1, $2, $3, now())
@@ -181,8 +176,7 @@ export async function setDashboardEnabled(
 export async function listDashboardSettings(): Promise<
   Array<{ dashboard_id: string; dashboard_name: string; tenant_name: string; enabled: boolean; updated_at: string | null }>
 > {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT d.id as dashboard_id, d.name as dashboard_name, t.name as tenant_name,
               COALESCE(ads.enabled, false) as enabled, ads.updated_at
@@ -196,8 +190,7 @@ export async function listDashboardSettings(): Promise<
 }
 
 export async function getUserPref(userId: string, dashboardId: string): Promise<boolean> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT enabled FROM platform.ai_user_dashboard_prefs WHERE user_id = $1 AND dashboard_id = $2`,
       [userId, dashboardId]
@@ -213,8 +206,7 @@ export async function setUserPref(
   tenantId: string,
   enabled: boolean
 ): Promise<void> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       `INSERT INTO platform.ai_user_dashboard_prefs (user_id, dashboard_id, tenant_id, enabled, updated_at)
        VALUES ($1, $2, $3, $4, now())
@@ -802,8 +794,7 @@ export interface ModelPricing {
 }
 
 export async function listModelPricing(): Promise<ModelPricing[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const r = await client.query(
       `SELECT model_id, display_name, provider, tier,
               input_per_million::float8 as input_per_million,
@@ -850,8 +841,7 @@ export async function updateModelPricing(
   fields.push(`updated_at = now()`);
   values.push(modelId);
   const sql = `UPDATE platform.ai_model_pricing SET ${fields.join(', ')} WHERE model_id = $${i} RETURNING model_id`;
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     const r = await client.query(sql, values);
     if (r.rows.length === 0) {
       throw new AppError(404, 'MODEL_NOT_FOUND', 'Unknown model_id');
@@ -866,8 +856,7 @@ export async function upsertModelPricing(
   row: Omit<ModelPricing, 'updated_at'> & { is_active?: boolean },
   userId: string
 ): Promise<ModelPricing> {
-  await withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  await withAdminClient(async (client) => {
     await client.query(
       `INSERT INTO platform.ai_model_pricing
          (model_id, display_name, provider, tier, input_per_million, output_per_million,
@@ -1222,8 +1211,7 @@ export async function getUsageSummary(opts: {
     LIMIT ${limit}
   `;
 
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const rowsRes = await client.query(sql, values);
     // Totals: same query without group by
     const totalsSql = `
@@ -1383,8 +1371,7 @@ export async function listConversations(opts: {
     WHERE ${countWhere.join(' AND ')}
   `;
 
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  return withAdminClient(async (client) => {
     const rowsRes = await client.query(sql, values);
     const totalRes = await client.query(countSql, values);
     return { rows: rowsRes.rows, total: totalRes.rows[0].total };

@@ -261,3 +261,55 @@ Run `./install.sh` again. It's idempotent:
 The post-boot `/api/health` check fails loud on regression: if
 the server isn't healthy within 60 seconds, the installer exits
 non-zero and prints the last 30 lines of the server log inline.
+
+## Platform export / import
+
+`/api/admin/export` produces a ZIP bundle of the platform database
+shape (tenants, users, dashboards, connections, integrations, email
+templates, platform_settings, api_keys, webhooks, dashboard grants &
+shares). Use it for host moves, staging-↔-prod sync, or backup-style
+snapshots. `/api/admin/import` rehydrates the same shape with
+no-overwrite semantics — existing rows skip, new rows insert.
+
+### `ENCRYPTION_KEY` is a required sidecar
+
+Several columns in the export carry **ciphertext** under the
+`enc:v1:` envelope:
+
+- `connections.api_key`, `connections.oauth_*_token`
+- `dashboards.bridge_secret`
+- `integrations.client_secret`
+- `webhooks.secret`
+- `platform_settings.value` rows where `is_secret = true`
+
+The ciphertext is bound to the `ENCRYPTION_KEY` env variable that
+was active when the source platform encrypted it. **The destination
+platform MUST be configured with the SAME `ENCRYPTION_KEY`** before
+importing, otherwise every read of those columns throws at
+application time (encrypted-column strict mode — there is no
+plaintext fallback).
+
+Treat `ENCRYPTION_KEY` as a sidecar that travels with the export
+ZIP through whatever secure channel you use (1Password, Vault,
+out-of-band file). Without it, the export is a brick — the columns
+that matter most (OAuth tokens, signing secrets, webhook secrets)
+won't decrypt.
+
+After import on the destination host, tenants still re-run any
+OAuth Connect flows whose tokens were excluded from the export
+(`oauth_refresh_token`, `oauth_access_token`, `api_key` ciphertexts
+on `platform.connections`). The `integration_id` + `auth_method`
+columns ARE round-tripped so the tenant's connection rows are
+recognised by the scheduler post-import — only the live credentials
+need re-issue.
+
+### Excluded by design
+
+- Live OAuth tokens / API keys on `platform.connections` (above).
+- `platform.audit_log` rows (operational telemetry, not config).
+- `platform.user_sessions` (session state, not config).
+- `platform.user_passkeys` (passkeys are device-bound credentials —
+  users re-register on a new host).
+- Inbox threads / messages (operational; out-of-band if needed).
+- Render cache rows (`platform.dashboard_render_cache`) — repopulated
+  on next render.

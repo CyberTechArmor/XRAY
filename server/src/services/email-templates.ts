@@ -86,6 +86,33 @@ export const DEFAULT_TEMPLATES: DefaultTemplate[] = [
     description: 'Sent when a user requests account recovery',
   },
   {
+    // Sent when a platform admin uses Admin → Tenants → Invite Owner.
+    // Same magic-link signup flow as a normal self-signup; the recipient
+    // completes provisioning by clicking the link / entering the code.
+    // Distinguished from `signup_verification` because the messaging
+    // ("you've been invited" vs. "verify your email") matches the
+    // recipient's actual context — they didn't sign themselves up.
+    key: 'tenant_invitation',
+    subject: 'You have been invited to set up {{tenant_name}} on XRay',
+    html: wrap(
+      '<h2 style="margin:0 0 16px;font-size:20px;color:#e0e1e5">Welcome to XRay BI</h2>'
+      + '<p style="margin:0 0 16px">Hi {{name}},</p>'
+      + '<p style="margin:0 0 16px"><strong>{{inviter_name}}</strong> has invited you to set up <strong>{{tenant_name}}</strong> on XRay BI as the owner.</p>'
+      + '<p style="margin:0 0 16px">Your invitation code is:</p>'
+      + '<div style="background:#0c0e14;border:1px solid #2a2d3a;border-radius:8px;padding:18px;text-align:center;margin:0 0 20px"><code style="font-size:28px;font-weight:600;letter-spacing:.3em;color:#3ee8b5">{{code}}</code></div>'
+      + '<p style="margin:0 0 12px">Or click to finish setting up your account in one step:</p>'
+      + '<p style="margin:0 0 16px"><a href="{{link}}" style="display:inline-block;background:#3ee8b5;color:#0c0e14;text-decoration:none;padding:10px 20px;border-radius:8px;font-weight:600">Accept invitation &rarr;</a></p>'
+      + '<p style="margin:0;color:#8e91a0;font-size:13px">The code and link expire in 10 minutes.</p>'
+    ),
+    text:
+      'Hi {{name}},\n\n{{inviter_name}} has invited you to set up {{tenant_name}} on XRay BI as the owner.\n\n'
+      + 'Your invitation code is: {{code}}\n\n'
+      + 'Or visit this link to accept: {{link}}\n\n'
+      + 'Code and link expire in 10 minutes.',
+    variables: ['name', 'inviter_name', 'tenant_name', 'code', 'link'],
+    description: 'Sent when a platform admin invites a tenant owner via Admin → Tenants',
+  },
+  {
     key: 'invitation',
     subject: "You're invited to join {{tenant_name}} on XRay",
     html: wrap(
@@ -146,8 +173,9 @@ export const DEFAULT_TEMPLATES: DefaultTemplate[] = [
 // Idempotent upsert: INSERT only when the key is missing. Admin-edited
 // templates are preserved. Safe to call on every boot.
 export async function seedDefaultTemplates(): Promise<{ inserted: number; skipped: number }> {
+  // platform.email_templates is on the no-RLS carve-out per migration
+  // 029. Boot-time seed runs before any tenant exists; plain withClient.
   return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
     let inserted = 0;
     let skipped = 0;
     for (const tpl of DEFAULT_TEMPLATES) {

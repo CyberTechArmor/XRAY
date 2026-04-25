@@ -1,4 +1,4 @@
-import { withClient, withTransaction } from '../db/connection';
+import { withClient, withTransaction, withAdminClient } from '../db/connection';
 import { AppError } from '../middleware/error-handler';
 
 interface Tenant {
@@ -102,8 +102,9 @@ export async function listTenants(): Promise<Tenant[]> {
 }
 
 export async function getTenantDetail(tenantId: string): Promise<TenantDetail> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Platform-admin inspection of any tenant — crosses tenants for the
+  // users / dashboards / connections counts below (all RLS-enabled).
+  return withAdminClient(async (client) => {
     const tenantResult = await client.query(
       'SELECT * FROM platform.tenants WHERE id = $1',
       [tenantId]

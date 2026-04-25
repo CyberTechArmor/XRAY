@@ -1,4 +1,4 @@
-import { withAdminClient } from '../db/connection';
+import { withAdminClient, withUserContext } from '../db/connection';
 
 // ── Types ──
 export interface Thread {
@@ -37,7 +37,13 @@ export async function listThreads(
   offset = 0,
   archived = false
 ): Promise<Thread[]> {
-  return withAdminClient(async (client) => {
+  // Every user — including platform admins — views their own inbox
+  // from their own user_id. The user_scope RLS policy added in
+  // migration 030 gates the three inbox tables against
+  // app.current_user_id. The app-layer WHERE tp.user_id = $1 below
+  // remains as a redundant filter (RLS is the safety net).
+  void isPlatformAdmin;
+  return withUserContext(tenantId, userId, async (client) => {
 
     let whereClause = `tp.user_id = $1`;
     const params: any[] = [userId, limit, offset];
@@ -103,11 +109,15 @@ export async function listThreads(
 // ── Get messages in a thread ──
 export async function getThreadMessages(
   threadId: string,
-  userId: string
+  userId: string,
+  tenantId: string
 ): Promise<Message[]> {
-  return withAdminClient(async (client) => {
+  return withUserContext(tenantId, userId, async (client) => {
 
-    // Verify user is a participant
+    // Verify user is a participant. Under user_scope RLS this SELECT
+    // only sees participant rows for the acting user, so an empty
+    // result means either the thread doesn't exist or the user isn't
+    // part of it — both map to the same 403.
     const partCheck = await client.query(
       `SELECT 1 FROM platform.inbox_thread_participants WHERE thread_id = $1 AND user_id = $2`,
       [threadId, userId]
@@ -122,15 +132,25 @@ export async function getThreadMessages(
       [threadId, userId]
     );
 
-    // Get messages (oldest first, newest at bottom)
-    const result = await client.query(`
+    // Get messages (oldest first, newest at bottom). JOIN on
+    // platform.users crosses tenant boundaries (thread participants
+    // can live in different tenants), but under withUserContext the
+    // messages table is already filtered by the thread-participants
+    // EXISTS subquery. The users table doesn't have user_scope RLS —
+    // it has tenant_isolation, and under user_scope context tenant
+    // isolation returns zero rows (tenant_id != current_tenant). So
+    // the sender_name/sender_email columns would be NULL for any
+    // sender outside the acting user's tenant. That's technically a
+    // regression for support threads. Fall back to admin bypass just
+    // for the message SELECT so cross-tenant sender labels survive.
+    const result = await withAdminClient(async (adminClient) => adminClient.query(`
       SELECT m.id, m.thread_id, m.sender_id, m.body, m.created_at,
         u.name AS sender_name, u.email AS sender_email
       FROM platform.inbox_messages m
       JOIN platform.users u ON u.id = m.sender_id
       WHERE m.thread_id = $1
       ORDER BY m.created_at ASC
-    `, [threadId]);
+    `, [threadId]));
 
     return result.rows;
   });
@@ -220,8 +240,10 @@ export async function sendMessage(
 }
 
 // ── Toggle star ──
-export async function toggleStar(threadId: string, userId: string): Promise<boolean> {
-  return withAdminClient(async (client) => {
+export async function toggleStar(threadId: string, userId: string, tenantId: string): Promise<boolean> {
+  // user_scope RLS allows the acting user to update their own
+  // participant row.
+  return withUserContext(tenantId, userId, async (client) => {
     const result = await client.query(
       `UPDATE platform.inbox_thread_participants SET is_starred = NOT is_starred
        WHERE thread_id = $1 AND user_id = $2 RETURNING is_starred`,
@@ -233,8 +255,8 @@ export async function toggleStar(threadId: string, userId: string): Promise<bool
 }
 
 // ── Toggle archive ──
-export async function toggleArchive(threadId: string, userId: string): Promise<boolean> {
-  return withAdminClient(async (client) => {
+export async function toggleArchive(threadId: string, userId: string, tenantId: string): Promise<boolean> {
+  return withUserContext(tenantId, userId, async (client) => {
     const result = await client.query(
       `UPDATE platform.inbox_thread_participants SET is_archived = NOT COALESCE(is_archived, false)
        WHERE thread_id = $1 AND user_id = $2 RETURNING is_archived`,
@@ -335,7 +357,21 @@ export async function getThreadParticipants(threadId: string): Promise<string[]>
 }
 
 // ── Get unread count ──
-export async function getUnreadCount(userId: string): Promise<number> {
+export async function getUnreadCount(userId: string, tenantId?: string): Promise<number> {
+  // Called from multiple contexts — the route handler has tenantId
+  // from the JWT; the push-notification fan-out in sendMessage only
+  // has participant user ids (they can live in any tenant, so we
+  // don't thread a single tenantId through). When tenantId is absent
+  // fall back to admin bypass; platform_admin_bypass covers the read.
+  if (tenantId) {
+    return withUserContext(tenantId, userId, async (client) => {
+      const result = await client.query(
+        `SELECT COUNT(*) FROM platform.inbox_thread_participants WHERE user_id = $1 AND is_read = false`,
+        [userId]
+      );
+      return parseInt(result.rows[0].count, 10);
+    });
+  }
   return withAdminClient(async (client) => {
     const result = await client.query(
       `SELECT COUNT(*) FROM platform.inbox_thread_participants WHERE user_id = $1 AND is_read = false`,

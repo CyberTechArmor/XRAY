@@ -1,4 +1,4 @@
-import { withClient, withTransaction } from '../db/connection';
+import { withAdminClient, withAdminTransaction } from '../db/connection';
 import { encryptSecret, decryptSecret } from './encrypted-column';
 import {
   exchangeWithRetry,
@@ -109,8 +109,9 @@ export async function tick(): Promise<{
 }
 
 async function selectDueConnections(): Promise<string[]> {
-  return withClient(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Cross-tenant by design — scheduler iterates every connected tenant
+  // each tick. `withAdminClient` makes the bypass explicit.
+  return withAdminClient(async (client) => {
     // oauth_access_token_expires_at IS NULL covers the "just connected,
     // never refreshed" case — callback wrote tokens and trusted the
     // scheduler to verify, or we're recovering from a clock skew.
@@ -135,8 +136,9 @@ async function selectDueConnections(): Promise<string[]> {
 // advisory lock + the row update are a coherent unit. Exported so tests
 // can drive it deterministically with a mocked fetcher.
 export async function refreshOneConnection(connectionId: string): Promise<boolean> {
-  return withTransaction(async (client) => {
-    await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+  // Runs under scheduler context with no end-user tenant scope; refresh
+  // can touch any tenant's connection by id. Admin bypass explicit.
+  return withAdminTransaction(async (client) => {
     // Advisory lock keyed on the connection UUID. Hashed to bigint
     // because pg_try_advisory_lock takes bigint. Stable within cluster.
     const lockResult = await client.query(

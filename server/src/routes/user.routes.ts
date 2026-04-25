@@ -209,9 +209,8 @@ router.get('/', authenticateJWT, requirePermission('users.view'), async (req, re
 // GET /:id/dashboard-access - list dashboards a user has access to (JWT, users.manage)
 router.get('/:id/dashboard-access', authenticateJWT, requirePermission('users.manage'), async (req, res, next) => {
   try {
-    const { withClient } = await import('../db/connection');
-    const result = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const { withTenantContext } = await import('../db/connection');
+    const result = await withTenantContext(req.user!.tid, async (client) => {
       const r = await client.query(
         `SELECT da.dashboard_id, d.name, d.status, da.created_at as granted_at
          FROM platform.dashboard_access da

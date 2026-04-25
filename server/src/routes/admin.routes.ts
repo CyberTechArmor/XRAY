@@ -102,9 +102,8 @@ router.patch('/tenants/:id/replay', async (req, res, next) => {
     if (typeof replay_enabled !== 'boolean' && typeof replay_visible !== 'boolean') {
       return res.status(400).json({ ok: false, error: { code: 'INVALID_FIELD', message: 'replay_enabled or replay_visible (boolean) required' } });
     }
-    const { withClient } = await import('../db/connection');
-    const result = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const { withAdminClient } = await import('../db/connection');
+    const result = await withAdminClient(async (client) => {
       const sets: string[] = [];
       const vals: any[] = [];
       let idx = 1;
@@ -488,10 +487,9 @@ router.delete('/connections/:id', async (req, res, next) => {
 // GET /connections/:id - get connection detail
 router.get('/connections/:id', async (req, res, next) => {
   try {
-    const { withClient } = await import('../db/connection');
+    const { withAdminClient } = await import('../db/connection');
     const { decryptSecret } = await import('../lib/encrypted-column');
-    const conn = await withClient(async (client) => {
-      await client.query(`SELECT set_config('app.is_platform_admin', 'true', true)`);
+    const conn = await withAdminClient(async (client) => {
       const result = await client.query(
         `SELECT c.*, t.name AS tenant_name, o.email AS owner_email
          FROM platform.connections c
@@ -762,7 +760,8 @@ router.post('/email/test', async (req, res, next) => {
     // Look up user email if `to` is a UUID
     let recipientEmail = to;
     if (to.includes('-') && !to.includes('@')) {
-      const user = await import('../db/connection').then(m => m.withClient(async (client) => {
+      // Admin test-email route — admin looks up any tenant's user by id.
+      const user = await import('../db/connection').then(m => m.withAdminClient(async (client) => {
         const result = await client.query('SELECT email FROM platform.users WHERE id = $1', [to]);
         return result.rows[0];
       }));

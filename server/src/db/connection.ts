@@ -56,6 +56,25 @@ export async function withTenantContext<T>(
   });
 }
 
+// Per-user execution. Sets `app.current_tenant`, `app.current_user_id`,
+// and clears `app.is_platform_admin` so user_scope RLS policies can
+// gate every query against the acting user. Use for user-scoped
+// tables: inbox (migration 030), and — in a future refactor — the
+// ai_* tables that currently ship their own copy of this helper in
+// ai.service.ts (withAiUserContext).
+export async function withUserContext<T>(
+  tenantId: string,
+  userId: string,
+  fn: (client: PoolClient) => Promise<T>
+): Promise<T> {
+  return withClient(async (client) => {
+    await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
+    await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [userId]);
+    await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
+    return fn(client);
+  });
+}
+
 // Platform-admin cross-tenant execution. Sets `app.is_platform_admin`
 // so the `platform_admin_bypass` RLS policy lets the query see every
 // tenant's rows. Use for admin UI, fan-out dispatch iterating

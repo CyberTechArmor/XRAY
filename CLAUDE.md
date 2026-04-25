@@ -66,10 +66,17 @@ Guardrails:
   `withAdminClient`. A local `bypassRLS` helper in a service file
   is the same anti-pattern.
 - **Retiring `withClient`** is ongoing. See
-  `.claude/withclient-audit.md` for the current roster; admin surface
-  (`admin.service.ts`, `admin.routes.ts`, `portability.service.ts`)
-  and unauth flows (`auth.service.ts`) still use it as the shared
-  primitive.
+  `.claude/withclient-audit.md` for the current roster.
+  Post-step-7 the allow-list is stable and enforced by
+  `scripts/check-withclient-allowlist.sh` (run via the pre-commit hook
+  at `.githooks/pre-commit`; enable once per clone with
+  `git config core.hooksPath .githooks`). Only these files may call
+  `withClient()` directly:
+  `db/connection.ts`, `services/auth.service.ts`,
+  `services/settings.service.ts`, `services/email.service.ts`,
+  `services/email-templates.ts`, `services/meet.service.ts`,
+  `services/rbac.service.ts`, `services/role.service.ts`,
+  `services/tenant.service.ts`. All touch carve-out / unauth paths.
 - **RLS policies live in `init.sql` + `migrations/*.sql`.** Any new
   tenant-scoped table needs a `tenant_isolation` policy and a
   `platform_admin_bypass` policy before the application layer starts
