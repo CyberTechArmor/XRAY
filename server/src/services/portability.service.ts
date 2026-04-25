@@ -15,6 +15,13 @@ interface ExportOptions {
   roles?: boolean;
   emailTemplates?: boolean;
   connectionTemplates?: boolean;
+  // Step 7 (C4) gap-fill sections.
+  platformSettings?: boolean;
+  apiKeys?: boolean;
+  webhooks?: boolean;
+  integrations?: boolean;
+  dashboardTenantGrants?: boolean;
+  dashboardShares?: boolean;
 }
 
 /**
@@ -30,7 +37,8 @@ export async function exportPlatform(opts: ExportOptions, userId?: string): Prom
     // ── Tenants + members + billing + notes ──
     if (opts.tenants !== false) {
       const tenants = await client.query(
-        `SELECT t.*, bs.plan_tier, bs.dashboard_limit, bs.payment_status
+        `SELECT t.*, bs.plan_tier, bs.dashboard_limit, bs.payment_status,
+                bs.stripe_subscription_id, bs.current_period_end
          FROM platform.tenants t
          LEFT JOIN platform.billing_state bs ON bs.tenant_id = t.id
          ORDER BY t.created_at`
@@ -150,6 +158,72 @@ export async function exportPlatform(opts: ExportOptions, userId?: string): Prom
     if (opts.connectionTemplates !== false) {
       const templates = await client.query('SELECT * FROM platform.connection_templates ORDER BY name');
       data.connection_templates = templates.rows;
+    }
+
+    // ── Step 7 (C4) gap-fill sections ──
+    //
+    // platform_settings is a global key/value table. Secret values
+    // are encrypted under ENCRYPTION_KEY (see docs/operator.md);
+    // the export carries the ciphertext as-is so the destination
+    // platform must use the SAME ENCRYPTION_KEY to decrypt.
+    if (opts.platformSettings !== false) {
+      const settings = await client.query(
+        'SELECT key, value, is_secret, updated_at FROM platform.platform_settings ORDER BY key'
+      );
+      data.platform_settings = settings.rows;
+    }
+
+    // api_keys: hashed key (never plaintext) + scopes + flags. Tenants
+    // re-issue keys after import if they want fresh hashes.
+    if (opts.apiKeys !== false) {
+      const keys = await client.query(
+        `SELECT id, tenant_id, name, key_prefix, key_hash, scopes, created_by,
+                is_active, expires_at, created_at
+         FROM platform.api_keys ORDER BY created_at`
+      );
+      data.api_keys = keys.rows;
+    }
+
+    // webhooks: target_url + secret (encrypted) + events filter.
+    if (opts.webhooks !== false) {
+      const wh = await client.query(
+        `SELECT id, tenant_id, name, target_url, secret, events, is_active,
+                last_triggered_at, failure_count, created_by, created_at, updated_at
+         FROM platform.webhooks ORDER BY created_at`
+      );
+      data.webhooks = wh.rows;
+    }
+
+    // integrations: catalog rows. client_secret is encrypted under
+    // ENCRYPTION_KEY; same caveat as platform_settings secrets.
+    if (opts.integrations !== false) {
+      const integ = await client.query(
+        'SELECT * FROM platform.integrations ORDER BY slug'
+      );
+      data.integrations = integ.rows;
+    }
+
+    // dashboard_tenant_grants (migration 027): which tenant has
+    // access to which Custom Global dashboard.
+    if (opts.dashboardTenantGrants !== false) {
+      const grants = await client.query(
+        `SELECT dashboard_id, tenant_id, granted_by, created_at
+         FROM platform.dashboard_tenant_grants
+         ORDER BY created_at`
+      );
+      data.dashboard_tenant_grants = grants.rows;
+    }
+
+    // dashboard_shares (migration 028): per-(dashboard, sharing-tenant)
+    // public share rows for Globals.
+    if (opts.dashboardShares !== false) {
+      const shares = await client.query(
+        `SELECT dashboard_id, tenant_id, public_token, is_public,
+                created_by, created_at, updated_at
+         FROM platform.dashboard_shares
+         ORDER BY created_at`
+      );
+      data.dashboard_shares = shares.rows;
     }
   });
 
@@ -290,16 +364,28 @@ export async function importPlatform(zipBuffer: Buffer, userId?: string): Promis
 
     // ── Import tenants ──
     if (dataFiles.tenants) {
+      // stripe_customer_id added to the whitelist (step 7 C4) so a
+      // moved-host install can keep its Stripe customer linkage
+      // without re-registering — webhook reverse-lookups depend on it.
       const { imported, skipped } = await importRows(client, 'platform.tenants', dataFiles.tenants, 'id',
-        ['id', 'name', 'slug', 'owner_user_id', 'status', 'created_at', 'updated_at']);
+        ['id', 'name', 'slug', 'owner_user_id', 'status', 'stripe_customer_id', 'created_at', 'updated_at']);
       result.imported.tenants = imported;
       result.skipped.tenants = skipped;
 
-      // Create billing state for new tenants
+      // Create billing state for new tenants. stripe_subscription_id
+      // + current_period_end round-trip so subscriptions don't appear
+      // "missing" on the destination host before the next webhook.
       for (const tenant of dataFiles.tenants) {
         if (tenant.plan_tier) {
           await safeInsert(client, 'platform.billing_state',
-            { tenant_id: tenant.id, plan_tier: tenant.plan_tier, dashboard_limit: tenant.dashboard_limit ?? 0, payment_status: tenant.payment_status ?? 'none' },
+            {
+              tenant_id: tenant.id,
+              plan_tier: tenant.plan_tier,
+              dashboard_limit: tenant.dashboard_limit ?? 0,
+              payment_status: tenant.payment_status ?? 'none',
+              stripe_subscription_id: tenant.stripe_subscription_id ?? null,
+              current_period_end: tenant.current_period_end ?? null,
+            },
             'tenant_id');
         }
       }
@@ -391,6 +477,66 @@ export async function importPlatform(zipBuffer: Buffer, userId?: string): Promis
         ['id', 'name', 'description', 'fetch_method', 'fetch_url', 'fetch_headers', 'fetch_body']);
       result.imported.connection_templates = imported;
       result.skipped.connection_templates = skipped;
+    }
+
+    // ── Step 7 (C4) gap-fill imports ──
+
+    // platform_settings — global key/value. Secrets are ciphertext;
+    // destination ENCRYPTION_KEY must match the source's, otherwise
+    // decrypt will throw at read time (encrypted-column strict mode).
+    if (dataFiles.platform_settings) {
+      const { imported, skipped } = await importRows(client, 'platform.platform_settings', dataFiles.platform_settings, 'key',
+        ['key', 'value', 'is_secret', 'updated_at']);
+      result.imported.platform_settings = imported;
+      result.skipped.platform_settings = skipped;
+    }
+
+    // integrations — catalog. client_secret is encrypted under
+    // ENCRYPTION_KEY; same caveat as platform_settings.
+    if (dataFiles.integrations) {
+      const { imported, skipped } = await importRows(client, 'platform.integrations', dataFiles.integrations, 'id',
+        ['id', 'slug', 'display_name', 'description', 'image_url', 'auth_url', 'token_url',
+         'client_id', 'client_secret', 'scopes', 'extra_authorize_params', 'status',
+         'supports_oauth', 'supports_api_key', 'fan_out_url', 'fan_out_window_default',
+         'fan_out_history_limit_runs', 'fan_out_history_retention_days',
+         'created_at', 'updated_at']);
+      result.imported.integrations = imported;
+      result.skipped.integrations = skipped;
+    }
+
+    // api_keys — hashed key + flags. After import tenants may want to
+    // rotate; the hash is stable but the plaintext is gone forever.
+    if (dataFiles.api_keys) {
+      const { imported, skipped } = await importRows(client, 'platform.api_keys', dataFiles.api_keys, 'id',
+        ['id', 'tenant_id', 'name', 'key_prefix', 'key_hash', 'scopes', 'created_by',
+         'is_active', 'expires_at', 'created_at']);
+      result.imported.api_keys = imported;
+      result.skipped.api_keys = skipped;
+    }
+
+    // webhooks — secret is encrypted under ENCRYPTION_KEY.
+    if (dataFiles.webhooks) {
+      const { imported, skipped } = await importRows(client, 'platform.webhooks', dataFiles.webhooks, 'id',
+        ['id', 'tenant_id', 'name', 'target_url', 'secret', 'events', 'is_active',
+         'last_triggered_at', 'failure_count', 'created_by', 'created_at', 'updated_at']);
+      result.imported.webhooks = imported;
+      result.skipped.webhooks = skipped;
+    }
+
+    // dashboard_tenant_grants — Custom Global access grants.
+    if (dataFiles.dashboard_tenant_grants) {
+      const { imported, skipped } = await importRows(client, 'platform.dashboard_tenant_grants', dataFiles.dashboard_tenant_grants, 'dashboard_id,tenant_id',
+        ['dashboard_id', 'tenant_id', 'granted_by', 'created_at']);
+      result.imported.dashboard_tenant_grants = imported;
+      result.skipped.dashboard_tenant_grants = skipped;
+    }
+
+    // dashboard_shares — per-(dashboard, sharing-tenant) public links.
+    if (dataFiles.dashboard_shares) {
+      const { imported, skipped } = await importRows(client, 'platform.dashboard_shares', dataFiles.dashboard_shares, 'dashboard_id,tenant_id',
+        ['dashboard_id', 'tenant_id', 'public_token', 'is_public', 'created_by', 'created_at', 'updated_at']);
+      result.imported.dashboard_shares = imported;
+      result.skipped.dashboard_shares = skipped;
     }
   });
 
