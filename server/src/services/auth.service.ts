@@ -234,7 +234,14 @@ async function createMagicLink(
   purpose: string,
   tenantId?: string,
   metadata?: Record<string, unknown>,
-  fingerprint?: MagicLinkFingerprint
+  // Step 10 (post-deploy): fingerprint parameter retained for
+  // signature stability while the issuer_ip_hash / issuer_ua_hash
+  // columns are deliberately left NULL on issuance. The migration-037
+  // columns + the MagicLinkFingerprint type stay so a future commit
+  // can re-enable storage+enforce behind an operator-flippable flag
+  // without churning every caller. Today's posture: NULL out, no
+  // verify-side compare.
+  _fingerprint?: MagicLinkFingerprint
 ): Promise<{ code: string; token: string }> {
   const code = generateCode(6);
   const token = generateToken(48);
@@ -246,14 +253,11 @@ async function createMagicLink(
   await withClient(async (client) => {
     await client.query(
       `INSERT INTO platform.magic_links
-         (email, code, token_hash, purpose, tenant_id, metadata, expires_at,
-          issuer_ip_hash, issuer_ua_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (email, code, token_hash, purpose, tenant_id, metadata, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         email, code, tokenHash, purpose, tenantId || null,
         metadata ? JSON.stringify(metadata) : null, expiresAt,
-        fingerprint?.ipHash || null,
-        fingerprint?.uaHash || null,
       ]
     );
   });

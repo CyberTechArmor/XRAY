@@ -9,7 +9,6 @@ import * as authService from '../services/auth.service';
 import * as totpService from '../services/totp.service';
 import * as backupCodesService from '../services/backup-codes.service';
 import { recordAuthAttempt, attachAttemptCounters } from '../middleware/auth-attempts';
-import { requestFingerprint } from '../middleware/rate-limit';
 import { issueCsrfCookie, clearCsrfCookie } from '../middleware/csrf';
 import { withAdminClient } from '../db/connection';
 
@@ -127,7 +126,7 @@ router.post('/setup', async (req, res, next) => {
 router.post('/signup', async (req, res, next) => {
   try {
     const data = validateBody(signupSchema, req.body);
-    const result = await authService.initiateSignup({ ...data, fingerprint: requestFingerprint(req) });
+    const result = await authService.initiateSignup(data);
     res.json({
       ok: true,
       data: result,
@@ -143,7 +142,7 @@ router.post('/verify', async (req, res, next) => {
   const emailLower = (req.body?.email as string | undefined)?.toLowerCase().trim() || '';
   try {
     const data = validateBody(verifySchema, req.body);
-    const magicLink = await authService.verifyCode({ ...data, fingerprint: requestFingerprint(req) });
+    const magicLink = await authService.verifyCode(data);
     let tokens;
     if (magicLink.purpose === 'signup') {
       tokens = await authService.completeSignup(magicLink);
@@ -182,7 +181,7 @@ router.post('/verify', async (req, res, next) => {
 router.post('/verify-token', async (req, res, next) => {
   try {
     const data = validateBody(verifyTokenSchema, req.body);
-    const magicLink = await authService.verifyToken(data.token, requestFingerprint(req));
+    const magicLink = await authService.verifyToken(data.token);
     let tokens;
     if (magicLink.purpose === 'signup') {
       tokens = await authService.completeSignup(magicLink);
@@ -230,7 +229,7 @@ router.post('/select-tenant', async (req, res, next) => {
 router.post('/login/begin', async (req, res, next) => {
   try {
     const data = validateBody(loginBeginSchema, req.body);
-    const result = await authService.initiateLogin(data.email, requestFingerprint(req));
+    const result = await authService.initiateLogin(data.email);
     res.json({
       ok: true,
       data: result,
@@ -246,7 +245,7 @@ router.post('/login/complete', async (req, res, next) => {
   const emailLower = (req.body?.email as string | undefined)?.toLowerCase().trim() || '';
   try {
     const data = validateBody(verifySchema, req.body);
-    const magicLink = await authService.verifyCode({ ...data, fingerprint: requestFingerprint(req) });
+    const magicLink = await authService.verifyCode(data);
     const tokens = await authService.completeLogin(magicLink);
     await recordAuthAttempt(emailLower, req, true);
     if (isMfaPending(tokens)) {
@@ -302,7 +301,7 @@ router.post('/passkey/complete', async (req, res, next) => {
 router.post('/magic-link', async (req, res, next) => {
   try {
     const data = validateBody(magicLinkSchema, req.body);
-    const result = await authService.initiateLogin(data.email, requestFingerprint(req));
+    const result = await authService.initiateLogin(data.email);
     res.json({
       ok: true,
       data: result,
@@ -317,7 +316,7 @@ router.post('/magic-link', async (req, res, next) => {
 router.post('/recover', async (req, res, next) => {
   try {
     const data = validateBody(magicLinkSchema, req.body);
-    const result = await authService.initiateRecovery(data.email, requestFingerprint(req));
+    const result = await authService.initiateRecovery(data.email);
     res.json({
       ok: true,
       data: result,
