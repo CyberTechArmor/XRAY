@@ -4,6 +4,8 @@ import { requirePermission } from '../middleware/rbac';
 import { validateBody, validateQuery, userUpdateSchema, paginationSchema } from '../lib/validation';
 import * as userService from '../services/user.service';
 import * as authService from '../services/auth.service';
+import * as portabilityService from '../services/portability.service';
+import { issueCsrfCookie, clearCsrfCookie } from '../middleware/csrf';
 
 const router = Router();
 
@@ -39,6 +41,7 @@ router.post('/me/switch-tenant', authenticateJWT, async (req, res, next) => {
       path: '/api/auth',
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
+    await issueCsrfCookie(res);
     res.json({
       ok: true,
       data: { accessToken: tokens.accessToken, sessionId: tokens.sessionId },
@@ -54,6 +57,46 @@ router.post('/me/switch-tenant', authenticateJWT, async (req, res, next) => {
 router.get('/me', authenticateJWT, requirePermission('account.view'), async (req, res, next) => {
   try {
     const result = await userService.getProfile(req.user!.sub);
+    res.json({
+      ok: true,
+      data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /me/export - GDPR Art. 20 user data export (JSON-in-ZIP).
+// Streams a ZIP containing the calling user's tenant-scoped data
+// + an immutable manifest. Audit-logged inside portabilityService
+// so a failed download still leaves a trail.
+router.get('/me/export', authenticateJWT, async (req, res, next) => {
+  try {
+    const buf = await portabilityService.exportUser(req.user!.tid, req.user!.sub);
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="xray-export-${req.user!.sub}-${stamp}.zip"`,
+    );
+    res.send(buf);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /me - soft-delete the calling user's account (GDPR Art. 17).
+// Cascade-clears sessions/passkeys/TOTP/backup codes, sets
+// status='deactivated', preserves audit trail. Tenant owner is
+// blocked unless the tenant has no other active members. Clears the
+// refresh + CSRF cookies so the now-deactivated session can't make
+// further calls.
+router.delete('/me', authenticateJWT, async (req, res, next) => {
+  try {
+    const result = await userService.deleteOwnAccount(req.user!.tid, req.user!.sub);
+    res.clearCookie('refresh_token', { path: '/api/auth' });
+    clearCsrfCookie(res);
     res.json({
       ok: true,
       data: result,

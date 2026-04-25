@@ -4,6 +4,7 @@ import { requirePermission } from '../middleware/rbac';
 import { validateBody, validateQuery, invitationCreateSchema, invitationAcceptSchema, paginationSchema } from '../lib/validation';
 import * as invitationService from '../services/invitation.service';
 import { config } from '../config';
+import { issueCsrfCookie } from '../middleware/csrf';
 
 const router = Router();
 
@@ -37,6 +38,7 @@ router.post('/accept', async (req, res, next) => {
         path: '/api/auth',
         maxAge: config.jwt.refreshTokenExpiry,
       });
+      await issueCsrfCookie(res);
     }
 
     res.json({

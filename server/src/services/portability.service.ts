@@ -291,6 +291,165 @@ export async function exportPlatform(opts: ExportOptions, userId?: string): Prom
   return zipBuffer;
 }
 
+// ─── Step 10: per-user export (GDPR Art. 20) ────────────────
+//
+// Returns a ZIP containing the calling user's tenant-scoped data
+// shape — sessions, passkeys (no public-key material), TOTP
+// confirmation marker, audit log entries authored by or about
+// them, inbox messages they wrote, dashboards they created. JSON
+// files inside the ZIP mirror the full-platform export's shape
+// but every query is filtered by user_id, never by tenant scope
+// alone. The manifest carries a kind='user-export' marker to
+// distinguish it from the admin-driven platform export.
+
+export async function exportUser(tenantId: string, userId: string): Promise<Buffer> {
+  const data: Record<string, unknown> = {};
+
+  // withAdminClient (not withTenantContext) because some of these
+  // tables — passkeys, sessions, totp — have RLS but the owner
+  // semantic the user_id filter encodes is stricter than the
+  // tenant_isolation policy. Admin bypass + explicit user_id
+  // WHERE clause is the more honest shape; the alternative would
+  // need every query to also pass app.current_user_id.
+  await withAdminClient(async (client) => {
+    const userRow = await client.query(
+      `SELECT u.id, u.tenant_id, u.email, u.name, u.is_owner, u.status,
+              u.auth_method, u.last_login_at, u.created_at, u.updated_at,
+              r.slug AS role_slug, r.name AS role_name
+         FROM platform.users u
+         JOIN platform.roles r ON r.id = u.role_id
+        WHERE u.id = $1 AND u.tenant_id = $2`,
+      [userId, tenantId]
+    );
+    if (userRow.rows.length === 0) {
+      throw new AppError(404, 'NOT_FOUND', 'User not found');
+    }
+    data.user = userRow.rows[0];
+
+    // Sessions: device + last-active timestamps. Refresh-token
+    // hashes are deliberately excluded — they're internal.
+    const sessions = await client.query(
+      `SELECT id, tenant_id, device_info, expires_at,
+              created_at, last_active_at, impersonator_user_id
+         FROM platform.user_sessions
+        WHERE user_id = $1
+        ORDER BY created_at DESC`,
+      [userId]
+    );
+    data.sessions = sessions.rows;
+
+    // Passkeys: nickname + transports + counter + timestamps.
+    // public_key (and credential_id) are deliberately excluded:
+    // exporting them gives the user nothing actionable and
+    // increases the surface for credential confusion attacks.
+    const passkeys = await client.query(
+      `SELECT id, device_name, transports, counter, backed_up, created_at, last_used_at
+         FROM platform.user_passkeys
+        WHERE user_id = $1
+        ORDER BY created_at`,
+      [userId]
+    );
+    data.passkeys = passkeys.rows;
+
+    // TOTP confirmation marker. The encrypted secret never leaves
+    // the DB, so the export only carries "yes/no enrolled" + timing.
+    const totpRow = await client.query(
+      `SELECT confirmed_at, created_at FROM platform.user_totp_secrets WHERE user_id = $1`,
+      [userId]
+    );
+    data.totp = totpRow.rows[0] || null;
+
+    // Backup-code remaining count. The hashes themselves are
+    // worthless to the user (they can't reverse the bcrypt) so
+    // we surface the count + per-row creation timestamps only.
+    const backup = await client.query(
+      `SELECT id, used_at, created_at FROM platform.user_backup_codes
+        WHERE user_id = $1
+        ORDER BY created_at`,
+      [userId]
+    );
+    data.backup_codes = backup.rows;
+
+    // Audit log: rows where this user was the actor OR the
+    // resource. Surfaces the full trail of "things I did" + "things
+    // done to me" — Art. 20 expects both.
+    const audit = await client.query(
+      `SELECT id, tenant_id, user_id, action, resource_type, resource_id,
+              metadata, created_at
+         FROM platform.audit_log
+        WHERE user_id = $1
+           OR (resource_type = 'user' AND resource_id = $1::text)
+        ORDER BY created_at`,
+      [userId]
+    );
+    data.audit_log = audit.rows;
+
+    // Inbox messages sent by the user. (sender_id is the column
+    // name on platform.inbox_messages.)
+    const inbox = await client.query(
+      `SELECT id, thread_id, body, created_at FROM platform.inbox_messages
+        WHERE sender_id = $1
+        ORDER BY created_at`,
+      [userId]
+    );
+    data.inbox_messages = inbox.rows;
+
+    // Dashboard access grants explicitly held by this user. (The
+    // dashboards table has no per-row `created_by` column today;
+    // user-level provenance is captured by dashboard_access rows.)
+    const access = await client.query(
+      `SELECT da.id, da.dashboard_id, da.granted_by, da.created_at,
+              d.name AS dashboard_name, d.tenant_id
+         FROM platform.dashboard_access da
+         JOIN platform.dashboards d ON d.id = da.dashboard_id
+        WHERE da.user_id = $1
+          AND d.tenant_id = $2
+        ORDER BY da.created_at`,
+      [userId, tenantId]
+    );
+    data.dashboard_access = access.rows;
+  });
+
+  // Build the archive.
+  const chunks: Buffer[] = [];
+  const passThrough = new PassThrough();
+  passThrough.on('data', (chunk: Buffer) => chunks.push(chunk));
+
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  archive.pipe(passThrough);
+
+  const manifest = {
+    version: '1.0.0',
+    platform: 'xray-bi',
+    kind: 'user-export',
+    user_id: userId,
+    tenant_id: tenantId,
+    exported_at: new Date().toISOString(),
+    sections: Object.keys(data),
+  };
+  archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
+
+  for (const [key, rows] of Object.entries(data)) {
+    archive.append(JSON.stringify(rows, null, 2), { name: `data/${key}.json` });
+  }
+
+  await archive.finalize();
+  await new Promise<void>((resolve) => passThrough.on('end', resolve));
+
+  const zipBuffer = Buffer.concat(chunks);
+
+  auditService.log({
+    tenantId,
+    userId,
+    action: 'user.export.request',
+    resourceType: 'user',
+    resourceId: userId,
+    metadata: { size: zipBuffer.length, sections: Object.keys(data) },
+  });
+
+  return zipBuffer;
+}
+
 // ─── Import ────────────────────────────────────────────────
 
 interface ImportResult {

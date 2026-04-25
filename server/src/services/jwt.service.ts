@@ -12,6 +12,11 @@ interface AccessTokenInput {
   has_admin?: boolean;
   has_billing?: boolean;
   has_replay?: boolean;
+  // Step 10: present only when the platform admin has clicked
+  // "Impersonate owner" on a tenant. Carries the original admin's
+  // identity so the SPA can render the persistent red banner and
+  // surface a "Stop impersonating" CTA without an extra round-trip.
+  imp?: { admin_id: string; admin_email: string };
 }
 
 export function signAccessToken(payload: AccessTokenInput): string {

@@ -217,11 +217,24 @@ async function getUserFlags(userId: string): Promise<{ has_admin: boolean; has_b
   });
 }
 
+// Step 10: optional issuance fingerprint that binds the link row
+// to the originating IP+UA. consumeFingerprint() on the verify
+// side recomputes hashes from the consuming request and rejects
+// mismatches with LINK_FINGERPRINT_MISMATCH. Both fields are
+// nullable for the upgrade window — links issued without a
+// fingerprint (admin-driven invites, pre-migration in-flight
+// links) skip the gate.
+export interface MagicLinkFingerprint {
+  ipHash?: string;
+  uaHash?: string;
+}
+
 async function createMagicLink(
   email: string,
   purpose: string,
   tenantId?: string,
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>,
+  fingerprint?: MagicLinkFingerprint
 ): Promise<{ code: string; token: string }> {
   const code = generateCode(6);
   const token = generateToken(48);
@@ -232,9 +245,16 @@ async function createMagicLink(
   // migration 029 (no RLS); stays on plain withClient.
   await withClient(async (client) => {
     await client.query(
-      `INSERT INTO platform.magic_links (email, code, token_hash, purpose, tenant_id, metadata, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [email, code, tokenHash, purpose, tenantId || null, metadata ? JSON.stringify(metadata) : null, expiresAt]
+      `INSERT INTO platform.magic_links
+         (email, code, token_hash, purpose, tenant_id, metadata, expires_at,
+          issuer_ip_hash, issuer_ua_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        email, code, tokenHash, purpose, tenantId || null,
+        metadata ? JSON.stringify(metadata) : null, expiresAt,
+        fingerprint?.ipHash || null,
+        fingerprint?.uaHash || null,
+      ]
     );
   });
 
@@ -439,6 +459,11 @@ export async function initiateSignup(input: {
   // through the same magic-link + completeSignup machinery — only the
   // outbound email differs.
   invitation?: { inviterName: string };
+  // Step 10: bind the magic-link row to the issuing IP+UA. Omitted
+  // for admin-driven invites where the recipient differs from the
+  // request originator — those links accept consumption from any
+  // device because the issuance hash would never match.
+  fingerprint?: MagicLinkFingerprint;
 }): Promise<{ message: string }> {
   // Pre-signup existence checks run BEFORE a tenant exists, and
   // deliberately scan every tenant for email / name / slug collisions.
@@ -489,7 +514,7 @@ export async function initiateSignup(input: {
   const { code, token } = await createMagicLink(input.email, 'signup', undefined, {
     name: input.name,
     tenantName: input.tenantName,
-  });
+  }, input.fingerprint);
 
   // Fire-and-forget: don't block the response on SMTP. Choose
   // template based on whether this signup originates from a platform
@@ -511,7 +536,10 @@ export async function initiateSignup(input: {
   return { message: 'Verification email sent. Please check your inbox.' };
 }
 
-export async function initiateLogin(email: string): Promise<{ message: string }> {
+export async function initiateLogin(
+  email: string,
+  fingerprint?: MagicLinkFingerprint,
+): Promise<{ message: string }> {
   // Check if user exists — find ALL active accounts for this email
   // across every tenant. Admin bypass explicit.
   const users = await withAdminClient(async (client) => {
@@ -529,7 +557,7 @@ export async function initiateLogin(email: string): Promise<{ message: string }>
 
   // Use the first user's tenant_id for the magic link (tenant selection happens at completeLogin)
   const user = users[0];
-  const { code, token } = await createMagicLink(email, 'login', user.tenant_id);
+  const { code, token } = await createMagicLink(email, 'login', user.tenant_id, undefined, fingerprint);
 
   // Fire-and-forget: don't block the response on SMTP
   sendTemplateEmail('login_code', email, {
@@ -546,6 +574,11 @@ export async function initiateLogin(email: string): Promise<{ message: string }>
 export async function verifyCode(input: {
   email: string;
   code: string;
+  // Step 10: optional fingerprint to compare against the row's
+  // issuer_ip_hash / issuer_ua_hash. When both row columns are
+  // populated AND both incoming hashes are present, mismatch
+  // throws LINK_FINGERPRINT_MISMATCH (and decrements attempts).
+  fingerprint?: MagicLinkFingerprint;
 }): Promise<MagicLink> {
   // magic_links is on the carve-out (no RLS); plain withClient.
   return withClient(async (client) => {
@@ -596,6 +629,36 @@ export async function verifyCode(input: {
       );
     }
 
+    // Step 10: fingerprint check. Both row columns AND both
+    // incoming hashes must be present for the gate to engage —
+    // skip-on-NULL keeps pre-migration links + admin-driven invite
+    // links consumable from any device. A mismatch decrements the
+    // per-link attempts counter so a determined attacker still
+    // hits the per-link 5-attempt lockout.
+    const rowIp = (magicLink as any).issuer_ip_hash as string | null | undefined;
+    const rowUa = (magicLink as any).issuer_ua_hash as string | null | undefined;
+    const inIp = input.fingerprint?.ipHash || '';
+    const inUa = input.fingerprint?.uaHash || '';
+    const fingerprintArmed = !!rowIp && !!rowUa && !!inIp && !!inUa;
+    if (fingerprintArmed && (rowIp !== inIp || rowUa !== inUa)) {
+      const updated = await client.query(
+        `UPDATE platform.magic_links
+            SET attempts = attempts + 1,
+                used = (attempts + 1 >= $2)
+          WHERE id = $1
+        RETURNING attempts`,
+        [magicLink.id, maxAttempts]
+      );
+      const newAttempts: number = updated.rows[0]?.attempts ?? magicLink.attempts + 1;
+      const remaining = Math.max(0, maxAttempts - newAttempts);
+      throw new AppError(
+        400,
+        'LINK_FINGERPRINT_MISMATCH',
+        'This code was requested from a different device. Please request a new one from this device.',
+        { attempts_remaining: remaining }
+      );
+    }
+
     if (magicLink.code !== input.code) {
       const updated = await client.query(
         `UPDATE platform.magic_links
@@ -624,7 +687,10 @@ export async function verifyCode(input: {
   });
 }
 
-export async function verifyToken(token: string): Promise<MagicLink> {
+export async function verifyToken(
+  token: string,
+  fingerprint?: MagicLinkFingerprint,
+): Promise<MagicLink> {
   const tokenHash = hashToken(token);
 
   // magic_links is on the carve-out (no RLS); plain withClient.
@@ -649,6 +715,21 @@ export async function verifyToken(token: string): Promise<MagicLink> {
 
     if (new Date(magicLink.expires_at) <= new Date()) {
       throw new AppError(400, 'MAGIC_LINK_EXPIRED', 'This link has expired. Please request a new one.');
+    }
+
+    // Step 10: fingerprint check, same skip-on-NULL semantics as
+    // verifyCode. Click-through-link consumption from a different
+    // device is the canonical phishing-or-leaked-link signal.
+    const rowIp = (magicLink as any).issuer_ip_hash as string | null | undefined;
+    const rowUa = (magicLink as any).issuer_ua_hash as string | null | undefined;
+    const inIp = fingerprint?.ipHash || '';
+    const inUa = fingerprint?.uaHash || '';
+    if (rowIp && rowUa && inIp && inUa && (rowIp !== inIp || rowUa !== inUa)) {
+      throw new AppError(
+        400,
+        'LINK_FINGERPRINT_MISMATCH',
+        'This link was opened on a different device. Please request a new one from your original device.',
+      );
     }
 
     // Mark as used
@@ -1055,7 +1136,10 @@ export async function loginToTenant(email: string, tenantId: string): Promise<To
   });
 }
 
-export async function initiateRecovery(email: string): Promise<{ message: string }> {
+export async function initiateRecovery(
+  email: string,
+  fingerprint?: MagicLinkFingerprint,
+): Promise<{ message: string }> {
   // Pre-recovery lookup by email — crosses tenants by construction.
   const user = await withAdminClient(async (client) => {
     const result = await client.query(
@@ -1070,7 +1154,7 @@ export async function initiateRecovery(email: string): Promise<{ message: string
     return { message: 'If an account exists, a recovery email has been sent.' };
   }
 
-  const { code, token } = await createMagicLink(email, 'verify', user.tenant_id);
+  const { code, token } = await createMagicLink(email, 'verify', user.tenant_id, undefined, fingerprint);
 
   // Fire-and-forget: don't block the response on SMTP
   sendTemplateEmail('account_recovery', email, {

@@ -9,6 +9,8 @@ import * as authService from '../services/auth.service';
 import * as totpService from '../services/totp.service';
 import * as backupCodesService from '../services/backup-codes.service';
 import { recordAuthAttempt, attachAttemptCounters } from '../middleware/auth-attempts';
+import { requestFingerprint } from '../middleware/rate-limit';
+import { issueCsrfCookie, clearCsrfCookie } from '../middleware/csrf';
 import { withAdminClient } from '../db/connection';
 
 const router = Router();
@@ -25,8 +27,13 @@ function setRefreshCookie(res: Response, refreshToken: string) {
   });
 }
 
-function sendTokenPair(res: Response, tokens: { accessToken: string; refreshToken: string; sessionId: string }, req: any) {
+async function sendTokenPair(res: Response, tokens: { accessToken: string; refreshToken: string; sessionId: string }, req: any) {
   setRefreshCookie(res, tokens.refreshToken);
+  // Step 10: pair every refresh-cookie issuance with a fresh CSRF
+  // cookie so the SPA can mirror it into X-CSRF-Token on every
+  // state-changing request. Cookie value is HMAC-signed under
+  // platform_settings.csrf_signing_secret.
+  await issueCsrfCookie(res);
   res.json({
     ok: true,
     data: { accessToken: tokens.accessToken, sessionId: tokens.sessionId },
@@ -110,7 +117,7 @@ router.post('/setup', async (req, res, next) => {
   try {
     const data = validateBody(signupSchema, req.body);
     const tokens = await authService.firstBootSetup(data);
-    sendTokenPair(res, tokens, req);
+    await sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
   }
@@ -120,7 +127,7 @@ router.post('/setup', async (req, res, next) => {
 router.post('/signup', async (req, res, next) => {
   try {
     const data = validateBody(signupSchema, req.body);
-    const result = await authService.initiateSignup(data);
+    const result = await authService.initiateSignup({ ...data, fingerprint: requestFingerprint(req) });
     res.json({
       ok: true,
       data: result,
@@ -136,7 +143,7 @@ router.post('/verify', async (req, res, next) => {
   const emailLower = (req.body?.email as string | undefined)?.toLowerCase().trim() || '';
   try {
     const data = validateBody(verifySchema, req.body);
-    const magicLink = await authService.verifyCode(data);
+    const magicLink = await authService.verifyCode({ ...data, fingerprint: requestFingerprint(req) });
     let tokens;
     if (magicLink.purpose === 'signup') {
       tokens = await authService.completeSignup(magicLink);
@@ -164,7 +171,7 @@ router.post('/verify', async (req, res, next) => {
       });
       return;
     }
-    sendTokenPair(res, tokens, req);
+    await sendTokenPair(res, tokens, req);
   } catch (err) {
     if (emailLower) await recordAuthAttempt(emailLower, req, false);
     next(err);
@@ -175,7 +182,7 @@ router.post('/verify', async (req, res, next) => {
 router.post('/verify-token', async (req, res, next) => {
   try {
     const data = validateBody(verifyTokenSchema, req.body);
-    const magicLink = await authService.verifyToken(data.token);
+    const magicLink = await authService.verifyToken(data.token, requestFingerprint(req));
     let tokens;
     if (magicLink.purpose === 'signup') {
       tokens = await authService.completeSignup(magicLink);
@@ -194,7 +201,7 @@ router.post('/verify-token', async (req, res, next) => {
       });
       return;
     }
-    sendTokenPair(res, tokens, req);
+    await sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
   }
@@ -213,7 +220,7 @@ router.post('/select-tenant', async (req, res, next) => {
       sendMfaPending(res, req, tokens);
       return;
     }
-    sendTokenPair(res, tokens, req);
+    await sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
   }
@@ -223,7 +230,7 @@ router.post('/select-tenant', async (req, res, next) => {
 router.post('/login/begin', async (req, res, next) => {
   try {
     const data = validateBody(loginBeginSchema, req.body);
-    const result = await authService.initiateLogin(data.email);
+    const result = await authService.initiateLogin(data.email, requestFingerprint(req));
     res.json({
       ok: true,
       data: result,
@@ -239,7 +246,7 @@ router.post('/login/complete', async (req, res, next) => {
   const emailLower = (req.body?.email as string | undefined)?.toLowerCase().trim() || '';
   try {
     const data = validateBody(verifySchema, req.body);
-    const magicLink = await authService.verifyCode(data);
+    const magicLink = await authService.verifyCode({ ...data, fingerprint: requestFingerprint(req) });
     const tokens = await authService.completeLogin(magicLink);
     await recordAuthAttempt(emailLower, req, true);
     if (isMfaPending(tokens)) {
@@ -256,7 +263,7 @@ router.post('/login/complete', async (req, res, next) => {
       });
       return;
     }
-    sendTokenPair(res, tokens, req);
+    await sendTokenPair(res, tokens, req);
   } catch (err) {
     if (emailLower) await recordAuthAttempt(emailLower, req, false);
     next(err);
@@ -285,7 +292,7 @@ router.post('/passkey/complete', async (req, res, next) => {
       sendMfaPending(res, req, tokens);
       return;
     }
-    sendTokenPair(res, tokens, req);
+    await sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
   }
@@ -295,7 +302,7 @@ router.post('/passkey/complete', async (req, res, next) => {
 router.post('/magic-link', async (req, res, next) => {
   try {
     const data = validateBody(magicLinkSchema, req.body);
-    const result = await authService.initiateLogin(data.email);
+    const result = await authService.initiateLogin(data.email, requestFingerprint(req));
     res.json({
       ok: true,
       data: result,
@@ -310,7 +317,7 @@ router.post('/magic-link', async (req, res, next) => {
 router.post('/recover', async (req, res, next) => {
   try {
     const data = validateBody(magicLinkSchema, req.body);
-    const result = await authService.initiateRecovery(data.email);
+    const result = await authService.initiateRecovery(data.email, requestFingerprint(req));
     res.json({
       ok: true,
       data: result,
@@ -330,7 +337,7 @@ router.post('/refresh', async (req, res, next) => {
     }
     const tokenHash = hashRefreshToken(rawToken);
     const tokens = await authService.refreshSession(tokenHash);
-    sendTokenPair(res, tokens, req);
+    await sendTokenPair(res, tokens, req);
   } catch (err) {
     next(err);
   }
@@ -341,6 +348,7 @@ router.post('/logout', authenticateJWT, async (req, res, next) => {
   try {
     await authService.logout(req.user!.sub);
     res.clearCookie('refresh_token', { path: '/api/auth' });
+    clearCsrfCookie(res);
     res.json({
       ok: true,
       data: { message: 'Logged out successfully' },
@@ -403,6 +411,7 @@ router.post('/totp/confirm', async (req, res, next) => {
     // gate; issue the full session now.
     const session = await authService.createSession(auth.userId, auth.tenantId);
     setRefreshCookie(res, session.refreshToken);
+    await issueCsrfCookie(res);
     res.json({
       ok: true,
       data: {
@@ -429,7 +438,7 @@ router.post('/totp/verify', async (req, res, next) => {
       throw new AppError(400, 'MISSING_FIELDS', 'mfa_token and code are required');
     }
     const session = await authService.completeMfaVerify(mfaToken, code);
-    sendTokenPair(res, session, req);
+    await sendTokenPair(res, session, req);
   } catch (err) {
     next(err);
   }
