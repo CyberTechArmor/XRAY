@@ -2443,6 +2443,130 @@ Browser-side smoke:
    for support.
 
 
+## Step 8 — CI plumbing (shipped)
+
+Supply-chain plumbing baseline. Branches the repo from "no
+`.github/`, no automated checks" to a 6-commit floor of
+Dependabot, CI typecheck+test, CodeQL SAST, Trivy image scan,
+and gitleaks pre-commit. Most of step 8 is YAML config — only
+two application-touching edits land: `engines.node` + a
+`typecheck` script in `server/package.json`.
+
+### Commit trail (6 commits on `claude/xray-hardening-step-8-QsvZK`)
+
+| # | Concern | Ref |
+|---|---|---|
+| 1 | dependabot.yml — npm + docker + actions | `.github/dependabot.yml` |
+| 2 | ci.yml baseline + typecheck script + engines.node | `.github/workflows/ci.yml`, `server/package.json` |
+| 3 | codeql.yml — javascript-typescript SAST | `.github/workflows/codeql.yml` |
+| 4 | Trivy image-scan job appended to ci.yml | `.github/workflows/ci.yml` |
+| 5 | gitleaks staged-index scan in pre-commit hook | `.githooks/pre-commit`, `CLAUDE.md` |
+| 6 | repo-settings checklist + this section | `.claude/step-8-repo-settings.md`, `CONTEXT.md` |
+
+### What shipped
+
+- **Dependabot** for `npm` (server/, daily, minor+patch grouped),
+  `docker` (server/Dockerfile base, weekly), and
+  `github-actions` (root, weekly, minor+patch grouped). Majors
+  always open their own PR for individual review.
+- **`ci.yml`** with two parallel jobs:
+  - `server`: `actions/setup-node@v4` reading `node-version-file:
+    server/package.json` (the new `engines.node = "20.x"`),
+    `npm ci`, `npm run typecheck`, `npm test`.
+  - `image-scan`: `docker/build-push-action@v6` builds the
+    server image, `aquasecurity/trivy-action@0.28.0` scans
+    OS + library tiers, exits 1 on HIGH/CRITICAL with a fix
+    available. `ignore-unfixed: true` keeps the gate green for
+    CVEs without a published fix; `.trivyignore` at repo root
+    is honored once allow-list entries become necessary.
+- **`codeql.yml`** — `github/codeql-action@v3` with the
+  `security-and-quality` query suite, single-language matrix
+  (`javascript-typescript`). Triggers: push + PR on `main`,
+  weekly Mon 07:23 UTC.
+- **gitleaks pre-commit** — `gitleaks protect --staged --redact
+  --no-banner` runs after the existing withClient guard. Soft-
+  skips with a warning if the binary isn't installed; CI is the
+  authoritative gate.
+- **`engines.node = "20.x"`** in `server/package.json` so CI's
+  setup-node tracks the same Node major as
+  `server/Dockerfile`'s `node:20-alpine`.
+- **`typecheck` script** (`tsc --noEmit`) — first time it has
+  existed in package.json; CI runs it as a hard gate.
+- **`.claude/step-8-repo-settings.md`** — operator checklist for
+  the post-merge GitHub web-UI toggles (Dependabot alerts,
+  secret scanning + push protection, branch protection on main,
+  CodeQL code scanning).
+
+### What didn't ship (deliberately)
+
+- **CODEOWNERS bootstrap commit.** Operator chose option (i):
+  skip, until repo ownership semantics are concrete. `.github/`
+  is created naturally by the dependabot.yml commit, so no
+  empty-bootstrap commit was needed.
+- **Dockerfile lockfile commit.** No-op. Existing `npm ci` in the
+  builder stage and `npm ci --omit=dev` in the production stage
+  is already the modern lockfile-strict + dev-omit form;
+  `--omit=dev` is the GitHub-recommended replacement for the
+  deprecated `--only=production`.
+- **CONTEXT.md close-out as its own commit.** Folded into commit
+  6 alongside the repo-settings doc.
+
+### Acceptance
+
+- `.github/` exists with `dependabot.yml`, `workflows/ci.yml`,
+  `workflows/codeql.yml`.
+- `npm run typecheck` (new script): clean — no diagnostics.
+- `npm test`: 135 passed / 26 skipped (unchanged from step 7's
+  baseline; step 8 adds zero specs).
+- Pre-commit hook still runs the withClient guard, plus gitleaks
+  when the binary is available — no breakage of the step-7
+  guardrail.
+- Server Dockerfile uses `npm ci` (builder) + `npm ci --omit=dev`
+  (production); `server/package-lock.json` committed.
+
+### Env changes
+
+None. No new env vars, no Dockerfile or docker-compose changes.
+
+### Deploy order on the VPS
+
+This step has zero application-runtime changes — `update.sh` is
+not required. The merge → operator hand-off is web-UI only:
+
+1. Merge `claude/xray-hardening-step-8-QsvZK` to `main`.
+2. Operator works through `.claude/step-8-repo-settings.md`,
+   flipping the Dependabot, secret scanning, push protection,
+   branch protection, and code scanning toggles.
+3. First PR after merge surfaces real workflow runs:
+   - `ci / server` (typecheck + test).
+   - `ci / image-scan` (Trivy on the freshly built image).
+   - `codeql / analyze (javascript-typescript)` populates the
+     Security tab.
+4. If Trivy's first run reports HIGH/CRITICAL with a published
+   fix, expect Dependabot to open the bump PR within 24 h.
+   Findings without a fix are auto-tolerated by
+   `ignore-unfixed: true`. Surface persistent false positives
+   in `.trivyignore` (root) with a one-line rationale.
+
+### Verify
+
+- After flipping repo settings, push a no-op commit on a test
+  branch and open a PR against main. Confirm:
+  - `ci / server` and `ci / image-scan` both green.
+  - `codeql / analyze` attached.
+  - The three checks appear in the "Required status checks"
+    list and can be marked required.
+- Per-clone, run `git config core.hooksPath .githooks` once.
+  Attempt a commit containing a fake AWS access key — verify
+  the gitleaks step blocks the commit (post-installing the
+  gitleaks binary first).
+- Inspect the Security tab post-CodeQL-run; expect a baseline
+  set of advisory-severity findings (likely zero
+  high-severity). Defer triage to the next session if any
+  HIGH/CRITICAL surface — step 8 ships the visibility, not the
+  remediation pass.
+
+
 ## Roadmap — steps 8 through 21
 
 Forward-looking. Each row is one Claude Code session unless
@@ -2453,7 +2577,7 @@ everything after that is hygiene + post-launch upgrades.
 
 | # | Step | Est. commits | Scope |
 |---|---|---|---|
-| 8 | CI plumbing | 6-8 | Dependabot, GitHub secret scanning, gitleaks pre-commit, `npm ci` in Dockerfile + lockfile-strict, CodeQL workflow, Trivy image scan. Small protective baseline. |
+| 8 | CI plumbing | 6 (shipped) | Dependabot, GitHub secret scanning, gitleaks pre-commit, CodeQL workflow, Trivy image scan, `engines.node` + `typecheck` script. See "Step 8 — CI plumbing (shipped)" above. |
 | 9 | Brute-force + MFA hardening | 12-15 | App-layer rate limiting (100/min per IP+device, 20/day per user_id on `/api/auth/*`); TOTP enrollment + verify + backup codes alongside existing passkey path; magic-link per-link attempt counter + "N attempts left" banner; passkey enumeration guard; `require_mfa_for_platform_admins` flag in `platform_settings`. |
 | 10 | Auth surface area cleanup | 10-13 | CSRF (double-submit token); session rotation on login + impersonation start/stop; impersonation start/stop UI + persistent banner; magic-link IP/UA binding; account-deletion cascade endpoint; GDPR Art. 20 data-export endpoint. |
 | 11 | Privacy & compliance docs | 10-12 | `policy_documents` versioned append-only table; admin markdown editor in Admin → Policies; public `/legal/<slug>` routes; `policy_acceptances` table + re-acceptance modal on version bump; cookie banner on landing; slugs: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. |
