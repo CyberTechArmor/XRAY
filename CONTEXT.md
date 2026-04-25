@@ -2347,6 +2347,10 @@ and threads it through. Self-signups unchanged.
 
 ### What didn't ship (deferred to post-step-7)
 
+The "deferred" list below is superseded by the formal roadmap
+section at the end of this file ("Roadmap — steps 8 through 21").
+It's preserved here for the historical record of step 7's scope.
+
 - **VAPID / push polish (C6).** Inline `CREATE TABLE IF NOT EXISTS`
   in push.service should move to a proper migration; VAPID keys
   should move from env to platform_settings. Low priority — only
@@ -2437,3 +2441,80 @@ Browser-side smoke:
 4. As a regular tenant user, open Inbox — only the user's own
    threads are visible. As a platform admin, every thread visible
    for support.
+
+
+## Roadmap — steps 8 through 21
+
+Forward-looking. Each row is one Claude Code session unless
+flagged "multi-session". Production-readiness is gated on step 12;
+everything after that is hygiene + post-launch upgrades.
+
+### Pre-launch critical path
+
+| # | Step | Est. commits | Scope |
+|---|---|---|---|
+| 8 | CI plumbing | 6-8 | Dependabot, GitHub secret scanning, gitleaks pre-commit, `npm ci` in Dockerfile + lockfile-strict, CodeQL workflow, Trivy image scan. Small protective baseline. |
+| 9 | Brute-force + MFA hardening | 12-15 | App-layer rate limiting (100/min per IP+device, 20/day per user_id on `/api/auth/*`); TOTP enrollment + verify + backup codes alongside existing passkey path; magic-link per-link attempt counter + "N attempts left" banner; passkey enumeration guard; `require_mfa_for_platform_admins` flag in `platform_settings`. |
+| 10 | Auth surface area cleanup | 10-13 | CSRF (double-submit token); session rotation on login + impersonation start/stop; impersonation start/stop UI + persistent banner; magic-link IP/UA binding; account-deletion cascade endpoint; GDPR Art. 20 data-export endpoint. |
+| 11 | Privacy & compliance docs | 10-12 | `policy_documents` versioned append-only table; admin markdown editor in Admin → Policies; public `/legal/<slug>` routes; `policy_acceptances` table + re-acceptance modal on version bump; cookie banner on landing; slugs: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. |
+| 12 | Pipeline DB Model D + backups + PROBE_RLS in CI | 12-15 | Per `.claude/pipeline-hardening-notes.md` Model D: `tenant_id` + RLS + `app.current_tenant` per-workflow; `pipeline_user` role split (no ownership); pg_basebackup + WAL archiving + documented + tested restore drill in `docs/operator.md`; GitHub Actions runs `PROBE_RLS=1 npx vitest run src/db/rls-probe.test.ts` against ephemeral Postgres on every PR. **PRODUCTION READY AFTER THIS STEP.** |
+
+### Pre-launch nice-to-have (clears the deck — optional)
+
+| # | Step | Est. commits | Scope |
+|---|---|---|---|
+| 13 | Mini-queue cleanup bundle | 8-10 | VAPID/push polish (move inline `CREATE TABLE` to migration; VAPID keys env → platform_settings); ai.service `withAiUserContext` consolidation onto `db/connection.withUserContext`; ESLint custom rule replacing `scripts/check-withclient-allowlist.sh`; Admin "Last failure" column UI wiring. |
+| 14 | Globals starter pack | 5-8 | Admin UI option to export Globals + integrations catalog + email templates as a shareable "starter pack" zip. Deferred C7 from step 7. |
+
+### Post-launch
+
+| # | Step | Est. commits | Scope |
+|---|---|---|---|
+| 15 | Pipeline DB Model J | 8-10 | Per `.claude/pipeline-hardening-notes.md` Model J: `pipeline.authorize(jwt)` SECURITY DEFINER + RS256 verification + per-tenant key rotation; replaces D's "trust the app" model with verify-at-DB. |
+| 16-21 | `dashboards.view_html/css/js` retirement track | 6 sessions × ~10 commits | Multi-session per `.claude/dashboard-view-columns-audit.md`: (16) move static payload to new cache shape, (17) reader migration, (18) backfill migration, (19) writer migration, (20) portability migration, (21) drop columns. Recommended *deferred* — pure architectural cleanup, no user-facing or security benefit. |
+
+### Production-readiness gate
+
+After step 12, the system meets:
+
+- **Tenant data isolation:** RLS top-to-bottom (platform DB step
+  6/7, pipeline DB step 12).
+- **Auth strength:** Passkey + TOTP + backup codes; MFA-required
+  for admins; brute-force throttled at 100/min device + 20/day
+  user.
+- **Session hygiene:** CSRF-protected, rotated on auth state
+  change, impersonation visible.
+- **Privacy compliance:** T&C + privacy + cookie + DPA + AUP +
+  sub-processors all admin-editable + versioned + acceptance-
+  tracked; GDPR Art. 17 + 20 endpoints.
+- **Supply chain:** SCA + SAST + container scanning + secrets
+  scanning all in CI.
+- **Backups:** WAL-archive + tested restore drill.
+- **Audit trail:** platform.audit_log + pipeline.access_audit
+  (Model D's foundation, expanded in Model J at step 15).
+
+What's still gapped after step 12 (out of scope for "production
+ready," addressed under separate tracks):
+
+- **Observability** — centralized logs + metrics + alerting.
+  Operator-track, separate from this roadmap.
+- **SOC 2 Type II audit** — organizational controls
+  (onboarding, access reviews, vendor management, IR runbook,
+  training, change-management evidence). Policy + process work
+  with an auditor, ~6-month engagement.
+- **HIPAA** — N/A unless customer profile changes to PHI.
+- **Pipeline DB Model J** — D is the production-ready floor; J
+  hardens against an n8n compromise (step 15).
+
+### How "must ship before signup" was determined
+
+The gate isn't *importance* — it's *whether deferring leaves a
+permanent gap or breaks a contract you can't unsign*:
+
+- **Tier 1 (hard blockers, regulatory/data-shape):** all of
+  step 11, backups + restore drill (folded into step 12),
+  pipeline DB Model D (step 12).
+- **Tier 2 (strong, exposure-window cost):** step 9, step 10,
+  step 8's secret-scanning + Dependabot subset.
+- **Tier 3 (defer-with-no-penalty):** steps 13, 14, 15, 16-21,
+  observability.
