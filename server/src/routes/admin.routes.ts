@@ -21,6 +21,9 @@ import * as adminService from '../services/admin.service';
 import * as auditService from '../services/audit.service';
 import * as integrationService from '../services/integration.service';
 import * as fanOutService from '../services/fan-out.service';
+import * as impersonationService from '../services/impersonation.service';
+import { issueCsrfCookie } from '../middleware/csrf';
+import { hashRefreshToken } from '../lib/crypto';
 import { config } from '../config';
 
 const router = Router();
@@ -149,6 +152,84 @@ router.patch('/tenants/:id/status', async (req, res, next) => {
     res.json({
       ok: true,
       data: result,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Step 10: platform-admin impersonation ──────────────────────────────────
+//
+// Start: POST /api/admin/impersonate/:tenantId/:userId mints a NEW
+// session as the target user with impersonator_user_id set to the
+// caller. Browser swaps to the new tokens; the access-token JWT
+// carries an `imp` claim so the SPA renders a persistent red banner.
+//
+// Stop: POST /api/admin/impersonate/stop tears down the impersonation
+// session row, mints a fresh session for the original admin from the
+// `imp` claim, and returns the admin tokens. The browser swaps back.
+
+function setRefreshCookie(res: any, refreshToken: string) {
+  res.cookie('refresh_token', refreshToken, {
+    httpOnly: true,
+    secure: config.nodeEnv === 'production',
+    sameSite: 'lax',
+    path: '/api/auth',
+    maxAge: config.jwt.refreshTokenExpiry,
+  });
+}
+
+router.post('/impersonate/stop', async (req, res, next) => {
+  try {
+    if (!req.user!.imp || !req.user!.imp.admin_id) {
+      return res.status(400).json({
+        ok: false,
+        error: { code: 'NOT_IMPERSONATING', message: 'Current session is not an impersonation session' },
+      });
+    }
+    const rawToken = req.cookies?.refresh_token;
+    if (!rawToken) {
+      return res.status(401).json({
+        ok: false,
+        error: { code: 'NO_TOKEN', message: 'No refresh token' },
+      });
+    }
+    const tokens = await impersonationService.stopImpersonation({
+      impersonationRefreshTokenHash: hashRefreshToken(rawToken),
+      adminUserId: req.user!.imp.admin_id,
+    });
+    setRefreshCookie(res, tokens.refreshToken);
+    await issueCsrfCookie(res);
+    res.json({
+      ok: true,
+      data: { accessToken: tokens.accessToken, sessionId: tokens.sessionId },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/impersonate/:tenantId/:userId', async (req, res, next) => {
+  try {
+    if (req.user!.imp) {
+      // Block nested impersonation. The operator should /stop first.
+      return res.status(409).json({
+        ok: false,
+        error: { code: 'ALREADY_IMPERSONATING', message: 'Stop the current impersonation before starting another' },
+      });
+    }
+    const tokens = await impersonationService.startImpersonation({
+      adminUserId: req.user!.sub,
+      targetTenantId: req.params.tenantId,
+      targetUserId: req.params.userId,
+    });
+    setRefreshCookie(res, tokens.refreshToken);
+    await issueCsrfCookie(res);
+    res.json({
+      ok: true,
+      data: { accessToken: tokens.accessToken, sessionId: tokens.sessionId },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
     });
   } catch (err) {
