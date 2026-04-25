@@ -2856,7 +2856,7 @@ MFA-verify, impersonation start, impersonation stop) inserts
 a fresh `user_sessions` row via `createSession`, and
 `refreshSession` already rotated on refresh from step 6.
 
-### Commit trail (14 commits on `claude/xray-hardening-step-10-4RQgy`)
+### Commit trail (20 commits on `claude/xray-hardening-step-10-4RQgy`)
 
 | # | Concern | Ref |
 |---|---|---|
@@ -2874,6 +2874,13 @@ a fresh `user_sessions` row via `createSession`, and
 | 11 | `exportUser` + `GET /api/users/me/export` (Art. 20) | `services/portability.service.ts`, `routes/user.routes.ts` |
 | 12 | frontend Account → Privacy card | `bundles/general.json` |
 | 13 | `csrf.test.ts` — issuance + verify + skip-list specs | `middleware/csrf.test.ts` |
+| 14 | CONTEXT.md handoff (this section) | `CONTEXT.md` |
+| 15 | CI fix — narrow `imp` claim from JWTPayload\|ApiKeyPayload union | `routes/admin.routes.ts` |
+| 16 | CI fix — bump `aquasecurity/trivy-action@0.28.0` → `v0.36.0` (tag retired) | `.github/workflows/ci.yml` |
+| 17 | CSRF skip-list — add 4 missing bootstrap paths + rename `/passkey/finish` → `/passkey/complete` | `middleware/csrf.ts` |
+| 18 | magic-link fingerprint enforcement → store-only; replay beacon CSRF bypass | `services/auth.service.ts`, `middleware/csrf.ts`, `frontend/app.js` |
+| 19 | disable IP/UA hash gates (rate limiters off, fingerprint storage NULL'd) per operator request | `index.ts`, `services/auth.service.ts`, `routes/auth.routes.ts` |
+| 20 | fix verify INTERNAL_ERROR — CSRF lazy-seed `updated_by` UUID type | `services/settings.service.ts`, `middleware/csrf.ts` |
 
 The kickoff allocated 10–13 commits; final landed shape is 13
 plus the kickoff doc (commit 0). One-concern-per-commit
@@ -3129,6 +3136,65 @@ their email to confirm, destructive-action standard shape) →
 the "transfer ownership first" message inline. On success,
 clear localStorage and redirect to `/`.
 
+### Post-deploy hardening (commits 15–20)
+
+Six fixes landed after the initial 14-commit bundle hit the VPS,
+each driven by an operator-observed regression. None changed the
+shape of the step-10 deliverables — all kept the migrations,
+services, routes, and frontend surfaces in place.
+
+- **15** — CI typecheck failed on `req.user.imp` access in the
+  impersonation routes because `req.user` is the
+  `JWTPayload | ApiKeyPayload` union. Narrowed via `'imp' in
+  req.user` so API-key callers (which can never carry `imp`) yield
+  undefined cleanly. Local typecheck had passed because `npx tsc`
+  without `node_modules` silently degrades to a permissive
+  resolver — `npm ci && npm run typecheck` is the real gate.
+- **16** — `aquasecurity/trivy-action@0.28.0` no longer resolves
+  on GitHub Actions; upstream shifted to v-prefixed semver tags
+  between step 8 ship date and now. Bumped to `v0.36.0`. The 2s
+  failure timing was the giveaway — well under the time it would
+  take Trivy to actually run.
+- **17** — CSRF skip-list missed `/api/auth/magic-link`,
+  `/api/auth/recover`, `/api/auth/select-tenant`,
+  `/api/auth/login/complete`, and named `/passkey/finish` instead
+  of the real `/passkey/complete`. Symptom: clicking "Send me a
+  code" returned 403 CSRF_INVALID because the user had no CSRF
+  cookie pre-auth. Audited every `router.post` in `auth.routes.ts`
+  to confirm parity.
+- **18** — Magic-link IP/UA fingerprint enforcement turned out to
+  block legitimate cross-device sign-in (request code on laptop,
+  click email link in a different default browser). Reduced to
+  storage-only — the migration-037 columns still capture the
+  forensic value. The `LINK_FINGERPRINT_MISMATCH` frontend
+  retryable-error entry was dropped. Same commit added
+  `/api/v1/replay/sessions/.../beacon` to the CSRF bypass since
+  `navigator.sendBeacon` cannot set headers (Beacon API has no
+  header support).
+- **19** — Per operator request, disabled both step-9 IP/UA-hash
+  rate limiters: the per-email-24h `auth_attempts` ledger had
+  accumulated 20+ failure rows from prior debug cycles and was
+  triggering AUTH_LOCKOUT on every fresh sign-in, and the
+  IP+device 100/60s gate was too tight for the operator's working
+  pattern. Mounts removed from `index.ts`, fingerprint storage
+  on magic-link issuance NULL'd out. Migrations 035 + 037 stay
+  applied; `globalIpDeviceLimiter`, `perEmailAuthAttemptLimiter`,
+  `requestFingerprint`, and `MagicLinkFingerprint` all stay in
+  the tree so a future commit can re-arm them behind an
+  operator-flippable `auth_rate_limit_enabled` platform setting.
+- **20** — Verify path returned `INTERNAL_ERROR` after every
+  successful primary-auth because the CSRF lazy-seed crashed.
+  `updateSettings({ csrf_signing_secret }, 'system')` bound the
+  string `'system'` to `platform_settings.updated_by`, which is
+  a `UUID` column with FK to `users(id)`. Postgres rejected with
+  `invalid input syntax for type uuid`. The seed's race-tolerance
+  try/catch swallowed the error → second `getSetting` returned
+  null → explicit `Error('csrf_signing_secret seed failed')` →
+  errorHandler surfaced as `INTERNAL_ERROR`. Fix: extended
+  `updateSettings(updates, userId: string | null)` and pass null
+  for system writes. Pre-existing CSRF tests passed because the
+  fake-pool harness didn't enforce the UUID type.
+
 ### What didn't ship (deliberately)
 
 Per the kickoff's "Step 10 must NOT do" list:
@@ -3150,6 +3216,28 @@ Per the kickoff's "Step 10 must NOT do" list:
   kickoff anticipated one but every transition turned out to
   insert a fresh `user_sessions` row via `createSession`, so
   the helper would have had no caller.
+
+### Follow-up backlog (post-step-10)
+
+Items the post-deploy hardening pulled out of step 10's scope and
+deferred to a future commit (likely folded into step 11 or step 13):
+
+- **Re-enable IP/UA-hash gates behind `auth_rate_limit_enabled`
+  platform setting.** Migrations + middleware + helpers stay in
+  the tree; the mounts in `index.ts` and the magic-link
+  fingerprint storage in `createMagicLink` need to be re-armed
+  conditionally on the setting. Default off until UX thresholds
+  are calibrated. The setting needs a Platform Settings UI toggle.
+- **Magic-link fingerprint enforcement behind
+  `enforce_magic_link_fingerprint` platform setting.** Separate
+  flag from the rate-limiter one because the threat models
+  differ (fingerprint catches link-leak phishing; rate limit
+  catches brute-force). Both default off pending UX validation.
+- **Tenant ownership-transfer surface** so the
+  `OWNER_DELETE_BLOCKED` path has somewhere to point users.
+- **Soft-delete hard-purge cron** for `users WHERE status =
+  'deactivated' AND updated_at < NOW() - INTERVAL '30 days'`
+  plus cascade-clear of any orphaned references.
 
 ### Acceptance
 
@@ -3291,7 +3379,7 @@ everything after that is hygiene + post-launch upgrades.
 |---|---|---|---|
 | 8 | CI plumbing | 6 (shipped) | Dependabot, GitHub secret scanning, gitleaks pre-commit, CodeQL workflow, Trivy image scan, `engines.node` + `typecheck` script. See "Step 8 — CI plumbing (shipped)" above. |
 | 9 | Brute-force + MFA hardening | 14 (shipped) | App-layer rate limiting (100/60s IP+device, 20/24h per email on `/api/auth/*`); TOTP enrollment + verify + backup codes alongside existing passkey path; magic-link per-link attempt counter + "N attempts left" banner; passkey enumeration guard; `require_mfa_for_platform_admins` flag in `platform_settings`. See "Step 9 — Brute-force + MFA hardening (shipped)" above. |
-| 10 | Auth surface area cleanup | 13 (shipped) | CSRF (double-submit token); session rotation on auth state change (implicit via `createSession` at every transition); impersonation start/stop UI + persistent banner; magic-link IP/UA fingerprint binding; account-deletion cascade endpoint (soft-delete); GDPR Art. 20 data-export endpoint. See "Step 10 — Auth surface area cleanup (shipped)" above. |
+| 10 | Auth surface area cleanup | 20 (shipped) | CSRF (double-submit token); session rotation on auth state change (implicit via `createSession` at every transition); impersonation start/stop UI + persistent banner; magic-link IP/UA fingerprint capture (enforcement deferred behind a flag); account-deletion cascade endpoint (soft-delete); GDPR Art. 20 data-export endpoint. Post-deploy hardening dropped IP/UA-hash gates pending operator-flippable re-enable. See "Step 10 — Auth surface area cleanup (shipped)" above. |
 | 11 | Privacy & compliance docs | 10-12 | `policy_documents` versioned append-only table; admin markdown editor in Admin → Policies; public `/legal/<slug>` routes; `policy_acceptances` table + re-acceptance modal on version bump; cookie banner on landing; slugs: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. |
 | 12 | Pipeline DB Model D + backups + PROBE_RLS in CI | 12-15 | Per `.claude/pipeline-hardening-notes.md` Model D: `tenant_id` + RLS + `app.current_tenant` per-workflow; `pipeline_user` role split (no ownership); pg_basebackup + WAL archiving + documented + tested restore drill in `docs/operator.md`; GitHub Actions runs `PROBE_RLS=1 npx vitest run src/db/rls-probe.test.ts` against ephemeral Postgres on every PR. **PRODUCTION READY AFTER THIS STEP.** |
 
