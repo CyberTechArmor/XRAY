@@ -79,22 +79,19 @@ app.use((req, _res, next) => {
   next();
 });
 
-// Step 9 brute-force throttling. Two tiers run before route mounting:
+// Step 10 (post-deploy): IP/UA hash-based rate limiters are
+// temporarily disabled per operator request — the per-email-24h
+// counter was carrying over prior failed-debug attempts and
+// blocking legitimate sign-in retries, and the IP+device tier
+// was too tight for the operator's working pattern. Both
+// middlewares + the auth_attempts table stay in the tree so a
+// future commit can re-enable them behind an operator-flippable
+// platform setting (`auth_rate_limit_enabled`) once the UX
+// thresholds are calibrated.
 //
-//   Tier 1 — globalIpDeviceLimiter: 100 req/60s per (IP + UA + lang)
-//            fingerprint. Skips /api/health, /api/embed/*, /api/share/*
-//            (separate buckets for public surfaces).
-//
-//   Tier 2 — perEmailAuthAttemptLimiter: scoped to /api/auth/*. DB-backed
-//            failure counter against platform.auth_attempts (migration
-//            035), trailing 24h window. Hard 429 with retry-after at 20
-//            failures; req.attemptCounters carries the remaining count
-//            below the limit so handlers can surface a "N attempts left"
-//            banner via attachAttemptCounters() in the response body.
-//
-// See server/src/middleware/rate-limit.ts and middleware/auth-attempts.ts
-// for the exact thresholds + skip predicate.
-app.use(globalIpDeviceLimiter);
+// Keep the imports referenced so a re-enable is a one-line edit.
+void globalIpDeviceLimiter;
+void perEmailAuthAttemptLimiter;
 
 // Step 10 CSRF (double-submit cookie). State-changing methods
 // (POST/PUT/PATCH/DELETE) on browser-cookie-authenticated routes
@@ -112,7 +109,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 // Mount routes
-app.use('/api/auth', perEmailAuthAttemptLimiter, authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/stripe', stripeRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/users', userRoutes);
