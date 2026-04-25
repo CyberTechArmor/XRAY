@@ -2173,3 +2173,267 @@ on-prem migration — pre-flight (schema sync, encryption key
 inventory, Stripe/OAuth URI staging), cutover window (pg_dump,
 restore, file sync, secret rotation, webhook/DNS flip), and
 post-cutover (probe re-run, audit monitoring, vps-old decommission).
+
+
+## Step 7 — Platform security baseline close-out (shipped)
+
+The "step 6 ratchet" milestone. Every tenant-data path on the
+platform DB is RLS-enforced (not relying on app-layer WHERE
+tenant_id alone), the embed endpoint no longer leaks upstream
+config, future regressions are blocked by a pre-commit rule, and
+the cross-tenant probe covers every RLS-enabled table.
+
+### Commit trail (24 commits on `claude/xray-platform-hardening-AY4dd`)
+
+| # | Concern | Ref |
+|---|---|---|
+| A1 | dashboard.service per-function tenant context | `services/dashboard.service.ts` |
+| A2 | connection.routes → withTenantContext | `routes/connection.routes.ts` |
+| A3 | inbox.routes → withAdminClient (cross-tenant lookups) | `routes/inbox.routes.ts` |
+| A4 | user.routes → withTenantContext | `routes/user.routes.ts` |
+| A5 | oauth.routes → tenant/admin split | `routes/oauth.routes.ts` |
+| A6 | dashboard.routes → named helpers | `routes/dashboard.routes.ts` |
+| A7 | stripe.routes → tenant/admin split | `routes/stripe.routes.ts` |
+| A8 | admin.service → withAdminClient | `services/admin.service.ts` |
+| A9 | admin.routes → withAdminClient | `routes/admin.routes.ts` |
+| A10 | admin.ai.routes → withAdminClient | `routes/admin.ai.routes.ts` |
+| A11 | portability.service → withAdminClient | `services/portability.service.ts` |
+| A12 | oauth-scheduler → withAdminClient | `lib/oauth-scheduler.ts` |
+| A13 | auth.service → named helpers (U + A split) | `services/auth.service.ts` |
+| A14 | annotate remaining withClient allow-list | settings/email/email-templates |
+| B1 | pre-commit withClient allow-list guard | `scripts/check-withclient-allowlist.sh`, `.githooks/pre-commit` |
+| B2 | widen rls-probe.test.ts coverage | `db/rls-probe.test.ts` |
+| C1 | embed endpoint projection tightening | `services/dashboard.service.ts`, `services/embed-projection.test.ts` |
+| C2 | inbox user_scope RLS + withUserContext helper | `migrations/030_inbox_user_rls.sql`, `db/connection.ts`, `services/inbox.service.ts` |
+| C3 | dashboards.view_html/css/js reader audit (drop deferred) | `.claude/dashboard-view-columns-audit.md` |
+| C4 | portability export/import gap-fill | `services/portability.service.ts`, `docs/operator.md` |
+| C5 | branded `tenant_invitation` email template | `services/email-templates.ts`, `auth.service.ts`, `admin.service.ts` |
+| ix | CONTEXT.md handoff + withclient-audit doc refresh | this section + `.claude/withclient-audit.md` |
+
+### Cluster A — tenant-context tightening
+
+302 audited withClient call sites in step 6 (i) → 0 outside the
+allow-list after step 7. Per-file commits, one concern per commit.
+
+The 14 files in scope (kickoff list) plus a step-6 (iii) sweep
+finish-up:
+  - `services/ai.service.ts` (13 explicit-bypass sites → withAdminClient).
+  - `services/tenant.service.ts` getTenantDetail's admin-bypass site →
+    withAdminClient.
+
+`services/admin.service.ts` was the largest single sweep — 36
+withClient → withAdminClient, 5 withTransaction → withAdminTransaction,
+29 redundant `set_config('app.is_platform_admin', 'true', true)`
+lines deleted (the helpers set it already).
+
+`auth.service.ts` had the most nuance: 18 sites, classified into
+A (admin bypass — pre-tenant lookups, cross-tenant magic-link consume,
+mid-login user_id reads) and U (carve-out tables — magic_links,
+platform_settings). The functional change vs pre-step-7: nested
+inner calls (getUserPermissions / getUserFlags) no longer rely on
+residual set_config state from the outer checkout — each call sets
+its own context deterministically.
+
+`dashboard.service.ts` per-function refinement: 10 functions that
+take a tenantId moved onto withTenantContext / withTenantTransaction.
+makePublic / makePrivate / rotatePublic split — scope probe runs
+under admin bypass via a new resolveDashboardScope helper (Globals
+carry tenant_id NULL on platform.dashboards per migration 025), the
+per-tenant writes run in tenant context.
+
+A bonus latent fix landed in A6: the pre-step-7 dashboard render
+route set is_platform_admin via `String(req.user!.is_platform_admin)`
+which evaluated to 'false' for tenant users and filtered Globals out
+under RLS. Switching to withAdminClient fixes the render path for
+non-admin Global renders — the WHERE clause was always the intended
+gate.
+
+### Cluster B — enforcement + probe coverage
+
+**B1 — pre-commit guard** (`scripts/check-withclient-allowlist.sh`,
+.githooks/pre-commit). Shell-based grep flags any direct
+`withClient(` call outside the post-step-7 allow-list. Designed as
+a pre-commit hook — enable per-clone with
+`git config core.hooksPath .githooks`. The kickoff offered eslint
+or shell; we picked shell because the allow-list is stable and the
+shape is small (~140 lines). An eslint custom rule is deferred
+post-step-7 once the rule shape needs more nuance than grep can
+express.
+
+Allow-list (final, locked):
+- `server/src/db/connection.ts` (helper definitions)
+- `server/src/services/auth.service.ts` (U paths + carve-outs)
+- `server/src/services/settings.service.ts` (platform_settings)
+- `server/src/services/email.service.ts` (email_templates)
+- `server/src/services/email-templates.ts` (boot seed)
+- `server/src/services/meet.service.ts` (platform_settings + tenants)
+- `server/src/services/rbac.service.ts` (roles catalog reads)
+- `server/src/services/role.service.ts` (permissions catalog reads)
+- `server/src/services/tenant.service.ts` (tenants catalog reads)
+
+Every entry touches carve-out tables from migration 029 (no RLS) or
+pre-auth flows.
+
+**B2 — probe widening** (`server/src/db/rls-probe.test.ts`). +18
+new assertions. Pre-step-7: 8 specs covering dashboards, connections,
+render cache, shares, connection_comments, tenant_notes. Post-step-7:
+26 specs adding users, billing_state, audit_log, user_sessions,
+dashboard_access, dashboard_sources, connection_tables, invitations,
+user_passkeys, dashboard_embeds, api_keys, webhooks, file_uploads,
+dashboard_tenant_grants, fan_out_deliveries, plus three for the
+inbox user_scope policies added in migration 030. All gated on
+`PROBE_RLS=1 DATABASE_URL=...`.
+
+### Cluster C — latent security + cleanup
+
+**C1 — embed projection tightening.** GET /api/embed/:token used to
+return `SELECT *` from platform.dashboards, surfacing fetch_url +
+fetch_method + fetch_body + fetch_query_params + bridge_secret to
+any embed-token holder. Embed tokens are RENDER capabilities, not
+config-disclosure capabilities. New `EMBED_PROJECTED_COLUMNS`
+constant projects to the minimal render-ready shape (id, tenant_id,
+name, description, status, scope, template_id, integration,
+is_public, public_token, view_html/css/js, tile_image_url,
+created_at, updated_at). New spec at
+`services/embed-projection.test.ts` locks the projection — CI fails
+if anyone re-introduces fetch_url / etc.
+
+**C2 — inbox user_scope RLS + withUserContext helper.** Migration
+030 enables RLS on inbox_threads, inbox_thread_participants,
+inbox_messages with user_scope policies keyed on
+`app.current_user_id` (transitive via participants for threads +
+messages, since those tables don't carry user_id directly).
+Mirrors migration 016's shape but for user-keyed inbox semantics.
+
+`db/connection.ts` gains `withUserContext(tenantId, userId, fn)` —
+sets current_tenant + current_user_id, clears is_platform_admin.
+Mirrors ai.service's local `withAiUserContext`; retiring that
+duplication is post-step-7.
+
+inbox.service migration:
+- listThreads, toggleStar, toggleArchive, getThreadMessages,
+  getUnreadCount switch to withUserContext.
+- Cross-user writes (sendMessage adding participants, getRecipients,
+  getTenantMembers, getPlatformAdminIds, getThreadParticipants,
+  setThreadTag) stay on withAdminClient.
+
+**C3 — dashboards.view_html/css/js reader audit.** Audit at
+`.claude/dashboard-view-columns-audit.md`. Columns are NOT safely
+retireable today — they're the primary storage for static custom
+dashboards (no fetch_url), feed buildDashboardBundle, and round-trip
+through portability. A six-step retirement plan is captured for a
+post-step-7 follow-up. **No column drop in step 7.**
+
+**C4 — portability export/import gap-fill.** Closes the gaps the
+kickoff called out:
+- tenants.stripe_customer_id added to import whitelist.
+- billing_state.stripe_subscription_id + current_period_end now
+  round-trip via the safeInsert.
+- Six new sections: platform_settings, api_keys, webhooks,
+  integrations, dashboard_tenant_grants, dashboard_shares.
+- `docs/operator.md` gained a "Platform export / import" section
+  documenting `ENCRYPTION_KEY` as a required sidecar (every
+  encrypted column in the export decrypts only with the source's
+  key — destination MUST share it).
+
+**C5 — branded `tenant_invitation` email template.** Default
+template added to `email-templates.DEFAULT_TEMPLATES`. Subject
+"You have been invited to set up {{tenant_name}} on XRay".
+`auth.service.initiateSignup` grew an optional
+`invitation: { inviterName }` param that swaps the outbound template
+from signup_verification → tenant_invitation when present.
+admin.service.inviteTenantOwner resolves the inviter's display name
+and threads it through. Self-signups unchanged.
+
+### What didn't ship (deferred to post-step-7)
+
+- **VAPID / push polish (C6).** Inline `CREATE TABLE IF NOT EXISTS`
+  in push.service should move to a proper migration; VAPID keys
+  should move from env to platform_settings. Low priority — only
+  blocks push features not yet shipped.
+- **Globals-only portability export (C7).** Admin UI option to
+  export Globals + integrations catalog + email templates as a
+  shareable "starter pack". This is a new feature, not a close-out
+  item; deferred so step 7 stays scope-disciplined.
+- **Legacy `dashboards.view_html/css/js` retirement.** Audit shipped
+  as a doc; the actual reader migration + column drop is a multi-
+  session task captured in the audit doc.
+- **ai.service local withAiUserContext duplication.** ai.service
+  has its own copy of the user-scope helper logic. Retiring that in
+  favor of the new `withUserContext` from db/connection.ts is a
+  refactor we deferred to keep step 7 focused on RLS coverage rather
+  than helper consolidation.
+- **ESLint custom rule for the withClient allow-list.** Pre-commit
+  shell grep is enforcing the rule today. ESLint upgrade waits for
+  the rule shape to demand more nuance than grep handles.
+- **Pipeline DB Model D / J.** Still the post-step-7 pipeline
+  hardening track. See `.claude/pipeline-hardening-notes.md`.
+
+### Acceptance
+
+- `npm test`: 135 active specs green (133 step-6 baseline + 2 new
+  embed-projection specs); 26 RLS probe specs skipped without
+  `PROBE_RLS=1` (was 8 pre-step-7).
+- `tsc --noEmit`: clean.
+- `withClient` direct-call count in `server/src` (excluding
+  test files): 13 sites total, all in 9 allow-listed files. Pre-step-7:
+  ~80 sites across 22 files.
+- Cross-tenant probe (`migrations/probes/probe-rls-cross-tenant.sql`):
+  unchanged; still PROBE PASS post-migration 030 (which only adds
+  user_scope policies, doesn't touch tenant_isolation).
+- Embed endpoint manually verified to exclude fetch_url + friends
+  via the EMBED_PROJECTED_COLUMNS constant — projected shape locked
+  by `services/embed-projection.test.ts`.
+
+### Env changes
+
+None. No new env vars, no Dockerfile or docker-compose changes.
+
+### Deploy order on the VPS
+
+Standard `update.sh`:
+- Step 4 re-runs `migrations/*.sql`; migration 030 (inbox user_scope
+  RLS) lands. Idempotent re-run is a no-op.
+- Step 5 rebuilds the server container with the new helpers + new
+  embed projection + branded tenant invitation template.
+- email_templates.seedDefaultTemplates runs on boot and inserts
+  the new `tenant_invitation` row (existing rows preserved via
+  ON CONFLICT DO NOTHING).
+- After rebuild, run the SQL probe from the host to verify the
+  step-6 acceptance still holds:
+  ```
+  docker exec -i xray-postgres psql -U xray -d xray \
+    < migrations/probes/probe-rls-cross-tenant.sql
+  ```
+- Optionally run the widened TS probe against the live DB:
+  ```
+  PROBE_RLS=1 DATABASE_URL=postgres://xray:xray@<host>:5432/xray \
+    npx vitest run src/db/rls-probe.test.ts
+  ```
+
+### Verify on VPS after deploy
+
+```sql
+-- Inbox user_scope policies present (migration 030):
+SELECT tablename, policyname FROM pg_policies
+ WHERE schemaname = 'platform'
+   AND tablename IN ('inbox_threads','inbox_thread_participants','inbox_messages')
+ ORDER BY tablename, policyname;
+
+-- tenant_invitation template seeded:
+SELECT template_key, subject FROM platform.email_templates
+ WHERE template_key = 'tenant_invitation';
+```
+
+Browser-side smoke:
+
+1. Open `/`, log in as platform admin.
+2. Admin → Tenants → Invite Owner — recipient receives the new
+   "You have been invited to set up X on XRay" email instead of
+   the generic "Verify your email" copy.
+3. Open an embed URL — response body excludes fetch_url /
+   fetch_method / fetch_query_params (inspect via
+   `curl -s /api/embed/<token> | jq 'keys'`).
+4. As a regular tenant user, open Inbox — only the user's own
+   threads are visible. As a platform admin, every thread visible
+   for support.
