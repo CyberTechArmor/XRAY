@@ -6,7 +6,8 @@ import cookieParser from 'cookie-parser';
 import path from 'path';
 import { config } from './config';
 import { errorHandler } from './middleware/error-handler';
-// Rate limiting removed
+import { globalIpDeviceLimiter } from './middleware/rate-limit';
+import { perEmailAuthAttemptLimiter } from './middleware/auth-attempts';
 import { getPool } from './db/connection';
 import { initWebSocketServer } from './ws';
 
@@ -77,7 +78,22 @@ app.use((req, _res, next) => {
   next();
 });
 
-// Rate limiting removed
+// Step 9 brute-force throttling. Two tiers run before route mounting:
+//
+//   Tier 1 — globalIpDeviceLimiter: 100 req/60s per (IP + UA + lang)
+//            fingerprint. Skips /api/health, /api/embed/*, /api/share/*
+//            (separate buckets for public surfaces).
+//
+//   Tier 2 — perEmailAuthAttemptLimiter: scoped to /api/auth/*. DB-backed
+//            failure counter against platform.auth_attempts (migration
+//            035), trailing 24h window. Hard 429 with retry-after at 20
+//            failures; req.attemptCounters carries the remaining count
+//            below the limit so handlers can surface a "N attempts left"
+//            banner via attachAttemptCounters() in the response body.
+//
+// See server/src/middleware/rate-limit.ts and middleware/auth-attempts.ts
+// for the exact thresholds + skip predicate.
+app.use(globalIpDeviceLimiter);
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -85,7 +101,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 // Mount routes
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', perEmailAuthAttemptLimiter, authRoutes);
 app.use('/api/stripe', stripeRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/users', userRoutes);

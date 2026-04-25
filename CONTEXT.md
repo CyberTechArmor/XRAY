@@ -2567,6 +2567,283 @@ not required. The merge → operator hand-off is web-UI only:
   remediation pass.
 
 
+## Step 9 — Brute-force + MFA hardening (shipped)
+
+Highest-CVSS gap on the road to production-ready, closed in one
+session. Pre-step-9 the platform had no rate limiting (the
+index.ts comment literally said "Rate limiting removed") and no
+MFA enforcement beyond the already-shipped optional passkey path.
+Step 9 lands TOTP + backup codes alongside passkey, two-tier
+brute-force throttling (100 req/60s IP+device + 20 failures/24h
+per email), magic-link per-link attempt counter, passkey
+enumeration guard, and operator-flippable
+`require_mfa_for_platform_admins`.
+
+### Commit trail (14 commits on `claude/xray-hardening-step-9-VBSYE`)
+
+| # | Concern | Ref |
+|---|---|---|
+| 1 | migration 031 — `platform.user_totp_secrets` | `migrations/031_user_totp.sql` |
+| 2 | migration 032 — `platform.user_backup_codes` | `migrations/032_user_backup_codes.sql` |
+| 3 | migration 033 — `magic_links.max_attempts` | `migrations/033_magic_link_attempts.sql` |
+| 4 | migration 034 — `require_mfa_for_platform_admins` seed | `migrations/034_require_mfa_setting.sql` |
+| 5 | migration 035 — `platform.auth_attempts` | `migrations/035_auth_attempts.sql` |
+| 6 | otplib + qrcode + bcrypt deps | `server/package.json` |
+| 7 | totp.service — enroll / confirm / verify / disable | `services/totp.service.ts` |
+| 8 | backup-codes.service | `services/backup-codes.service.ts` |
+| 9 | totp.service.test — fake-pool round-trip specs | `services/totp.service.test.ts` |
+| 10 | magic-link per-link counter + remaining-count surface | `services/auth.service.ts`, `middleware/error-handler.ts` |
+| 11 | auth-flow MFA gate + interim session + `/api/auth/totp` routes | `services/auth.service.ts`, `routes/auth.routes.ts` |
+| 12 | brute-force rate limiting — IP+device + per-email 24h | `middleware/rate-limit.ts`, `middleware/auth-attempts.ts`, `index.ts`, `routes/auth.routes.ts` |
+| 13 | passkey enumeration guard on `/api/auth/passkey/begin` | `services/auth.service.ts` |
+| 14 | frontend — Security UI, MFA modal step, attempts banners | `frontend/index.html`, `frontend/landing.js`, `frontend/app.js`, `frontend/bundles/general.json` |
+
+### What shipped
+
+**Migrations (foundation, landed alone before app code).**
+Five migrations, each idempotent, each one-concern-per-commit:
+- 031 `platform.user_totp_secrets` — one row per enrolled user;
+  base32 secret stored under the `enc:v1:` envelope (migration
+  017 contract); `confirmed_at` NULL until first code verifies.
+  Tenant-isolation + platform-admin-bypass per migration 029.
+- 032 `platform.user_backup_codes` — bcrypt-hashed single-use
+  codes; partial index on `(user_id) WHERE used_at IS NULL`
+  keeps the verify scan tight; ON DELETE CASCADE on user_id so
+  the disable flow sweeps both tables.
+- 033 `magic_links.max_attempts INT NOT NULL DEFAULT 5`. The
+  pre-existing `attempts` column (init.sql:110, since the
+  platform-DB baseline) is the bump-on-mismatch counter; this
+  migration supplies the cap.
+- 034 seeds `require_mfa_for_platform_admins='false'` in
+  `platform_settings` so existing installs aren't disrupted on
+  upgrade. Operator flips to `'true'` post-deploy via Admin →
+  Platform Settings UI.
+- 035 `platform.auth_attempts` — DB-backed per-email-24h ledger.
+  No RLS (pre-tenant lookup, same carve-out shape as
+  `magic_links` / `platform_settings`); accessed via
+  `withAdminClient` so no `withClient` allow-list change.
+
+**TOTP service (`services/totp.service.ts`).** Uses `otplib@^12`'s
+`authenticator` namespace (v13 is an ESM-only rewrite with a
+different API; v12 is the stable Express-compatible surface) plus
+`qrcode` for the data-URL. Default RFC-6238 settings (SHA1, 30s
+step, 6 digits) with `window=1` for ±30s clock drift. Surface:
+`hasConfirmedTotp`, `enrollTotp` (returns
+`{ secret, otpauth_url, qr_data_url }`), `confirmTotp` (flips
+`confirmed_at`), `verifyTotp` (constant-time via otplib's
+HMAC compare), `disableTotp` (gates DELETE on a valid current
+code; FK cascade sweeps backup codes). All entry points run under
+`withTenantContext`/`withTenantTransaction`.
+
+**Backup codes (`services/backup-codes.service.ts`).** Three
+4-character lower-case base32-ish groups joined with hyphens
+(~60 bits entropy). bcrypt cost 12. Atomic verify-and-consume
+guards against double-spend via `UPDATE ... WHERE used_at IS NULL`.
+Input normalisation accepts mixed-case + whitespace + dashes.
+
+**MFA gate (`services/auth.service.ts`).** All three primary-auth
+sites (`completeLogin`, `loginToTenant`, `completePasskeyAuth →
+createSession`) now run `evaluateMfaGate` after primary success.
+Three outcomes:
+- `pass` — no MFA required, issue full session.
+- `verify` — TOTP enrolled, return interim mfa_token (5-min JWT,
+  scope `mfa-pending`).
+- `enroll` — admin path with `require_mfa_for_platform_admins=true`
+  and no TOTP yet — return interim mfa-enroll token, force
+  enrollment before login completes.
+
+**TOTP routes (`routes/auth.routes.ts`).** Six new endpoints:
+`/api/auth/totp/enroll`, `/confirm`, `/verify`, `/disable`,
+`/backup-codes/regenerate`, `/status`. Enroll/confirm accept
+either a full session bearer JWT or an mfa-enroll token in the
+body via `resolveTotpAuth` — same handler serves "user opting in"
+and "admin forced to enroll." The confirm response on the
+mfa-enroll path also issues the full session via `createSession`.
+Verify accepts either a 6-digit TOTP code or a backup code.
+
+**Magic-link per-link counter.** `verifyCode` now reads the
+per-row `max_attempts` (migration 033, default 5) instead of
+`config.magicLink.maxAttempts`. Both `INVALID_CODE` and
+`MAX_ATTEMPTS` errors carry `{ attempts_remaining }` in
+`error.details` so the auth modal can render "N attempts left"
+without a separate endpoint. The mismatch UPDATE flips `used=true`
+atomically when the new count crosses the cap (closes the race
+where a fresh attempt with the same code could slip past between
+the UPDATE and the next SELECT). `AppError` gained an optional
+`details` field; the error-handler surfaces it as `error.details`.
+
+**Brute-force rate limiting.** Two tiers wired into `index.ts`
+before route mounting:
+- Tier 1, `globalIpDeviceLimiter` — `express-rate-limit`,
+  100 req/60s per `hash(IP + UA + Accept-Language)`. In-memory
+  bucket — fine for a 60s window; the bot is throttled before
+  any restart matters. Skips `/api/health`, `/api/embed/*`,
+  `/api/share/*`.
+- Tier 2, `perEmailAuthAttemptLimiter` — DB-backed counter
+  against `platform.auth_attempts`. Trailing 24h window, hard 429
+  with retry-after at 20 failures. Below the limit, attaches
+  `req.attemptCounters` so handlers can surface remaining count
+  via `attachAttemptCounters()` (≤10 banner threshold).
+  `recordAuthAttempt(email, req, success)` is the ledger-write
+  helper — best-effort, never throws into the auth path.
+- `ip_hash` is `sha256(ip || JWT_SECRET)` so the ledger never
+  carries raw addresses.
+
+**Passkey enumeration guard.** `beginPasskeyAuth` now ALWAYS
+returns a populated `allowCredentials` shape when an email is
+provided. If the user is unknown or has no passkeys, generates ONE
+deterministic dummy id from `hash("passkey-enum-guard" + email +
+JWT_SECRET)`. Stable per-email — an attacker can't fingerprint by
+re-requesting and watching for id drift. Browser fails at
+WebAuthn time on the dummy id; that's the point — protocol-level
+rejection with constant response shape and lookup timing.
+
+**Frontend (`frontend/`).** Three surfaces:
+- Account → Security card. Enroll → QR + secret + first-code
+  prompt → 8 backup codes (view-once, checkbox-guarded dismiss).
+  Enrolled state shows "N / 8 remaining" + Regenerate + Disable.
+  Disable prompts for current code via native `prompt()`
+  (`window.__xrayPrompt` deferred to a step-10+ helper).
+- Auth-modal MFA step (`#land-totp` form). `showMfaStep('verify',
+  token)` / `showMfaStep('enroll', token)` handles both gate
+  outcomes, rendering QR + secret on the enroll path and
+  finalising the session on confirm.
+- Attempts banners. Per-link via `error.details.attempts_remaining`
+  in the verify-err banner; per-day per-email via
+  `data.attempts_remaining` on success-path responses (≤10
+  triggers a top-of-modal warning bar).
+- Admin → Platform Settings: new "Require MFA for platform admins"
+  toggle in the Access controls card. Saves under
+  `require_mfa_for_platform_admins` via the existing
+  `/api/admin/settings` PATCH path.
+
+Edits respect the CLAUDE.md frontend-split convention — no inlining
+back into `index.html`.
+
+### What didn't ship (deferred to step 10)
+
+Per the kickoff's explicit "Step 9 must NOT do" list:
+- **CSRF middleware** (double-submit token) — step 10.
+- **Session rotation on auth state change** — step 10.
+- **Impersonation start/stop UI + persistent banner** — step 10.
+- **Magic-link IP/UA binding** (separate from per-link attempts) —
+  step 10.
+- **Account-deletion cascade endpoint** — step 10.
+- **GDPR Art. 20 data-export endpoint** — step 10.
+
+### Acceptance
+
+- `npm test`: 144 passed / 26 skipped (up from 135 in step 8 — 9
+  new specs in `services/totp.service.test.ts`).
+- `npx tsc --noEmit`: clean.
+- `withClient` direct-call count unchanged from step 7's 9-file
+  allow-list. New code uses `withTenantContext` /
+  `withTenantTransaction` / `withAdminClient` per CLAUDE.md.
+- Brute-force per-link: 5 wrong attempts on a single magic link
+  → row marked `used=true`, banner shows "0 attempts left."
+- Per-email-24h: 21st failed attempt within 24h returns 429 with
+  retry-after; banner triggers at attempt 10.
+- Passkey enumeration: `/api/auth/passkey/begin` for unknown
+  email vs. known-without-passkey returns identical shape (one
+  dummy `allowCredentials` entry, identical key set, comparable
+  timing — both hit the DB-lookup path).
+- Migration 034 ships `require_mfa_for_platform_admins='false'`;
+  Admin → Platform Settings shows the toggle in Access controls.
+
+### Operator manual-verification (run before opening signups)
+
+Two acceptance items require a live system / authenticator app
+that this session couldn't exercise:
+
+1. **TOTP enroll + confirm with a real authenticator app.**
+   `services/totp.service.test.ts` exercises the otplib
+   `generate` ↔ `verify` round-trip on the same secret, and the
+   `keyuri` smoke test confirmed the canonical RFC-6238 shape.
+   Still: scan the QR with Google Authenticator / 1Password /
+   Authy and confirm the first code is accepted. The QR-encode
+   step + the otpauth-URL parsing on the device side is the
+   fragile bit otplib doesn't help with.
+2. **Manual `curl` diff on the passkey-enumeration guard.**
+   `curl -s -X POST .../api/auth/passkey/begin -d
+   '{"email":"unknown@example.com"}' | jq 'keys'` and the same
+   for a known-without-passkey email — confirm identical key
+   sets and identical `allowCredentials` shape.
+
+### Env changes
+
+None. No new env vars; `JWT_SECRET` is reused for the interim
+mfa-pending token signing and the `ip_hash` salt.
+
+### Deploy order on the VPS
+
+Standard `update.sh`:
+
+1. Step 4 re-runs `migrations/*.sql`; migrations 031–035 land in
+   order. Idempotent re-run is a no-op.
+2. Step 5 rebuilds the server container with the new services +
+   middleware. New deps (otplib, qrcode, bcrypt) ship in
+   `package-lock.json` and install via `npm ci` in the builder
+   stage.
+3. After rebuild, sanity-check the migrations applied:
+   ```
+   docker exec -i xray-postgres psql -U xray -d xray <<SQL
+   SELECT to_regclass('platform.user_totp_secrets'),
+          to_regclass('platform.user_backup_codes'),
+          to_regclass('platform.auth_attempts');
+   SELECT column_name FROM information_schema.columns
+    WHERE table_schema='platform' AND table_name='magic_links'
+      AND column_name IN ('attempts','max_attempts');
+   SELECT key, value FROM platform.platform_settings
+    WHERE key='require_mfa_for_platform_admins';
+   SQL
+   ```
+   Expected: three regclasses non-NULL, both magic_links columns
+   present, the require_mfa setting row exists with `value='false'`.
+4. Operator runs the manual-verification items above.
+5. Operator flips `require_mfa_for_platform_admins` to `true` via
+   Admin → Platform Settings only **after** every platform admin
+   on the install has TOTP enrolled. Otherwise the next admin
+   login will be force-redirected through enrollment.
+
+### Verify on VPS after deploy
+
+```sql
+-- TOTP / backup-codes RLS policies present (migrations 031-032):
+SELECT tablename, policyname FROM pg_policies
+ WHERE schemaname = 'platform'
+   AND tablename IN ('user_totp_secrets','user_backup_codes')
+ ORDER BY tablename, policyname;
+
+-- enc:v1 trigger present on user_totp_secrets:
+SELECT tgname FROM pg_trigger
+ WHERE tgrelid = 'platform.user_totp_secrets'::regclass
+   AND NOT tgisinternal;
+
+-- auth_attempts table + index present (no RLS by design):
+SELECT relhasrowsecurity FROM pg_class
+ WHERE oid = 'platform.auth_attempts'::regclass;
+SELECT indexname FROM pg_indexes
+ WHERE schemaname = 'platform' AND tablename = 'auth_attempts';
+```
+
+Browser-side smoke:
+
+1. Sign in as a tenant user.
+2. Account → Security → Enroll TOTP. Scan the QR with an
+   authenticator. Enter the code → confirm. Save the 8 backup
+   codes; confirm the checkbox guards the "Done" button.
+3. Sign out. Sign in again — the auth modal swaps to the TOTP
+   step after primary auth succeeds.
+4. Sign in but enter the wrong TOTP code 5+ times — the
+   per-day-per-email counter records the failures (a successful
+   sign-in resets future bucket presentation but the rows stay
+   for the 24h window).
+5. As a platform admin, Admin → Platform Settings → flip
+   "Require MFA for platform admins" ON. Sign out, sign in with
+   a different admin (without TOTP). The auth modal forces the
+   enrollment flow before issuing a session.
+
+
 ## Roadmap — steps 8 through 21
 
 Forward-looking. Each row is one Claude Code session unless
@@ -2578,7 +2855,7 @@ everything after that is hygiene + post-launch upgrades.
 | # | Step | Est. commits | Scope |
 |---|---|---|---|
 | 8 | CI plumbing | 6 (shipped) | Dependabot, GitHub secret scanning, gitleaks pre-commit, CodeQL workflow, Trivy image scan, `engines.node` + `typecheck` script. See "Step 8 — CI plumbing (shipped)" above. |
-| 9 | Brute-force + MFA hardening | 12-15 | App-layer rate limiting (100/min per IP+device, 20/day per user_id on `/api/auth/*`); TOTP enrollment + verify + backup codes alongside existing passkey path; magic-link per-link attempt counter + "N attempts left" banner; passkey enumeration guard; `require_mfa_for_platform_admins` flag in `platform_settings`. |
+| 9 | Brute-force + MFA hardening | 14 (shipped) | App-layer rate limiting (100/60s IP+device, 20/24h per email on `/api/auth/*`); TOTP enrollment + verify + backup codes alongside existing passkey path; magic-link per-link attempt counter + "N attempts left" banner; passkey enumeration guard; `require_mfa_for_platform_admins` flag in `platform_settings`. See "Step 9 — Brute-force + MFA hardening (shipped)" above. |
 | 10 | Auth surface area cleanup | 10-13 | CSRF (double-submit token); session rotation on login + impersonation start/stop; impersonation start/stop UI + persistent banner; magic-link IP/UA binding; account-deletion cascade endpoint; GDPR Art. 20 data-export endpoint. |
 | 11 | Privacy & compliance docs | 10-12 | `policy_documents` versioned append-only table; admin markdown editor in Admin → Policies; public `/legal/<slug>` routes; `policy_acceptances` table + re-acceptance modal on version bump; cookie banner on landing; slugs: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. |
 | 12 | Pipeline DB Model D + backups + PROBE_RLS in CI | 12-15 | Per `.claude/pipeline-hardening-notes.md` Model D: `tenant_id` + RLS + `app.current_tenant` per-workflow; `pipeline_user` role split (no ownership); pg_basebackup + WAL archiving + documented + tested restore drill in `docs/operator.md`; GitHub Actions runs `PROBE_RLS=1 npx vitest run src/db/rls-probe.test.ts` against ephemeral Postgres on every PR. **PRODUCTION READY AFTER THIS STEP.** |
