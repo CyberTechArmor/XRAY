@@ -1,0 +1,12 @@
+# Trivy CVE allow-list. Empty by default — every HIGH/CRITICAL with a
+# published fix gates CI per .github/workflows/ci.yml. Add an entry here
+# only when (a) the upstream fix isn't yet packaged in node:20-alpine, or
+# (b) the CVE doesn't apply to our usage (e.g. dev-only path Trivy can't
+# tell apart). Each entry is a CVE ID on its own line, optionally with a
+# trailing comment explaining the rationale and a re-evaluation date.
+#
+# Example:
+#   CVE-2024-XXXXX  # not exploitable — affects ftp client we don't ship; recheck 2026-Q3
+#
+# Trivy honors this file via the `trivyignores: .trivyignore` input on
+# the trivy-action step in ci.yml.
