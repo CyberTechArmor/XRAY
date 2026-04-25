@@ -2052,6 +2052,11 @@
       buildSidebar();
       buildMobileNav();
       loadBundle();
+      // Step 11: gate every entry on the policy re-acceptance check.
+      // If any required slug's latest version is newer than what
+      // the user has accepted, a blocking modal appears before they
+      // can interact with the app.
+      checkPolicyStatus();
       // Prompt for passkey setup on first login (no passkeys registered yet)
       promptPasskeySetup();
       // Load tenant switcher for multi-tenant users
@@ -2086,6 +2091,100 @@
       try { if (localStorage.getItem('xray_passkey_dismissed')) return; } catch(e) {}
       showPasskeyPrompt();
     }).catch(function() {});
+  }
+
+  // ── Step 11: re-acceptance modal ──
+  // Polls /api/users/me/policy-status; if any required slug is
+  // pending (current_version > accepted_version, or accepted=null),
+  // shows a blocking modal before the user can interact. The
+  // single round-trip POSTs all checked slugs then reads the
+  // updated pending list from the response so missed acceptances
+  // re-render without a fresh GET.
+  function checkPolicyStatus() {
+    api.get('/api/users/me/policy-status').then(function(r) {
+      if (!r.ok || !r.data || !Array.isArray(r.data.pending) || r.data.pending.length === 0) return;
+      showPolicyAcceptModal(r.data.pending);
+    }).catch(function() {});
+  }
+
+  function showPolicyAcceptModal(pending) {
+    if (document.getElementById('policy-accept-overlay')) return;
+    var overlay = document.createElement('div');
+    overlay.id = 'policy-accept-overlay';
+    overlay.className = 'modal-overlay';
+    overlay.style.zIndex = '9500';
+    var rowsHtml = pending.map(function(p) {
+      var label = p.title || p.slug;
+      var detail = p.accepted_version
+        ? ('Updated to v' + p.current_version + ' (you accepted v' + p.accepted_version + ')')
+        : ('v' + p.current_version + ' — first acceptance');
+      return '<label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid var(--bdr);border-radius:8px;margin-bottom:8px;cursor:pointer">'
+        + '<input type="checkbox" class="policy-accept-cb" data-slug="' + encodeURIComponent(p.slug) + '" data-version="' + p.current_version + '" style="margin-top:3px;flex-shrink:0">'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:14px;font-weight:600;color:var(--t1);margin-bottom:2px">' + (label.replace(/[<>]/g, '')) + '</div>'
+        + '<div style="font-size:12px;color:var(--t2);margin-bottom:4px">' + detail + '</div>'
+        + '<a href="/legal/' + encodeURIComponent(p.slug) + '" target="_blank" rel="noopener" style="font-size:12px;color:var(--acc)">Read the document &rarr;</a>'
+        + '</div></label>';
+    }).join('');
+    overlay.innerHTML = '<div class="modal" style="width:560px">'
+      + '<div class="modal-head"><div class="modal-title">Updated policies</div></div>'
+      + '<div class="modal-body">'
+      + '<p style="font-size:14px;color:var(--t2);margin:0 0 16px">We\'ve updated the policies below. Please review and accept each before continuing.</p>'
+      + rowsHtml
+      + '<p id="policy-accept-err" style="display:none;color:#ef4444;font-size:13px;margin:12px 0 0"></p>'
+      + '</div>'
+      + '<div class="modal-foot"><button class="btn primary" id="policy-accept-btn" disabled>I accept</button></div>'
+      + '</div>';
+    document.body.appendChild(overlay);
+
+    var cbs = overlay.querySelectorAll('.policy-accept-cb');
+    var btn = overlay.querySelector('#policy-accept-btn');
+    function refreshBtn() {
+      var allChecked = true;
+      cbs.forEach(function(cb) { if (!cb.checked) allChecked = false; });
+      btn.disabled = !allChecked;
+    }
+    cbs.forEach(function(cb) { cb.addEventListener('change', refreshBtn); });
+
+    btn.onclick = function() {
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      var errEl = overlay.querySelector('#policy-accept-err');
+      errEl.style.display = 'none';
+      var jobs = Array.prototype.map.call(cbs, function(cb) {
+        return api.post('/api/users/me/policy-accept', {
+          slug: decodeURIComponent(cb.getAttribute('data-slug')),
+          version: parseInt(cb.getAttribute('data-version'), 10),
+        });
+      });
+      Promise.all(jobs).then(function(results) {
+        var lastOk = results[results.length - 1];
+        var stillPending = (lastOk && lastOk.ok && lastOk.data && Array.isArray(lastOk.data.pending)) ? lastOk.data.pending : [];
+        // The POST returns the updated `pending` list. If anything
+        // is left (race against a concurrent admin publish), keep
+        // the modal open with the new list rather than letting the
+        // user past a still-stale set.
+        var failed = results.some(function(r) { return !r || !r.ok; });
+        if (failed || stillPending.length > 0) {
+          overlay.remove();
+          if (stillPending.length > 0) {
+            showPolicyAcceptModal(stillPending);
+          } else {
+            errEl.textContent = 'Failed to save your acceptance. Please try again.';
+            errEl.style.display = '';
+            btn.disabled = false;
+            btn.textContent = 'I accept';
+          }
+          return;
+        }
+        overlay.remove();
+      }).catch(function() {
+        errEl.textContent = 'Network error. Please try again.';
+        errEl.style.display = '';
+        btn.disabled = false;
+        btn.textContent = 'I accept';
+      });
+    };
   }
 
   function showPasskeyPrompt() {
