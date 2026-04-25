@@ -70,7 +70,8 @@ Guardrails:
   Post-step-7 the allow-list is stable and enforced by
   `scripts/check-withclient-allowlist.sh` (run via the pre-commit hook
   at `.githooks/pre-commit`; enable once per clone with
-  `git config core.hooksPath .githooks`). Only these files may call
+  `git config core.hooksPath .githooks` — same enable command also
+  arms the step-8 gitleaks staged-index scan). Only these files may call
   `withClient()` directly:
   `db/connection.ts`, `services/auth.service.ts`,
   `services/settings.service.ts`, `services/email.service.ts`,

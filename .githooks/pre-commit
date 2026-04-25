@@ -9,3 +9,13 @@ set -e
 ROOT="$(git rev-parse --show-toplevel)"
 
 "$ROOT/scripts/check-withclient-allowlist.sh" --staged
+
+# gitleaks — block obvious secrets in the staged index. Skip with a
+# warning if the binary isn't installed; CI is the authoritative
+# secret-scanning gate.
+if command -v gitleaks >/dev/null 2>&1; then
+    gitleaks protect --staged --redact --no-banner
+else
+    echo "pre-commit: gitleaks not installed — skipping local secret scan." >&2
+    echo "  install: https://github.com/gitleaks/gitleaks#installing" >&2
+fi
