@@ -4,6 +4,7 @@ import { requirePermission } from '../middleware/rbac';
 import { validateBody, validateQuery, userUpdateSchema, paginationSchema } from '../lib/validation';
 import * as userService from '../services/user.service';
 import * as authService from '../services/auth.service';
+import { issueCsrfCookie } from '../middleware/csrf';
 
 const router = Router();
 
@@ -39,6 +40,7 @@ router.post('/me/switch-tenant', authenticateJWT, async (req, res, next) => {
       path: '/api/auth',
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
+    await issueCsrfCookie(res);
     res.json({
       ok: true,
       data: { accessToken: tokens.accessToken, sessionId: tokens.sessionId },

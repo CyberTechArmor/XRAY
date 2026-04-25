@@ -8,6 +8,7 @@ import { config } from './config';
 import { errorHandler } from './middleware/error-handler';
 import { globalIpDeviceLimiter } from './middleware/rate-limit';
 import { perEmailAuthAttemptLimiter } from './middleware/auth-attempts';
+import { verifyCsrf } from './middleware/csrf';
 import { getPool } from './db/connection';
 import { initWebSocketServer } from './ws';
 
@@ -94,6 +95,16 @@ app.use((req, _res, next) => {
 // See server/src/middleware/rate-limit.ts and middleware/auth-attempts.ts
 // for the exact thresholds + skip predicate.
 app.use(globalIpDeviceLimiter);
+
+// Step 10 CSRF (double-submit cookie). State-changing methods
+// (POST/PUT/PATCH/DELETE) on browser-cookie-authenticated routes
+// must present a matching `xsrf_token` cookie + X-CSRF-Token
+// header pair. Bearer xray_* API keys bypass (header-auth);
+// public surfaces (/api/health, /api/embed/*, /api/share/*),
+// sender-signed webhooks (/api/stripe/webhook, /api/webhooks/*),
+// and the operator-CLI import (/api/admin/import) bypass too.
+// See server/src/middleware/csrf.ts for the exact predicate.
+app.use(verifyCsrf);
 
 // Health check
 app.get('/api/health', (_req, res) => {
