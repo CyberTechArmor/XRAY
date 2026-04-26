@@ -595,6 +595,14 @@ export async function createCheckoutSession(
     subscription_data: { metadata: { tenant_id: tenantId } },
   };
 
+  // Operator-flippable: when true, the Stripe-hosted checkout shows
+  // a "Add promotion code" field. Default off — promo-eligibility is
+  // a deliberate billing decision, not a default. The setting lives
+  // in platform_settings (Admin → Stripe → "Allow promo codes").
+  if ((await getSetting('stripe_allow_promotion_codes')) === 'true') {
+    params.allow_promotion_codes = true;
+  }
+
   if (stripeCustomerId) {
     params.customer = stripeCustomerId;
   } else if (customerEmail) {
