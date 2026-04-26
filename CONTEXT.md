@@ -3398,12 +3398,26 @@ holds the public-read carve-out backing `/api/legal/<slug>`.
 | 14 | csrf.test.ts — /api/legal skip-list + policy-accept | `middleware/csrf.test.ts` |
 | 15 | CONTEXT.md handoff (this section) | `CONTEXT.md` |
 | 16 | Admin → Policies UI bundle | `bundles/general.json`, `frontend/app.js`, `scripts/inject-admin-policies-view.py` |
+| 17 | CONTEXT.md — record admin Policies UI close-out | `CONTEXT.md` |
+| 18 | XSS fix — DOMPurify-sanitize marked output | `frontend/app.js`, `bundles/general.json`, `scripts/inject-admin-policies-view.py` |
+| 19 | Trivy fix — drop unused drizzle-orm + npm audit fix | `server/package.json`, `server/package-lock.json` |
 
-The kickoff allocated 10–12 commits; final landed shape is 16
+The kickoff allocated 10–12 commits; final landed shape is 19
 plus the kickoff doc (commit 0 from step 10's close-out).
-One-concern-per-commit discipline preserved end-to-end. Commit
-16 closed the admin WYSIWYG gap originally deferred at commit
-15 — operator audit caught it before deploy.
+One-concern-per-commit discipline preserved end-to-end. Commits
+16–19 are post-CI hardening:
+
+- **16** closed the admin WYSIWYG gap originally deferred at
+  commit 15 — operator audit caught it before deploy.
+- **17** updated CONTEXT.md to reflect the closed gap.
+- **18** sanitized the marked.parse → innerHTML flow after
+  CodeQL flagged 5 high-severity XSS alerts. marked v12 has
+  no built-in sanitize option; DOMPurify v3.1.7 is now lazy-
+  loaded alongside marked from the same CDN.
+- **19** fixed Trivy by removing the unused drizzle-orm
+  dependency and bumping lodash + path-to-regexp +
+  nodemailer + brace-expansion via npm audit fix. Server
+  image now scans clean at HIGH/CRITICAL.
 
 ### What shipped
 
