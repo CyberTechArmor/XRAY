@@ -2745,7 +2745,8 @@
       session_replay: 'if(typeof initSessionReplay==="function")initSessionReplay(container,api,user);',
       admin_replay: 'if(typeof initAdminReplay==="function")initAdminReplay(container,api,user);',
       admin_replay_config: 'if(typeof initReplayConfig==="function")initReplayConfig(container,api,user);',
-      admin_ai: 'if(typeof initAdminAI==="function")initAdminAI(container,api,user);'
+      admin_ai: 'if(typeof initAdminAI==="function")initAdminAI(container,api,user);',
+      admin_policies: 'if(typeof initAdminPolicies==="function")initAdminPolicies(container,api,user);'
     };
     return fnMap[viewName] || '';
   }
