@@ -84,17 +84,40 @@ jobs:
         # cascading "current transaction is aborted" that follows
         # an already-exists hit inside a BEGIN/COMMIT migration.
         # Anything else is a real failure and fails the build.
+        #
+        # SKIPS migration 045 (strip xray superuser). 045 is a
+        # production-only concern that removes the bypass-via-
+        # superuser bit from the runtime DB role. CI doesn't need
+        # it: the rls-probe job validates RLS by connecting as a
+        # SEPARATE non-owner role (xray_app, provisioned in the
+        # next step). Applying 045 here would also strip xray's
+        # CREATEROLE attribute, breaking the next step's
+        # `CREATE ROLE xray_app`.
         run: |
           set -euo pipefail
+          # Diagnostic preamble so any environment-specific failures
+          # surface in the log.
+          psql -tA -c "SELECT 'pg_version: ' || version();"
+          psql -tA -c "SELECT 'current_user: ' || current_user || ' (super=' || rolsuper || ', createrole=' || rolcreaterole || ')' FROM pg_roles WHERE rolname = current_user;"
+          echo "applying init.sql"
           psql -v ON_ERROR_STOP=1 -f ../init.sql > /dev/null
           for m in $(ls -1 ../migrations/*.sql | sort); do
-            echo "applying $(basename "$m")"
+            base=$(basename "$m")
+            if [ "$base" = "045_strip_xray_superuser.sql" ]; then
+              echo "skipping $base (production-only; CI uses xray_app role split)"
+              continue
+            fi
+            echo "applying $base"
             out=$(psql -v ON_ERROR_STOP=0 -f "$m" 2>&1) || true
             real_errors=$(echo "$out" | grep -iE "(ERROR|FATAL)" \
               | grep -viE "already exists|duplicate|current transaction is aborted" || true)
             if [ -n "$real_errors" ]; then
+              # Print full migration output so the failure is debuggable
+              # straight from the CI log.
+              echo "--- full output for $base ---"
               echo "$out"
-              echo "::error::migration $(basename "$m") had non-benign errors"
+              echo "--- end output ---"
+              echo "::error::migration $base had non-benign errors"
               exit 1
             fi
           done

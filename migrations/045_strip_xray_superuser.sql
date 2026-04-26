@@ -35,6 +35,7 @@
 DO $$
 DECLARE
   app_role NAME := current_user;
+  is_super BOOLEAN;
 BEGIN
   -- Don't strip postgres (the cluster bootstrap). Stripping that
   -- bricks the cluster — only the connecting application role
@@ -44,9 +45,16 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Idempotent: NOTICE on the role's current state for the
-  -- migration log, then ALTER. ALTER ROLE … NOSUPERUSER is a no-op
-  -- if the role is already non-superuser.
+  -- True idempotency: ALTER ROLE … NOSUPERUSER requires the CALLER
+  -- to be a superuser. If the role is already non-super (i.e. a
+  -- previous run already stripped it), skip with NOTICE rather than
+  -- error. This makes re-applying safe in any environment.
+  SELECT rolsuper INTO is_super FROM pg_roles WHERE rolname = app_role;
+  IF NOT COALESCE(is_super, false) THEN
+    RAISE NOTICE 'Role % is already non-superuser — skipping (no-op)', app_role;
+    RETURN;
+  END IF;
+
   RAISE NOTICE 'Stripping SUPERUSER + BYPASSRLS from role %, keeping REPLICATION', app_role;
   EXECUTE format('ALTER ROLE %I WITH NOSUPERUSER NOBYPASSRLS REPLICATION', app_role);
 END $$;
