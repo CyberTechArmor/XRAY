@@ -105,4 +105,18 @@ docker compose exec -T "${POSTGRES_CONTAINER}" sh -c "
   fi
 "
 
+# S3 mirror — additive, env-var-gated. Local-only deploys never reach
+# this branch. Failures surface in cron output but don't abort the
+# script (the local backup is already safe).
+if [ -n "${BACKUP_S3_BUCKET:-}" ]; then
+  echo "[backup-platform] mirroring base + WAL to S3"
+  SCRIPT_DIR_BP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  "${SCRIPT_DIR_BP}/backup-s3-sync.sh" base || \
+    echo "[backup-platform] WARN: S3 base sync failed; local backup still valid"
+  "${SCRIPT_DIR_BP}/backup-s3-sync.sh" wal || \
+    echo "[backup-platform] WARN: S3 WAL sync failed; local archive still valid"
+else
+  echo "[backup-platform] BACKUP_S3_BUCKET unset — skipping S3 mirror (local-only mode)"
+fi
+
 echo "[backup-platform] done"

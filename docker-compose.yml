@@ -41,15 +41,11 @@ services:
       - POSTGRES_DB=${DB_NAME:-xray}
       - POSTGRES_USER=${DB_USER:-xray}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
-      # Forwarded into the archive_command (see scripts/wal-archive.sh).
-      # Local-archive path inside the named volume; the optional S3
-      # mirror layered on top in step 12 (B2) is gated on these:
+      # Local archive path used by scripts/wal-archive.sh inside the
+      # postgres container. The S3 mirror layer (BACKUP_S3_*) runs on
+      # the host out-of-band — see scripts/backup-s3-sync.sh — so
+      # those env vars don't need to enter the postgres container.
       - BACKUP_ARCHIVE_DIR=/var/lib/postgresql/backups/wal
-      - BACKUP_S3_BUCKET=${BACKUP_S3_BUCKET:-}
-      - BACKUP_S3_ENDPOINT=${BACKUP_S3_ENDPOINT:-}
-      - BACKUP_S3_REGION=${BACKUP_S3_REGION:-}
-      - BACKUP_S3_ACCESS_KEY_ID=${BACKUP_S3_ACCESS_KEY_ID:-}
-      - BACKUP_S3_SECRET_ACCESS_KEY=${BACKUP_S3_SECRET_ACCESS_KEY:-}
     volumes:
       - pg_data:/var/lib/postgresql/data
       - pg_backups:/var/lib/postgresql/backups
