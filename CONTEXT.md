@@ -3367,6 +3367,413 @@ described below. Step 10 is two of four pre-launch steps
 closed (8, 9, 10 shipped; 11, 12 remaining).
 
 
+## Step 11 — Privacy & compliance docs (shipped)
+
+Closes the privacy-compliance gap left after step 10: versioned
+legal documents (T&C / privacy / cookie / DPA / sub-processors /
+AUP), per-user-per-version acceptance ledger, public legal pages
+that render for logged-out visitors, re-acceptance modal on
+version bump, landing-page cookie consent banner, and an
+Account → Privacy policy-history modal. First `withClient`
+allow-list addition since step 7's lock — `policy.service.ts`
+holds the public-read carve-out backing `/api/legal/<slug>`.
+
+### Commit trail (14 commits on `claude/privacy-compliance-docs-6S996`)
+
+| # | Concern | Ref |
+|---|---|---|
+| 1 | migration 039 — `platform.policy_documents` | `migrations/039_policy_documents.sql` |
+| 2 | migration 040 — `platform.policy_acceptances` | `migrations/040_policy_acceptances.sql` |
+| 3 | migration 041 — seed v1 of six required slugs | `migrations/041_seed_default_policies.sql` |
+| 4 | migration 042 — cookie-banner platform settings | `migrations/042_cookie_consent_setting.sql` |
+| 5 | policy.service.ts + withClient allow-list entry | `services/policy.service.ts`, `scripts/check-withclient-allowlist.sh`, `CLAUDE.md` |
+| 6 | policy.service.test.ts — fake-pool round-trip | `services/policy.service.test.ts` |
+| 7 | legal.routes.ts — public read surface | `routes/legal.routes.ts`, `index.ts`, `middleware/rate-limit.ts` |
+| 8 | admin.routes.ts — Policies CRUD endpoints | `routes/admin.routes.ts` |
+| 9 | user.routes.ts — policy-status + policy-accept | `routes/user.routes.ts` |
+| 10 | public /legal/<slug> SPA route | `index.ts`, `frontend/app.js` |
+| 11 | re-acceptance modal in app.js | `frontend/app.js` |
+| 12 | landing-page cookie consent banner | `frontend/landing.js`, `frontend/landing.css`, `frontend/app.js` |
+| 13 | Account → Privacy card policy-history modal | `frontend/bundles/general.json` |
+| 14 | csrf.test.ts — /api/legal skip-list + policy-accept | `middleware/csrf.test.ts` |
+
+The kickoff allocated 10–12 commits; final landed shape is 14
+plus the kickoff doc (commit 0 from step 10's close-out).
+One-concern-per-commit discipline preserved end-to-end.
+
+### What shipped
+
+**Migrations.** Four idempotent migrations land alone before
+any app code:
+
+- 039 `platform.policy_documents` — append-only versioned
+  store. Schema: `id, slug, version, title, body_md,
+  is_required, published_at, published_by`. UNIQUE
+  (slug, version) gates the two-admin race during publish;
+  index on (slug, version DESC) makes "latest version per
+  slug" index-only. **No RLS** — the public-read carve-out
+  shape (mirrors `magic_links` / `platform_settings` /
+  `email_templates`) so logged-out visitors can hit
+  `/api/legal/<slug>`.
+- 040 `platform.policy_acceptances` — per-user-per-version
+  ledger. UNIQUE (user_id, slug, version) makes the
+  recordAcceptance INSERT idempotent; `ip_hash` + `ua_hash`
+  forensic columns mirror migration 035 + 037's
+  salt-with-JWT_SECRET shape (table never carries raw
+  IP/UA). Two indexes: `(user_id, slug, version DESC)` for
+  pendingForUser, `(slug, version)` for admin acceptance
+  counts. RLS shape per migration 029 — `tenant_isolation` +
+  `platform_admin_bypass`.
+- 041 seeds v1 of the six required slugs
+  (`terms_of_service`, `privacy_policy`, `cookie_policy`,
+  `dpa`, `subprocessors`, `acceptable_use`) with a short
+  placeholder body carrying the `[XRAY-POLICY-PLACEHOLDER]`
+  marker. `policy.service.getLatest` surfaces an
+  `is_placeholder` flag when the marker is still present so
+  the public `/legal/<slug>` SPA route renders a loud
+  warning banner — accidental ship is loud rather than
+  silent. ON CONFLICT DO NOTHING on `(slug, version)` so
+  re-runs preserve any pre-prod direct-DB v1 edits.
+- 042 seeds `cookie_banner_enabled='true'` and
+  `cookie_banner_essential_only_default='false'` into
+  `platform_settings`. Default on so the legal posture is
+  correct out of the box; operator can flip
+  `cookie_banner_enabled='false'` if they front the site
+  with a separate CMP. Both rows `is_secret=false` — read
+  by the public `/api/legal` endpoint.
+
+**Service layer (`services/policy.service.ts`).** Surface
+mirrors the kickoff spec:
+
+- Public reads (carve-out, `withClient`): `listLatest()`
+  returns one row per slug at the latest version;
+  `getLatest(slug)` and `getVersion(slug, version)` return
+  the full document. All include the derived `is_placeholder`
+  flag.
+- Admin writes (cross-tenant, `withAdminClient`):
+  `listAllVersions()` returns every slug × every version with
+  acceptance counts (LEFT JOIN against
+  `policy_acceptances`); `publishVersion(slug, input,
+  publishedByUserId)` reads max(version)+1 and INSERTs the
+  new row inside the same admin-bypass session; UNIQUE
+  `(slug, version)` gates the race when two admins click
+  Publish at the same instant. `listAcceptors(slug, version,
+  page, limit)` paginates the audit trail.
+- Tenant-scoped (`withTenantContext`):
+  `recordAcceptance(userId, tenantId, slug, version, req)`
+  validates the (slug, version) tuple exists in
+  `policy_documents` first (guards against a tampered POST
+  body recording an acceptance for a non-existent version),
+  then INSERTs with `ON CONFLICT DO NOTHING` so multi-click
+  / batched-modal writes are idempotent. `pendingForUser`
+  joins `policy_documents` (no RLS) with `policy_acceptances`
+  (RLS-gated) inside the tenant context — outer-join then
+  filter where `is_required AND (accepted IS NULL OR accepted
+  < latest)`. `listMyAcceptances` returns the calling user's
+  full history newest-first.
+
+`publishVersion` emits a `policy.publish` audit row under the
+sentinel platform-tenant UUID `00000000-0000-0000-0000-000000000000`
+so the operator's audit log captures the action without a
+specific tenant target.
+
+**withClient allow-list (`scripts/check-withclient-allowlist.sh`).**
+First addition since step 7's lock: `services/policy.service.ts`.
+Documented in the script header, in CLAUDE.md's Database
+Context Helpers section, and in this file's commit trail.
+Reads to `platform.policy_documents` need a pre-tenant-context
+path so logged-out visitors can hit the public endpoint. Mirrors
+the magic_links / platform_settings shape exactly. The
+pre-commit hook + the full-tree CI scan both pass.
+
+**Routes.** Three new endpoint groups:
+
+- `routes/legal.routes.ts` — public, GET-only, no CSRF, no
+  auth, no rate limit. Mounted at `/api/legal` in
+  `index.ts`. Three endpoints:
+  - `GET /api/legal` — array of `{ slug, version, title,
+    is_required, is_placeholder, published_at }` plus the
+    cookie-banner platform-settings booleans (folded in so
+    the landing page can decide whether to render the banner
+    in one round-trip).
+  - `GET /api/legal/:slug` — full latest version of one slug.
+    404 with `LEGAL_SLUG_NOT_FOUND` if the slug has no
+    published versions.
+  - `GET /api/legal/:slug/v/:version` — historical fetch
+    backing the "view archived version" link in Account →
+    Privacy.
+  Added `/api/legal` + `/api/legal/*` to
+  `middleware/rate-limit.isPublicSurface` so the path is
+  exempt from both the (currently-disabled) device throttle
+  and the CSRF gate (which delegates to the same predicate
+  via `pathBypassesCsrf`). GETs already bypass via
+  `methodIsSafe`; the explicit entry guards against a future
+  POST landing in legal.routes by accident.
+- `routes/admin.routes.ts` — three admin-only endpoints
+  under the existing `requirePermission('platform.admin')`
+  gate:
+  - `GET /api/admin/policies` — every slug × every published
+    version + acceptance counts.
+  - `POST /api/admin/policies/:slug` — body
+    `{ title, body_md, is_required }`. Slug from URL,
+    version auto-incremented. 201 with the new row.
+  - `GET /api/admin/policies/:slug/acceptances?version=N`
+    — paginated audit trail; defaults version to latest
+    when omitted.
+- `routes/user.routes.ts` — three authenticated user-self
+  endpoints:
+  - `GET /api/users/me/policy-status` — returns
+    `{ pending: [...] }`; empty array means user is up to
+    date. Polled on app boot + on every successful refresh.
+  - `POST /api/users/me/policy-accept` — body
+    `{ slug, version }`. CSRF-gated (default state-changing
+    behaviour). Returns the updated `pending` array so the
+    re-acceptance modal can clear remaining slugs in one
+    round-trip.
+  - `GET /api/users/me/policy-acceptances` — caller's
+    full history newest-first; backs the Privacy → policy
+    history modal.
+
+**Frontend.** Four surfaces:
+
+- Public legal pages — new `handleLegalPage()` in
+  `frontend/app.js` runs alongside `handleSharePage` /
+  `handleInvitePage` in the same window-load chain. Hides
+  the landing screen, renders a minimal header + main
+  column, fetches `/api/legal[/<slug>][/v/<n>]`, and renders
+  markdown via `marked` lazy-loaded from
+  `cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js`.
+  Pinned version. Network failure / blocked CDN falls back
+  to `<pre>`-formatted plain text so the page always shows
+  the policy body. URL shapes: `/legal` (index), `/legal/:slug`
+  (latest), `/legal/:slug/v/:n` (archived; banner links back
+  to latest). `is_placeholder=true` renders a prominent
+  amber warning banner above the body. `index.ts` got an
+  explicit `app.get(/^\/legal(\/.*)?$/, ...)` handler so the
+  route surfaces alongside `/share/:token` and
+  `/invite/:token`; the catch-all SPA fallback already
+  covered it but the explicit entry makes intent visible.
+- Re-acceptance modal — `checkPolicyStatus()` in
+  `frontend/app.js` runs right after `enterApp()` reads
+  `/api/users/me`. If `pending` is non-empty, renders a
+  blocking `modal-overlay` (z-index 9500) listing every
+  pending slug with a checkbox + a link to `/legal/<slug>`
+  in a new tab. "I accept" stays disabled until every
+  checkbox is ticked; click fires a parallel POST per
+  acceptance and either closes the modal or re-renders with
+  whatever remains in the response's `pending` array
+  (covers the race where another admin publishes mid-modal).
+  Uses the existing `modal-overlay` / `modal` CSS — no new
+  rules.
+- Cookie banner — `frontend/landing.js` adds a slim
+  bottom-bar (`.cookie-banner`, fixed bottom, z-index 9200)
+  on first landing-page visit. Three actions: Accept all /
+  Essential only / Manage. Manage opens an inline panel
+  with per-category toggles (essential always-on, analytics,
+  marketing). Persists `xray_cookie_consent =
+  { version, choices, decided_at }` to localStorage; re-
+  prompts only when the cookie_policy version bumps.
+  Suppressed when `cookie_banner_enabled = 'false'` in
+  platform_settings (operator fronts the site with a
+  separate CMP). Logged-in landing visit: app.js exposes
+  `window.__xrayRecordCookieAcceptance(version, choices)`
+  so the banner records a server-side `policy_acceptances`
+  row when an access token is in memory; logged-out visits
+  store locally only. Banner skipped on `/share/*` and
+  `/legal/*` paths so neither the embed surface nor the
+  public legal pages render the bar. New CSS rules in
+  `frontend/landing.css`.
+- Account → Privacy card — `bundles/general.json` v
+  `2026-04-25-step11-policies` adds a "View policy history"
+  button alongside the existing Download my data / Delete
+  my account actions. Click opens a modal that fetches
+  `/api/users/me/policy-acceptances` and renders a table of
+  (slug, version → archived link, accepted_at). The version
+  cell links to `/legal/<slug>/v/<n>` so the user can read
+  the exact policy text they accepted. Bundle version bumped
+  to bust the SPA cache.
+
+### What didn't ship (deliberately)
+
+Per the kickoff's "Step 11 must NOT do" list:
+
+- **No further auth-surface work** — closed in step 10.
+- **No pipeline DB changes / backups** — step 12.
+- **No restoration of step-10's IP/UA-hash gates** behind
+  `auth_rate_limit_enabled`. Separate follow-up commit pair
+  (see step 10's "Follow-up backlog (post-step-10)").
+- **No tenant ownership-transfer surface.** Same follow-up
+  bucket.
+- **No new MFA work** — closed in step 9.
+- **No `withClient` allow-list changes beyond
+  `policy.service.ts`.** Every other new code path uses
+  `withTenantContext` / `withTenantTransaction` /
+  `withAdminClient` per CLAUDE.md.
+- **No admin Policies WYSIWYG UI bundle.** The kickoff
+  alluded to one in section D but the Tier-1 surface is
+  the API + the public pages + the re-acceptance modal +
+  the cookie banner. The admin endpoints are wired
+  (`POST /api/admin/policies/:slug` accepts JSON body) so
+  an operator can publish v2 via `curl` against the
+  authenticated admin session today; an in-app markdown
+  editor is a follow-up (likely folded into step 13's
+  mini-queue cleanup bundle alongside the Admin "Last
+  failure" UI wiring).
+
+### Acceptance
+
+- `npx tsc --noEmit`: clean.
+- `npm test`: 164 passed / 26 skipped (was 152 / 26 in
+  step 10) — 8 new specs in `services/policy.service.test.ts`
+  + 4 new in `middleware/csrf.test.ts`.
+- `withClient` direct-call count: 10-file allow-list (was
+  9 since step 7). New entry: `services/policy.service.ts`.
+  `bash scripts/check-withclient-allowlist.sh` exits 0 on
+  the full tree.
+- Migrations 039–042 idempotent on re-run; SQL passes through
+  `update.sh`'s `apply_migrations_from` apply loop.
+- Public `/legal/terms_of_service` (and the other 5 slugs)
+  loads without auth, renders the markdown via marked, and
+  shows the placeholder warning when v1 still carries the
+  `[XRAY-POLICY-PLACEHOLDER]` marker.
+- `POST /api/admin/policies/<slug>` with a new body bumps
+  the version monotonically and emits a `policy.publish`
+  audit row.
+- `GET /api/users/me/policy-status` returns the array of
+  required slugs whose latest version is newer than the
+  caller's latest acceptance (or where they have no
+  acceptance row yet). Empty array means up to date.
+- `POST /api/users/me/policy-accept` with `{slug, version}`
+  is idempotent on the (user, slug, version) UNIQUE; second
+  call is a no-op rather than a 409.
+- `POST /api/users/me/policy-accept` without a CSRF cookie
+  + matching X-CSRF-Token header → 403 CSRF_INVALID
+  (locked by `csrf.test.ts`).
+- `GET /api/legal/*` requires no CSRF and ignores any
+  `Authorization` header — the public surface.
+- Cookie banner appears on first landing visit; "Essential
+  only" persists `xray_cookie_consent` with `choices.essential
+  = true` and no analytics/marketing flags.
+
+### Operator manual-verification (run before opening signups)
+
+Items the fake-pool tests can't exercise:
+
+1. **Real-browser cookie-banner round-trip.** Visit `/`
+   incognito → confirm the bottom bar appears; click
+   "Essential only" → confirm it disappears AND
+   `localStorage.xray_cookie_consent` carries
+   `{ version: <int>, choices: { essential: true,
+   analytics: false, marketing: false }, decided_at: <ISO> }`.
+   Reload — banner should NOT re-appear. Edit
+   `cookie_banner_enabled='false'` in platform_settings,
+   wipe localStorage, reload — banner should NOT appear.
+2. **Re-acceptance modal end-to-end.** As a logged-in
+   tenant user, hit `POST /api/admin/policies/terms_of_service`
+   from a separate admin session with a new `body_md`. Reload
+   the tenant user's browser → expect the blocking modal
+   listing `terms_of_service` with the new version. Tick the
+   checkbox → "I accept" → confirm modal closes and
+   `policy_acceptances` has the new row.
+3. **Markdown rendering edge cases.** Publish a v2 of
+   `privacy_policy` with: H1/H2/H3 headings, ordered/
+   unordered lists, an inline link, a fenced code block,
+   a horizontal rule. Visit `/legal/privacy_policy` → confirm
+   each renders correctly. Block the CDN for marked (devtools
+   request blocking on `cdn.jsdelivr.net`) → confirm the
+   page falls back to a `<pre>`-formatted plain-text render
+   rather than a blank page.
+4. **Manage panel.** Click "Manage" on the cookie banner →
+   confirm the inline panel appears with three checkboxes
+   (essential disabled+checked, analytics+marketing per
+   `cookie_banner_essential_only_default`). Toggle a
+   category → "Save preferences" → confirm
+   `localStorage.xray_cookie_consent.choices` reflects the
+   exact toggles.
+5. **Account → Privacy → View policy history.** Confirm
+   the modal lists every (slug, version, accepted_at) for
+   the user; click a version link → opens
+   `/legal/<slug>/v/<n>` in a new tab with the archived
+   banner.
+
+### Env changes
+
+None. No new env vars; no Dockerfile or docker-compose changes;
+no new server-side dependencies. `marked` ships from a CDN at
+runtime so no `npm install` step.
+
+### Deploy order on the VPS
+
+Standard `update.sh`:
+
+1. Step 4 re-runs `migrations/*.sql`; migrations 039–042
+   land in order via `apply_migrations_from`. Idempotent
+   re-run is a no-op.
+2. Step 5 rebuilds the server container with the new
+   service + routes. No new dependencies; `npm ci` in the
+   builder stage produces no new package downloads.
+3. After rebuild, sanity-check the migrations applied:
+   ```
+   docker exec -i xray-postgres psql -U xray -d xray <<SQL
+   SELECT to_regclass('platform.policy_documents'),
+          to_regclass('platform.policy_acceptances');
+   SELECT slug, version, is_required FROM platform.policy_documents
+    WHERE version = 1 ORDER BY slug;
+   SELECT key, value FROM platform.platform_settings
+    WHERE key LIKE 'cookie_banner_%' ORDER BY key;
+   SQL
+   ```
+   Expected: both regclasses non-NULL, six v1 rows for the
+   seeded slugs all `is_required=true`, both cookie-banner
+   settings present with `cookie_banner_enabled='true'`.
+4. Operator runs the manual-verification items above.
+5. Operator publishes real v2 of every required slug via
+   `POST /api/admin/policies/<slug>` (or via the in-app UI
+   once the follow-up admin editor lands). Until v2 is
+   published, the public legal pages render the placeholder
+   warning banner — accidental signup-open is loud rather
+   than silent.
+
+### Verify on VPS after deploy
+
+```sql
+-- Step 11 tables present:
+SELECT relname, relhasrowsecurity FROM pg_class
+ WHERE oid IN ('platform.policy_documents'::regclass,
+               'platform.policy_acceptances'::regclass);
+
+-- Indexes for the hot lookups:
+SELECT indexname FROM pg_indexes
+ WHERE schemaname = 'platform'
+   AND tablename IN ('policy_documents','policy_acceptances')
+ ORDER BY tablename, indexname;
+
+-- RLS on policy_acceptances only (policy_documents is the
+-- public-read carve-out per migration 039):
+SELECT tablename, policyname FROM pg_policies
+ WHERE schemaname = 'platform'
+   AND tablename = 'policy_acceptances'
+ ORDER BY policyname;
+
+-- Six v1 placeholder rows seeded (or admin-edited):
+SELECT slug, version, is_required, length(body_md) AS body_len
+  FROM platform.policy_documents
+ ORDER BY slug, version;
+```
+
+### After step 11 — production-ready?
+
+**Almost.** Step 11 closes the privacy-compliance gap. Still
+required:
+
+- **Step 12** — pipeline DB Model D + automated backups +
+  tested restore drill + `PROBE_RLS=1` in CI.
+
+After **step 12** the system meets the production-readiness gate
+described in the Roadmap below. Step 11 is three of four pre-
+launch steps closed (8, 9, 10, 11 shipped; 12 remaining).
+
+
 ## Roadmap — steps 8 through 21
 
 Forward-looking. Each row is one Claude Code session unless
@@ -3380,7 +3787,7 @@ everything after that is hygiene + post-launch upgrades.
 | 8 | CI plumbing | 6 (shipped) | Dependabot, GitHub secret scanning, gitleaks pre-commit, CodeQL workflow, Trivy image scan, `engines.node` + `typecheck` script. See "Step 8 — CI plumbing (shipped)" above. |
 | 9 | Brute-force + MFA hardening | 14 (shipped) | App-layer rate limiting (100/60s IP+device, 20/24h per email on `/api/auth/*`); TOTP enrollment + verify + backup codes alongside existing passkey path; magic-link per-link attempt counter + "N attempts left" banner; passkey enumeration guard; `require_mfa_for_platform_admins` flag in `platform_settings`. See "Step 9 — Brute-force + MFA hardening (shipped)" above. |
 | 10 | Auth surface area cleanup | 20 (shipped) | CSRF (double-submit token); session rotation on auth state change (implicit via `createSession` at every transition); impersonation start/stop UI + persistent banner; magic-link IP/UA fingerprint capture (enforcement deferred behind a flag); account-deletion cascade endpoint (soft-delete); GDPR Art. 20 data-export endpoint. Post-deploy hardening dropped IP/UA-hash gates pending operator-flippable re-enable. See "Step 10 — Auth surface area cleanup (shipped)" above. |
-| 11 | Privacy & compliance docs | 10-12 | `policy_documents` versioned append-only table; admin markdown editor in Admin → Policies; public `/legal/<slug>` routes; `policy_acceptances` table + re-acceptance modal on version bump; cookie banner on landing; slugs: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. |
+| 11 | Privacy & compliance docs | 14 (shipped) | `policy_documents` versioned append-only table; `policy_acceptances` per-user-per-version ledger; admin Policies CRUD endpoints; public `/legal/<slug>` SPA routes (markdown via `marked` lazy-loaded from CDN); re-acceptance modal on version bump; landing-page cookie banner (slim bottom bar, three-action pattern); Account → Privacy card policy-history modal. Slugs seeded with placeholder bodies + all required: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. See "Step 11 — Privacy & compliance docs (shipped)" below. |
 | 12 | Pipeline DB Model D + backups + PROBE_RLS in CI | 12-15 | Per `.claude/pipeline-hardening-notes.md` Model D: `tenant_id` + RLS + `app.current_tenant` per-workflow; `pipeline_user` role split (no ownership); pg_basebackup + WAL archiving + documented + tested restore drill in `docs/operator.md`; GitHub Actions runs `PROBE_RLS=1 npx vitest run src/db/rls-probe.test.ts` against ephemeral Postgres on every PR. **PRODUCTION READY AFTER THIS STEP.** |
 
 ### Pre-launch nice-to-have (clears the deck — optional)
