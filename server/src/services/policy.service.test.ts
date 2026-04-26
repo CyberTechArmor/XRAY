@@ -172,6 +172,20 @@ function makeFakePool() {
         return Promise.resolve({ rows, rowCount: rows.length });
       }
 
+      // setRequired UPDATE — match the latest version's is_required.
+      if (s.startsWith('UPDATE platform.policy_documents') && s.includes('SET is_required = $1')) {
+        const newRequired = ps[0];
+        const slug = ps[1];
+        const matches = documents.filter((d) => d.slug === slug).sort((a, b) => b.version - a.version);
+        if (matches.length === 0) return Promise.resolve({ rows: [], rowCount: 0 });
+        matches[0].is_required = newRequired;
+        const r = matches[0];
+        return Promise.resolve({
+          rows: [{ slug: r.slug, version: r.version, title: r.title, body_md: r.body_md, is_required: r.is_required, published_at: r.published_at, published_by: r.published_by }],
+          rowCount: 1,
+        });
+      }
+
       // listAllVersions admin query
       if (s.includes('FROM platform.policy_documents pd') && s.includes('LEFT JOIN')) {
         const rows = documents
@@ -386,5 +400,47 @@ describe('policy.service — publish + pendingForUser round-trip', () => {
     const history = await policy.listMyAcceptances(USER_ID, TENANT_ID);
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({ slug: 'acceptable_use', version: 1 });
+  });
+
+  it('setRequired toggles is_required on the latest version without bumping', async () => {
+    const { __setPoolForTest } = await import('../db/connection');
+    const { pool } = makeFakePool();
+    __setPoolForTest(pool);
+    const policy = await import('./policy.service');
+
+    const v1 = await policy.publishVersion(
+      'subprocessors',
+      { title: 'Sub-processors', body_md: '# List', is_required: true },
+      ADMIN_USER_ID,
+    );
+    expect(v1.is_required).toBe(true);
+
+    // Toggle off — version stays at 1.
+    const flipped = await policy.setRequired('subprocessors', false, ADMIN_USER_ID);
+    expect(flipped.is_required).toBe(false);
+    expect(flipped.version).toBe(1);
+
+    // Re-read latest — confirms persistence + the slug no longer
+    // appears in pendingForUser when not accepted.
+    const latest = await policy.getLatest('subprocessors');
+    expect(latest!.is_required).toBe(false);
+
+    const pending = await policy.pendingForUser(USER_ID, TENANT_ID);
+    expect(pending.find((p) => p.slug === 'subprocessors')).toBeUndefined();
+
+    // Flip back on — pendingForUser now surfaces it.
+    await policy.setRequired('subprocessors', true, ADMIN_USER_ID);
+    const pending2 = await policy.pendingForUser(USER_ID, TENANT_ID);
+    expect(pending2.find((p) => p.slug === 'subprocessors')).toBeDefined();
+  });
+
+  it('setRequired throws LEGAL_SLUG_NOT_FOUND for an unknown slug', async () => {
+    const { __setPoolForTest } = await import('../db/connection');
+    const { pool } = makeFakePool();
+    __setPoolForTest(pool);
+    const policy = await import('./policy.service');
+    await expect(
+      policy.setRequired('never_published', true, ADMIN_USER_ID),
+    ).rejects.toMatchObject({ code: 'LEGAL_SLUG_NOT_FOUND' });
   });
 });
