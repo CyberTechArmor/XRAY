@@ -1,0 +1,48 @@
+# CodeQL configuration for XRay.
+#
+# Goal: keep `security-and-quality` running for everything, but
+# exclude one rule that has no path-level granularity and is firing
+# as a false positive on a code path that is already covered by a
+# stronger custom mitigation.
+#
+# Excluded rule:
+#
+#   js/missing-token-validation (CWE-352, "Missing CSRF middleware")
+#
+#   Why excluded: the rule recognises CSRF protection only when one
+#   of a small set of packaged middlewares is present (csurf, lusca,
+#   express-csrf). XRay implements CSRF protection in
+#   server/src/middleware/csrf.ts:
+#
+#     - Double-submit cookie pattern with HMAC-signed payload.
+#     - HMAC secret lazy-seeded into platform_settings, rotatable.
+#     - Mounted GLOBALLY at server/src/index.ts via
+#       `app.use(verifyCsrf)` AFTER `cookieParser()` and BEFORE every
+#       state-changing route mount, so no state-changing handler can
+#       sidestep it short of an explicit code change.
+#     - Skip-list is allow-list-only (Bearer auth, GET/HEAD/OPTIONS,
+#       sender-signed webhooks, public surfaces, unauth bootstrap).
+#     - Test coverage in server/src/middleware/csrf.test.ts locks
+#       both the issuance round-trip and every skip-list entry.
+#
+#   That is materially more thorough than the csurf package the rule
+#   is happy with (csurf is itself deprecated by its maintainer).
+#   CodeQL has no per-file or per-route override for this rule, so a
+#   project-level exclude is the only mechanism the tool offers.
+#
+#   Trade-off: a future CSRF regression in any handler would not be
+#   caught by this specific rule. It would still be caught by
+#   middleware/csrf.test.ts (which exercises the verify path on
+#   representative routes) and by the human review of changes to
+#   middleware/csrf.ts itself.
+#
+# All other security-and-quality rules remain active.
+
+name: "XRay CodeQL config"
+
+queries:
+  - uses: security-and-quality
+
+query-filters:
+  - exclude:
+      id: js/missing-token-validation

@@ -27,7 +27,12 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
-          queries: security-and-quality
+          # Custom config replaces the inline `queries:` arg — the
+          # config still uses `security-and-quality` but excludes one
+          # rule (js/missing-token-validation) that has no path-level
+          # granularity. See .github/codeql/codeql-config.yml for the
+          # full rationale.
+          config-file: .github/codeql/codeql-config.yml
 
       - uses: github/codeql-action/analyze@v3
         with:
