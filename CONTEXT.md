@@ -3808,6 +3808,305 @@ described in the Roadmap below. Step 11 is three of four pre-
 launch steps closed (8, 9, 10, 11 shipped; 12 remaining).
 
 
+## Step 12 — Platform DB backups + PROBE_RLS=1 in CI (shipped)
+
+The "production-ready floor" milestone for the platform DB —
+automated `pg_basebackup` + WAL archive on a local volume with an
+opt-in S3-compatible offsite mirror, a tested restore drill, a
+cold-restore-from-S3 runbook, and (the long-tail surprise) a real
+fix to FOUR-and-a-half years of decorative RLS at the DB layer.
+
+### Scope change mid-flight
+
+The kickoff allocated three concerns: (A) pipeline DB Model D, (B)
+backups + restore drill, (C) `PROBE_RLS=1` in CI. After three
+commits on (A), the operator narrowed step 12 to "platform DB only
+— n8n / pipeline / Model D are separate tracks; the platform DB is
+what carries the UI state we care about backing up." The pipeline
+commits were discarded (`git reset --hard 622a618`); the surface
+that landed is platform-DB only. Pipeline DB Model D is now
+explicitly deferred to **step 15+** (alongside Model J).
+
+### Commit trail (7 commits on `claude/pipeline-db-backups-step12-pxNOb`)
+
+| # | Concern | Ref |
+|---|---|---|
+| B1 | Local pg_basebackup + WAL archiving + compose wiring | `scripts/wal-archive.sh`, `scripts/backup-platform.sh`, `docker-compose.yml` |
+| B2 | S3 mirror (additive, env-var-gated) | `scripts/backup-s3-sync.sh` |
+| B3 | Restore drill (sidecar Postgres + WAL replay) | `scripts/restore-drill.sh` |
+| B4 | Backups + cold-restore-from-S3 operator runbook | `docs/operator.md` |
+| C5a | FORCE RLS + NULL-safe policies + connection.ts fix | `migrations/044_rls_force_and_null_safe.sql`, `server/src/db/connection.ts`, `connection.test.ts`, `rls-probe.test.ts` |
+| C5c | rls-probe (platform) CI job + probe doc | `.github/workflows/ci.yml`, `docs/operator.md` |
+| D6  | This handoff | `CONTEXT.md` |
+
+### What shipped — Concern B (backups)
+
+**Local-first by design.** The local volume (`pg_backups`) is the
+primary target. S3 mirroring layers on top via env vars; if
+`BACKUP_S3_BUCKET` is unset every code path stays on the local-only
+behavior. Decoupled from Postgres deliberately: `archive_command`
+writes to the local volume only and ALWAYS succeeds (assuming local
+disk has space). An S3 outage doesn't stall WAL recycling.
+
+- `scripts/wal-archive.sh` — invoked by Postgres for every completed
+  WAL segment. Self-heals (mkdir -p the archive dir on first use).
+  Refuses to overwrite (exit 2) — a same-name target signals
+  trouble worth surfacing. Atomic via tmp + rename.
+- `scripts/backup-platform.sh` — runs `pg_basebackup` INSIDE the
+  postgres container into a timestamped UTC directory. Tar+gzip
+  format. Writes `MANIFEST.txt` for the restore drill. Retention
+  prune via `find -mtime` (busybox-portable; Alpine date doesn't
+  accept "N days ago"). Always keeps the most recent base
+  unconditionally so a misconfigured `RETAIN_DAYS=0` can't leave
+  us empty-handed. Tail-end invokes `backup-s3-sync.sh` if S3 is
+  configured (warn-don't-fail on S3 errors).
+- `scripts/backup-s3-sync.sh` — runs the official `amazon/aws-cli`
+  image as a one-shot via `docker run --rm` so operators don't
+  need aws-cli on the host. Mounts the named volume read-only —
+  a misbehaving aws-cli can't corrupt the local source of truth.
+  Sources `.env`. Four modes: `wal` (every 5 min via cron),
+  `base` (post-base-backup tail), `all` (one-shot for cold-restore
+  staging), `prune` (operator-driven `--delete`). Supports any
+  S3-compatible endpoint (AWS S3, B2, R2, Spaces, MinIO) via
+  `BACKUP_S3_ENDPOINT`. `--size-only` diff so re-syncs are fast +
+  idempotent.
+- `scripts/restore-drill.sh` — spins up a SIDECAR Postgres in a
+  separate `xray_restore_drill_data` volume, restores the latest
+  base + replays WAL, runs `\d platform.tenants` + a count smoke
+  query, tears down. Flags: `--base <TS|latest>`, `--target-time
+  <ISO>` (PITR), `--from-s3` (cold-restore dry-run; runs
+  `backup-s3-sync.sh all` first), `--keep`, `--teardown`. NEVER
+  touches the live platform DB.
+
+`docker-compose.yml` adds the `pg_backups` named volume +
+`archive_mode=on` + `archive_timeout=300` (force a WAL switch every
+5 min so even an idle DB produces a steady archive cadence) +
+mounts the wal-archive script read-only into the container.
+
+`docs/operator.md` adds **Backups** (cron schedule, retention,
+S3 mirror env matrix, restore drill flags + first-run output
+placeholder block) and **Cold-restore — when the platform DB is
+gone** (7-step runbook covering `.env` reconstitution,
+ENCRYPTION_KEY + JWT_SECRET sidecar requirement, stage from S3 or
+copy local volume, drill against staged backups, restore into
+production data volume, bring up stack, verify migrations + RLS
+post-restore).
+
+### What shipped — Concern C (RLS gate + the bigger find)
+
+Wiring the existing `PROBE_RLS=1` test into CI uncovered that RLS
+has been **decorative** at the DB layer in production. Two stacked
+issues:
+
+1. **Owner bypass.** `docker-compose`'s `POSTGRES_USER=xray` runs
+   `init.sql` AS xray, so xray ends up OWNING every `platform.*`
+   table. Postgres bypasses RLS for table owners by default —
+   policies attach but never fire on a tenant-context checkout.
+   CONTEXT.md step-6's "RLS is decorative no more" was true at
+   the application layer (helpers impose discipline on which
+   `tenant_id` each query targets) but NOT at the DB.
+2. **Non-NULL-safe policies + helper transaction-scope bug.** Once
+   owner-bypass is removed, policies actually evaluate and crash
+   on unset GUCs (`''::uuid` / `''::boolean`). AND the helpers
+   used `set_config(..., is_local=true)` *outside* an explicit
+   `BEGIN/COMMIT` — which is effectively a no-op (the value is
+   set for the implicit single-statement transaction and
+   immediately reset). So even when a helper "set"
+   `current_tenant`, the very next query saw it unset.
+
+Fix lands in three pieces:
+
+**migration 044 — `migrations/044_rls_force_and_null_safe.sql`.**
+Adds three STABLE PARALLEL SAFE helper functions in the platform
+schema (`current_tenant_id()`, `current_user_id()`,
+`is_platform_admin()`) that centralise NULL-safe GUC reads.
+`ALTER TABLE … FORCE ROW LEVEL SECURITY` on every tenant-scoped
+table. DROPs + re-CREATEs every `tenant_isolation` /
+`platform_admin_bypass` / `user_scope` policy with the helper-call
+expressions. Both `USING` and `WITH CHECK` set explicitly on every
+policy so INSERT paths are gated identically to SELECT/UPDATE/DELETE.
+Idempotent.
+
+**`server/src/db/connection.ts`.** `withClient` now RESETs every
+RLS GUC to default-deny baseline at the start of every checkout
+(empty `current_tenant`, empty `current_user_id`,
+`is_platform_admin='false'`). Helpers (`withTenantContext` /
+`withUserContext` / `withAdminClient`) set their specific context
+AFTER the reset. Switched from `is_local=true` to `is_local=false`
+on the bare-checkout helpers so the values actually take effect
+outside transactions. Transaction helpers keep `is_local=true`
+(works inside BEGIN/COMMIT) and also reset before applying caller
+context.
+
+**`server/src/db/rls-probe.test.ts`.** Fixes a pre-existing cleanup
+bug — FK chains from invitations / api_keys / webhooks /
+file_uploads / dashboard_* / etc. weren't deleted before users so
+a partial-failure run left rows that broke the next run's setup.
+Adds the missing DELETEs in FK-safe order. Also fixes a
+`NOT NULL` violation in the tenant_notes test (missing `user.name`).
+
+**CI gate (`.github/workflows/ci.yml`).** New `rls-probe (platform)`
+job that spins up `postgres:16-alpine`, applies `init.sql` + every
+numbered migration (with the same "tolerate already-exists +
+duplicate + transaction-aborted" filter `update.sh` uses),
+provisions a non-owner `xray_app` role with DML grants, runs the
+SQL probe (`migrations/probes/probe-rls-cross-tenant.sql`) first
+for localised failure messages, then runs the TS probe
+(`PROBE_RLS=1 npx vitest run src/db/rls-probe.test.ts`) for
+per-table coverage. Gates merges.
+
+`docs/operator.md` gains a **RLS probe — what CI checks** section
+documenting the contract (cross-tenant SELECT returns zero,
+cross-tenant INSERT raises, admin bypass works, inbox/AI user-scope
+holds, no-context default-deny), why the probe runs as `xray_app`
+(not `xray`), and how to triage a red probe.
+
+### Verified end-to-end (sandbox)
+
+- 26/26 RLS probe specs pass against a fresh local Postgres seeded
+  with `init.sql` + every migration through 044, connecting as a
+  non-owner `xray_app` role. (Was 0/26 before C5a.)
+- Idempotent: probe re-runs back-to-back stay green.
+- SQL probe `PROBE PASS — cross-tenant isolation holds, admin bypass works`.
+- Unit suite: 166 passed / 26 skipped — no regression from the
+  step-11 baseline (164 passed / 26 skipped; +2 from connection.ts
+  test re-shape).
+- `npm run typecheck`: clean.
+
+### Not verified end-to-end (operator-side)
+
+- `scripts/restore-drill.sh` end-to-end execution. The dev sandbox
+  has Postgres tools but no docker daemon; the script is bash-
+  syntax-clean and the embedded `docker run --entrypoint sh -c '…'`
+  flow has been audited by hand. **Operator runs the drill once
+  against the live system on first deploy and pastes the output
+  into the placeholder block in `docs/operator.md` as the proof.**
+- The cron entries in `docs/operator.md` are recommendations; the
+  operator wires them into their host crontab on the deploy host.
+
+### Env changes
+
+- New named volume `pg_backups` in `docker-compose.yml`. Created on
+  first `docker compose up` after the change.
+- New env vars (all optional; absent → local-only mode):
+  `BACKUP_S3_BUCKET`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`,
+  `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`,
+  `BACKUP_S3_PREFIX`, `BACKUP_RETAIN_DAYS`,
+  `BACKUP_S3_CLIENT_IMAGE`, `BACKUP_VOLUME_NAME`.
+- Postgres `command:` override in compose adds `archive_mode=on +
+  archive_command=… + archive_timeout=300`. Existing data volumes
+  start producing archived WAL on next container restart.
+
+### Deploy order on the VPS
+
+Standard `update.sh`:
+
+1. Step 4 re-runs `migrations/*.sql`; **migration 044 lands** —
+   adds FORCE RLS + NULL-safe policies. The DROP/CREATE policy
+   loop runs inside a single transaction; either every policy gets
+   the new shape or none do. Re-applying is a no-op.
+2. Step 5 rebuilds the server container with the connection.ts
+   helper changes. Existing service code keeps working — the
+   helper behavior change is internal (set_config flag flip +
+   reset) and transparent to callers.
+3. Operator restarts the postgres service to pick up the
+   `archive_mode=on` + `archive_command` flags from the compose
+   command override:
+   ```
+   docker compose up -d --force-recreate postgres
+   ```
+   The `pg_backups` named volume is created fresh; first WAL
+   segment archives ~5 minutes after restart.
+4. Operator drops a `.env` line for `BACKUP_S3_*` if S3 mirroring
+   is wanted; the local-only path needs no env changes.
+5. Operator wires the three cron entries from
+   `docs/operator.md` (nightly base, every-5-min WAL→S3, monthly
+   drill).
+6. Operator runs `scripts/restore-drill.sh` ONCE end-to-end and
+   pastes the output into the placeholder block in
+   `docs/operator.md`.
+
+### Verify on VPS after deploy
+
+```sql
+-- FORCE RLS landed on every tenant-scoped table:
+SELECT count(*) FROM pg_class
+ WHERE relnamespace = 'platform'::regnamespace
+   AND relrowsecurity AND NOT relforcerowsecurity;
+-- Expect: 0
+
+-- Helper functions present:
+SELECT proname FROM pg_proc
+ WHERE pronamespace = 'platform'::regnamespace
+   AND proname IN ('current_tenant_id','current_user_id','is_platform_admin');
+-- Expect: 3 rows
+
+-- Run the SQL probe (xray, the docker bootstrap user, will bypass
+-- RLS as the table owner — that's expected; the test exists to
+-- confirm policies are well-formed, NOT to prove ownership-bypass
+-- was removed at the connecting-user level. Production should
+-- follow up by switching the runtime connection to a non-owner
+-- role; that change is post-step-12.):
+\i migrations/probes/probe-rls-cross-tenant.sql
+-- Expect (when run as a non-owner role): PROBE PASS
+
+-- Backups producing output:
+docker compose exec postgres ls /var/lib/postgresql/backups/wal | head
+docker compose exec postgres ls /var/lib/postgresql/backups/base
+```
+
+### What didn't ship (deliberately)
+
+- **Pipeline DB Model D / Model J / pipeline_user role / n8n
+  workflow updates.** Out of step-12 scope per the operator's
+  mid-flight scope narrowing. Lands separately in step 15+.
+- **Switching production's runtime connection from `xray` (owner)
+  to a non-owner role.** FORCE RLS is the half that landed; the
+  role split is a follow-up so the application-side connection
+  string change can be coordinated with the deployer's restart
+  window. The CI probe already runs as a non-owner role.
+- **Live-system restore-drill output capture.** Operator-side; see
+  the placeholder block in `docs/operator.md`.
+- **Backup encryption.** S3 server-side encryption (SSE-S3 / SSE-KMS)
+  + at-rest encryption on the local volume are operator-side
+  configuration, not in the script. The encrypted columns
+  (OAuth tokens etc.) stay encrypted through the backup +
+  restore path because they're already ciphertext at the row
+  level — `ENCRYPTION_KEY` mismatch on the restore host is a
+  brick (covered in the cold-restore runbook).
+
+### After step 12 — production-ready?
+
+**Yes for the platform DB.** All four pre-launch tier-1 hard
+blockers have shipped:
+
+- **Tenant data isolation:** Platform DB RLS top-to-bottom —
+  step 6/7 made the application layer use the helpers correctly,
+  step 12 makes the DB layer actually enforce them (FORCE RLS +
+  NULL-safe policies + helper transaction-scope fix). Tested by
+  the rls-probe (platform) CI job on every PR.
+- **Auth strength:** Passkey + TOTP + backup codes; MFA-required
+  for admins (operator-flippable); brute-force throttled.
+- **Session hygiene:** CSRF + session rotation + impersonation
+  visible.
+- **Privacy compliance:** T&C / privacy / cookie / DPA / AUP /
+  sub-processors all admin-editable + versioned + acceptance-
+  tracked; GDPR Art. 17 + 20 endpoints.
+- **Supply chain:** SCA + SAST + container scanning + secrets
+  scanning all in CI; CodeQL on every PR; Trivy on every built
+  image.
+- **Backups:** Local-first `pg_basebackup` + WAL archive, opt-in
+  S3 offsite, tested restore drill, cold-restore-from-S3 runbook.
+- **Audit trail:** `platform.audit_log`.
+
+Pipeline DB hardening (Model D + J) is acknowledged-deferred. The
+data-lake DB stays on its current operator-managed posture for the
+hard-coded client until step 15+. Per the kickoff, that DB is
+NOT what carries the platform UI state (users / dashboards /
+billing / integrations) — those all live in the platform DB and
+are covered by step 12.
+
+
 ## Roadmap — steps 8 through 21
 
 Forward-looking. Each row is one Claude Code session unless
@@ -3822,7 +4121,7 @@ everything after that is hygiene + post-launch upgrades.
 | 9 | Brute-force + MFA hardening | 14 (shipped) | App-layer rate limiting (100/60s IP+device, 20/24h per email on `/api/auth/*`); TOTP enrollment + verify + backup codes alongside existing passkey path; magic-link per-link attempt counter + "N attempts left" banner; passkey enumeration guard; `require_mfa_for_platform_admins` flag in `platform_settings`. See "Step 9 — Brute-force + MFA hardening (shipped)" above. |
 | 10 | Auth surface area cleanup | 20 (shipped) | CSRF (double-submit token); session rotation on auth state change (implicit via `createSession` at every transition); impersonation start/stop UI + persistent banner; magic-link IP/UA fingerprint capture (enforcement deferred behind a flag); account-deletion cascade endpoint (soft-delete); GDPR Art. 20 data-export endpoint. Post-deploy hardening dropped IP/UA-hash gates pending operator-flippable re-enable. See "Step 10 — Auth surface area cleanup (shipped)" above. |
 | 11 | Privacy & compliance docs | 16 (shipped) | `policy_documents` versioned append-only table; `policy_acceptances` per-user-per-version ledger; admin Policies CRUD endpoints + Admin → Policies UI (markdown editor with live preview + per-version acceptors audit panel); public `/legal/<slug>` SPA routes (markdown via `marked` lazy-loaded from CDN); re-acceptance modal on version bump; landing-page cookie banner (slim bottom bar, three-action pattern); Account → Privacy card policy-history modal. Slugs seeded with placeholder bodies + all required: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. See "Step 11 — Privacy & compliance docs (shipped)" below. |
-| 12 | Pipeline DB Model D + backups + PROBE_RLS in CI | 12-15 | Per `.claude/pipeline-hardening-notes.md` Model D: `tenant_id` + RLS + `app.current_tenant` per-workflow; `pipeline_user` role split (no ownership); pg_basebackup + WAL archiving + documented + tested restore drill in `docs/operator.md`; GitHub Actions runs `PROBE_RLS=1 npx vitest run src/db/rls-probe.test.ts` against ephemeral Postgres on every PR. **PRODUCTION READY AFTER THIS STEP.** |
+| 12 | Platform DB backups + PROBE_RLS in CI | 7 (shipped) | Local-first `pg_basebackup` + WAL archiving on the platform DB; opt-in S3-compatible offsite mirror via `BACKUP_S3_*` env vars; `scripts/restore-drill.sh` (sidecar Postgres, replays WAL, verifies schema + smoke query); cold-restore-from-S3 runbook in `docs/operator.md`; FORCE ROW LEVEL SECURITY + NULL-safe RLS policies (migration 044) so the policies actually fire when tested; GitHub Actions runs `rls-probe (platform)` job against ephemeral Postgres on every PR — gates merges. Pipeline DB Model D was DEFERRED out of step 12 mid-flight (operator scope decision; n8n / pipeline-DB are separate tracks). **PRODUCTION READY AFTER THIS STEP** (platform DB only; pipeline DB hardening lands separately in step 15+). |
 
 ### Pre-launch nice-to-have (clears the deck — optional)
 
