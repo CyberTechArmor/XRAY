@@ -573,3 +573,76 @@ You need:
 If anything fails between step 5 and step 7, the safest revert is
 to wipe the production data volume + stack, restore from a known-
 good base, and re-run from step 4.
+
+## RLS probe — what CI checks
+
+`.github/workflows/ci.yml` runs an `rls-probe (platform)` job on
+every PR. It spins up an ephemeral Postgres, applies `init.sql` +
+every numbered migration, provisions a non-owner `xray_app` role,
+and runs both the SQL probe (`migrations/probes/probe-rls-cross-tenant.sql`)
+and the TypeScript probe (`server/src/db/rls-probe.test.ts`) under
+`PROBE_RLS=1`. **The job gates merges** — a red probe means
+tenant-data isolation has regressed.
+
+### What the probe asserts
+
+For every RLS-enabled tenant-scoped table:
+
+1. **Cross-tenant SELECT returns zero rows.** A query under
+   tenant A's `app.current_tenant` context must return no rows
+   that belong to tenant B.
+2. **Cross-tenant INSERT raises.** An attempt to INSERT a row with
+   `tenant_id = B` while `app.current_tenant = A` raises
+   `new row violates row-level security policy`. The
+   `tenant_isolation` policy now sets `WITH CHECK` explicitly
+   (migration 044) so write paths are gated identically to
+   read paths.
+3. **Admin bypass works.** With `app.is_platform_admin='true'`,
+   the `platform_admin_bypass` policy admits queries across
+   every tenant (used for admin UI, fan-out dispatch, Stripe
+   webhook reverse-lookups).
+4. **User-scope tables stay user-scoped.** The inbox tables
+   (`inbox_threads`, `inbox_messages`, `inbox_thread_participants`)
+   gate on `app.current_user_id` — user A cannot see a thread
+   that lists only user B as a participant, even if both users
+   live in the same tenant.
+5. **Default-deny on no context.** A `withClient` checkout (no
+   tenant + no admin context) returns zero rows from any RLS-
+   enabled table — this is what guards the unauthenticated
+   bootstrap paths from accidentally surfacing tenant data.
+
+### Why the probe runs as `xray_app`, not `xray`
+
+Postgres bypasses RLS for table owners by default. The platform
+DB's `xray` user (the docker bootstrap superuser) owns every
+table, so a probe connecting as `xray` would never exercise the
+policies. CI provisions a separate `xray_app` role with DML
+grants but no ownership and no superuser bit; the probe connects
+as that role so the policies actually fire.
+
+Migration 044 added `ALTER TABLE … FORCE ROW LEVEL SECURITY` to
+every tenant-scoped table so the same enforcement applies even
+when the connecting user is the owner. Production deployments
+should follow up by switching the application's runtime
+connection from `xray` to a non-owner role; that change is
+out of step 12's scope but lined up by the FORCE RLS migration
+already landed.
+
+### Reading a failed probe log
+
+The CI job runs the SQL probe first (one script, one error
+message), then the vitest probe (26 specs covering every
+RLS-enabled table individually). A red SQL probe usually points
+at a missing or mis-shaped policy on a specific table — the
+`RAISE EXCEPTION` message names the table:
+
+```
+ERROR:  LEAK: platform.<table> in tenant A saw <N> probe rows (want 1)
+```
+
+A red vitest probe with most specs failing typically points at
+a bug in one of the connection helpers (`withClient` /
+`withTenantContext` / `withAdminClient`) rather than a per-table
+policy issue. Run the failing spec locally with
+`PROBE_RLS=1 DATABASE_URL=… npx vitest run src/db/rls-probe.test.ts`
+to triage.
