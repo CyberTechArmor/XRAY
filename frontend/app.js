@@ -2129,13 +2129,22 @@
       var detail = p.accepted_version
         ? ('Updated to v' + p.current_version + ' (you accepted v' + p.accepted_version + ')')
         : ('v' + p.current_version + ' — first acceptance');
-      return '<label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid var(--bdr);border-radius:8px;margin-bottom:8px;cursor:pointer">'
-        + '<input type="checkbox" class="policy-accept-cb" data-slug="' + encodeURIComponent(p.slug) + '" data-version="' + p.current_version + '" style="margin-top:3px;flex-shrink:0">'
-        + '<div style="flex:1;min-width:0">'
-        + '<div style="font-size:14px;font-weight:600;color:var(--t1);margin-bottom:2px">' + (label.replace(/[<>]/g, '')) + '</div>'
-        + '<div style="font-size:12px;color:var(--t2);margin-bottom:4px">' + detail + '</div>'
-        + '<a href="/legal/' + encodeURIComponent(p.slug) + '" target="_blank" rel="noopener" style="font-size:12px;color:var(--acc)">Read the document &rarr;</a>'
-        + '</div></label>';
+      // Custom checkbox: visually-hidden native input + .xc-box visual.
+      // Sibling-selector CSS (.xc-input:checked + .xc-box) handles the
+      // tick. escHtml() handles `&"<>` properly — the previous
+      // .replace(/[<>]/g,'') only escaped two of the four characters
+      // and would let `"` break out of attribute context.
+      return '<label class="policy-accept-row">'
+        + '<input type="checkbox" class="policy-accept-cb xc-input" data-slug="' + encodeURIComponent(p.slug) + '" data-version="' + p.current_version + '">'
+        + '<span class="xc-box" aria-hidden="true">'
+        +   '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 8 7 12 13 4"/></svg>'
+        + '</span>'
+        + '<span class="policy-accept-row-body">'
+        +   '<span class="policy-accept-row-title">' + escHtml(label) + '</span>'
+        +   '<span class="policy-accept-row-meta">' + escHtml(detail) + '</span>'
+        +   '<a href="/legal/' + encodeURIComponent(p.slug) + '" target="_blank" rel="noopener" class="policy-accept-row-link">Read the document &rarr;</a>'
+        + '</span>'
+        + '</label>';
     }).join('');
     overlay.innerHTML = '<div class="modal" style="width:560px">'
       + '<div class="modal-head"><div class="modal-title">Updated policies</div></div>'
