@@ -1,9 +1,132 @@
 /* ── Landing page initialization ── */
 (function(){
-  // Skip landing page init on share pages
+  // Skip landing page init on share pages and the public legal pages.
   if (window.location.pathname.match(/^\/share\/.+/)) return;
+  if (window.location.pathname.match(/^\/legal(\/|$)/)) return;
   var landing = document.getElementById('landing-screen');
   if (!landing) return;
+
+  /* ── Step 11: cookie consent banner ──
+   * GDPR-aligned slim bottom bar surfaced on every visit until the
+   * user makes a choice. Three primary actions:
+   *   - Accept all       — analytics + marketing + essential
+   *   - Essential only   — essential cookies only (default-deny
+   *                        non-essential)
+   *   - Manage           — opens an inline panel with per-category
+   *                        toggles + Save
+   * Persists `xray_cookie_consent` to localStorage:
+   *   { version: <cookie_policy version>, choices: {...},
+   *     decided_at: ISO8601 }
+   * Banner is suppressed when:
+   *   - cookie_banner_enabled = 'false' in platform_settings (op
+   *     fronts the site with a separate CMP)
+   *   - the localStorage key already records a decision for the
+   *     current cookie_policy version (re-prompt only on bumps)
+   * Logged-in visits also POST /api/users/me/policy-accept; logged-
+   * out visits store locally only (acceptance lands on signup
+   * when the new account picks up the v1 default in the same
+   * session).
+   */
+  (function initCookieBanner() {
+    var STORAGE_KEY = 'xray_cookie_consent';
+    var DEFAULT_CATEGORIES = { essential: true, analytics: false, marketing: false };
+    fetch('/api/legal').then(function(r) { return r.json(); }).then(function(d) {
+      if (!d || !d.ok || !d.data) return;
+      var settings = d.data.settings || {};
+      if (settings.cookie_banner_enabled === false) return;
+      var policies = Array.isArray(d.data.policies) ? d.data.policies : [];
+      var cookiePolicy = policies.find(function(p) { return p.slug === 'cookie_policy'; });
+      var currentVersion = cookiePolicy ? cookiePolicy.version : 1;
+
+      // Already-decided check — re-prompt only when the policy
+      // version bumps so an operator pushing v2 of cookie_policy
+      // can re-collect consent.
+      var existing = null;
+      try { existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch (e) {}
+      if (existing && existing.version === currentVersion) return;
+
+      var initialEssentialOnly = !!settings.cookie_banner_essential_only_default;
+      renderBanner(currentVersion, initialEssentialOnly);
+    }).catch(function() {
+      // /api/legal unreachable: best-effort fallback. Show the
+      // banner with version=0 so the localStorage entry is at
+      // least set; a future page load with a working API picks
+      // up the bump and re-prompts.
+      var existing = null;
+      try { existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch (e) {}
+      if (existing) return;
+      renderBanner(0, false);
+    });
+
+    function renderBanner(version, essentialOnlyDefault) {
+      if (document.getElementById('cookie-banner')) return;
+      var bar = document.createElement('div');
+      bar.id = 'cookie-banner';
+      bar.className = 'cookie-banner';
+      bar.innerHTML = ''
+        + '<div class="cookie-banner-inner">'
+        +   '<div class="cookie-banner-text">'
+        +     'We use cookies to make XRay work and, with your consent, to understand how it\'s used. '
+        +     '<a href="/legal/cookie_policy" target="_blank" rel="noopener">Cookie policy</a>'
+        +   '</div>'
+        +   '<div class="cookie-banner-actions">'
+        +     '<button type="button" class="cookie-btn" data-action="manage">Manage</button>'
+        +     '<button type="button" class="cookie-btn" data-action="essential">Essential only</button>'
+        +     '<button type="button" class="cookie-btn primary" data-action="accept-all">Accept all</button>'
+        +   '</div>'
+        + '</div>'
+        + '<div class="cookie-manage-panel" id="cookie-manage-panel" style="display:none">'
+        +   '<div class="cookie-cat"><label><input type="checkbox" disabled checked> <strong>Essential</strong> — required for sign-in, security, and basic site function. Always on.</label></div>'
+        +   '<div class="cookie-cat"><label><input type="checkbox" id="cookie-cat-analytics"' + (essentialOnlyDefault ? '' : ' checked') + '> <strong>Analytics</strong> — usage stats so we can find broken pages.</label></div>'
+        +   '<div class="cookie-cat"><label><input type="checkbox" id="cookie-cat-marketing"' + (essentialOnlyDefault ? '' : ' checked') + '> <strong>Marketing</strong> — ads attribution and re-targeting.</label></div>'
+        +   '<div class="cookie-manage-foot"><button type="button" class="cookie-btn primary" data-action="save-manage">Save preferences</button></div>'
+        + '</div>';
+      document.body.appendChild(bar);
+
+      bar.addEventListener('click', function(e) {
+        var t = e.target.closest('button[data-action]');
+        if (!t) return;
+        var action = t.getAttribute('data-action');
+        if (action === 'manage') {
+          var panel = document.getElementById('cookie-manage-panel');
+          panel.style.display = panel.style.display === 'none' ? '' : 'none';
+          return;
+        }
+        if (action === 'accept-all') {
+          decide(version, { essential: true, analytics: true, marketing: true });
+          return;
+        }
+        if (action === 'essential') {
+          decide(version, Object.assign({}, DEFAULT_CATEGORIES));
+          return;
+        }
+        if (action === 'save-manage') {
+          decide(version, {
+            essential: true,
+            analytics: !!document.getElementById('cookie-cat-analytics').checked,
+            marketing: !!document.getElementById('cookie-cat-marketing').checked,
+          });
+          return;
+        }
+      });
+    }
+
+    function decide(version, choices) {
+      var record = { version: version, choices: choices, decided_at: new Date().toISOString() };
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(record)); } catch (e) {}
+      var bar = document.getElementById('cookie-banner');
+      if (bar) bar.remove();
+      // Logged-in visit (rare on the landing page): a same-origin
+      // POST will succeed if api._fetch's CSRF cookie + bearer
+      // are in place. We don't have direct access to the access
+      // token from landing.js, so we rely on app.js exposing a
+      // helper if it has one. Otherwise the acceptance lands on
+      // signup completion via the v1 default seed path.
+      if (typeof window.__xrayRecordCookieAcceptance === 'function') {
+        try { window.__xrayRecordCookieAcceptance(version, choices); } catch (e) {}
+      }
+    }
+  })();
 
   /* ── Modal open/close ── */
   window.openModal = function(form) {

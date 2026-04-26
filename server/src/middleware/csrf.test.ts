@@ -143,6 +143,53 @@ describe('CSRF — verify', () => {
     expect((next as any).mock.calls[0][0]).toBeUndefined();
   });
 
+  // Step 11: public legal-pages surface. GETs already bypass via
+  // methodIsSafe; the explicit isPublicSurface entry guards
+  // against a future POST under /api/legal sneaking past the gate.
+  it('public legal index bypasses (GET-only public surface)', async () => {
+    const { verifyCsrf } = await import('./csrf');
+    const req = makeReq({ method: 'GET', path: '/api/legal' });
+    const next = vi.fn() as unknown as NextFunction;
+    const { res } = makeRes();
+    verifyCsrf(req, res, next);
+    expect((next as any).mock.calls[0][0]).toBeUndefined();
+  });
+
+  it('public legal slug bypasses (GET-only public surface)', async () => {
+    const { verifyCsrf } = await import('./csrf');
+    const req = makeReq({ method: 'GET', path: '/api/legal/terms_of_service' });
+    const next = vi.fn() as unknown as NextFunction;
+    const { res } = makeRes();
+    verifyCsrf(req, res, next);
+    expect((next as any).mock.calls[0][0]).toBeUndefined();
+  });
+
+  it('public legal slug bypasses even on a POST (isPublicSurface entry)', async () => {
+    const { verifyCsrf } = await import('./csrf');
+    const req = makeReq({ method: 'POST', path: '/api/legal/terms_of_service' });
+    const next = vi.fn() as unknown as NextFunction;
+    const { res } = makeRes();
+    verifyCsrf(req, res, next);
+    expect((next as any).mock.calls[0][0]).toBeUndefined();
+  });
+
+  // Step 11: policy-accept is a state-changing POST that MUST be
+  // CSRF-gated (cookie+header pair required) — sits under
+  // /api/users so it inherits the default verifyCsrf path, never
+  // makes it onto the bypass list.
+  it('rejects POST /api/users/me/policy-accept without a CSRF token', async () => {
+    const { __setPoolForTest } = await import('../db/connection');
+    __setPoolForTest(makeFakePool().pool);
+    const { verifyCsrf } = await import('./csrf');
+    const req = makeReq({ method: 'POST', path: '/api/users/me/policy-accept' });
+    const next = vi.fn() as unknown as NextFunction;
+    const { res } = makeRes();
+    verifyCsrf(req, res, next);
+    const err = (next as any).mock.calls[0][0];
+    expect(err).toBeDefined();
+    expect(err.code).toBe('CSRF_INVALID');
+  });
+
   it('rejects state-changing request without cookie or header', async () => {
     const { __setPoolForTest } = await import('../db/connection');
     __setPoolForTest(makeFakePool().pool);

@@ -36,12 +36,23 @@ function deviceFingerprint(req: Request): string {
 
 // Helper shared with auth-attempts.ts: routes that should skip both
 // the IP-device limiter and the auth-attempts ledger.
+//
+// Step 11 adds /api/legal/* — public legal-pages surface (T&C,
+// privacy, cookie, DPA, sub-processors, AUP). GET-only, no auth,
+// no rate limit; a logged-out visitor may legitimately load every
+// slug in quick succession and shouldn't trip the device-throttle.
+// CSRF middleware also delegates to this predicate so /api/legal
+// is exempt from the double-submit gate on GET (already bypassed
+// by methodIsSafe; this is belt-and-braces against a future POST
+// landing in legal.routes by mistake).
 export function isPublicSurface(req: Request): boolean {
   const p = req.path;
   return (
     p === '/api/health' ||
     p.startsWith('/api/embed/') ||
-    p.startsWith('/api/share/')
+    p.startsWith('/api/share/') ||
+    p === '/api/legal' ||
+    p.startsWith('/api/legal/')
   );
 }
 

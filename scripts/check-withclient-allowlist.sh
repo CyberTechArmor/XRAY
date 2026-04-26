@@ -15,6 +15,11 @@
 #   - server/src/services/settings.service.ts   (platform_settings, no RLS)
 #   - server/src/services/email.service.ts   (email_templates, no RLS)
 #   - server/src/services/email-templates.ts   (boot seed into email_templates)
+#   - server/src/services/meet.service.ts    (platform_settings + tenants carve-outs)
+#   - server/src/services/rbac.service.ts    (roles / role_permissions carve-outs)
+#   - server/src/services/role.service.ts    (permissions carve-out)
+#   - server/src/services/tenant.service.ts  (tenants carve-out)
+#   - server/src/services/policy.service.ts  (step 11: policy_documents public-read)
 #
 # Usage:
 #   scripts/check-withclient-allowlist.sh                  # scan full tree
@@ -44,6 +49,14 @@ ALLOWLIST=(
   "server/src/services/rbac.service.ts"
   "server/src/services/role.service.ts"
   "server/src/services/tenant.service.ts"
+  # Step 11: policy_documents is the public-read carve-out backing
+  # /api/legal/<slug>. Logged-out visitors must read latest published
+  # versions before any tenant context exists. Mirrors the
+  # magic_links / platform_settings shape. Admin writes
+  # (publishVersion) use withAdminClient; tenant-scoped acceptance
+  # writes use withTenantContext — only the public read paths fall
+  # under this allow-list entry.
+  "server/src/services/policy.service.ts"
 )
 
 print_allowlist() {

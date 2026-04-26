@@ -22,6 +22,7 @@ import * as auditService from '../services/audit.service';
 import * as integrationService from '../services/integration.service';
 import * as fanOutService from '../services/fan-out.service';
 import * as impersonationService from '../services/impersonation.service';
+import * as policyService from '../services/policy.service';
 import { issueCsrfCookie } from '../middleware/csrf';
 import { hashRefreshToken } from '../lib/crypto';
 import { config } from '../config';
@@ -990,6 +991,83 @@ router.delete('/integrations/:id', async (req, res, next) => {
   try {
     await integrationService.deleteIntegration(req.params.id, req.user!.sub);
     res.json({ ok: true, data: { message: 'Integration deleted' } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Step 11: Admin → Policies ─────────────────────────────────────
+//
+// All under the existing requirePermission('platform.admin') gate
+// inherited from `router.use(...)` at the top of this file.
+// publishVersion runs under withAdminClient; listAcceptors crosses
+// tenants by design (audit trail of every acceptor).
+
+// GET /api/admin/policies — every slug × every version + counts.
+router.get('/policies', async (req, res, next) => {
+  try {
+    const data = await policyService.listAllVersions();
+    res.json({
+      ok: true,
+      data,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/policies/:slug — publish a new version.
+// Body: { title, body_md, is_required }. Slug comes from the URL,
+// version is auto-incremented by policy.service. Returns the new
+// row including version.
+router.post('/policies/:slug', async (req, res, next) => {
+  try {
+    const { title, body_md, is_required } = req.body ?? {};
+    const data = await policyService.publishVersion(
+      req.params.slug,
+      { title, body_md, is_required },
+      req.user!.sub,
+    );
+    res.status(201).json({
+      ok: true,
+      data,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/policies/:slug/acceptances?version=N — paginated
+// list of every user who accepted the (slug, version) tuple.
+// Defaults version to the latest published version when omitted.
+router.get('/policies/:slug/acceptances', async (req, res, next) => {
+  try {
+    const slug = req.params.slug;
+    let version: number | null = null;
+    if (typeof req.query.version === 'string') {
+      const v = parseInt(req.query.version, 10);
+      if (Number.isFinite(v) && v >= 1) version = v;
+    }
+    if (version === null) {
+      const latest = await policyService.getLatest(slug);
+      if (!latest) {
+        return res.status(404).json({
+          ok: false,
+          error: { code: 'LEGAL_SLUG_NOT_FOUND', message: 'No published version for that slug' },
+        });
+      }
+      version = latest.version;
+    }
+    const page = parseInt((req.query.page as string) || '1', 10) || 1;
+    const limit = parseInt((req.query.limit as string) || '50', 10) || 50;
+    const data = await policyService.listAcceptors(slug, version, page, limit);
+    res.json({
+      ok: true,
+      data: { ...data, slug, version },
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
   } catch (err) {
     next(err);
   }
