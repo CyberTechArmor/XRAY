@@ -120,7 +120,7 @@ ADMIN_POLICIES_JS = r"""function initAdminPolicies(container, api, user) {
 
   function renderSlugCard(slug) {
     var versions = slug.versions || [];
-    var latest = versions[0] || { version: 0, title: '', is_required: true, is_placeholder: false, published_at: null, acceptance_count: 0 };
+    var latest = versions[0] || { version: 0, title: '', is_required: false, is_placeholder: false, published_at: null, acceptance_count: 0 };
     var card = document.createElement('div');
     card.className = 'pol-card';
     var totalAcceptors = versions.reduce(function(a, v) { return a + (v.acceptance_count || 0); }, 0);
@@ -154,7 +154,7 @@ ADMIN_POLICIES_JS = r"""function initAdminPolicies(container, api, user) {
 
   function renderSlugBody(body, slug) {
     var versions = slug.versions || [];
-    var latest = versions[0] || { title: '', body_md: '', is_required: true, version: 0 };
+    var latest = versions[0] || { title: '', body_md: '', is_required: false, version: 0 };
 
     var versionsHtml = '<div class="pol-versions">';
     versions.forEach(function(v) {
@@ -300,7 +300,7 @@ def main():
     nav.insert(insert_at, new_item)
     b['nav'] = nav
     # Bump bundle version so the SPA cache busts
-    b['version'] = '2026-04-25-step11-admin-policies-xss'
+    b['version'] = '2026-04-26-step11-policies-ux1'
 
     BUNDLE.write_text(json.dumps(b, ensure_ascii=False))
     print('OK admin_policies view + nav entry injected')

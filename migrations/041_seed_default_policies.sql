@@ -18,12 +18,15 @@
 --     warning when version = 1 AND the body still contains the
 --     marker substring, so accidental ship is loud (rendered
 --     warning) rather than silent (real-but-unreviewed template).
---   Decision 5 (required vs optional): all six seeded with
---     is_required = TRUE. Operator can flip a specific slug
---     (typically subprocessors) to FALSE post-deploy via Admin →
---     Policies so its version bumps don't gate the re-acceptance
---     modal. Default is "gate everything" — safer than the
---     reverse.
+--   Decision 5 (required vs optional): originally seeded with
+--     is_required = TRUE. Reversed by post-ship operator feedback —
+--     placeholders are now seeded with is_required = FALSE so a
+--     fresh deploy doesn't immediately gate every signed-in user
+--     behind a re-acceptance modal that requires accepting six
+--     unfinalised documents. Operator promotes a slug to
+--     is_required=TRUE per slug via the Admin → Policies UI
+--     (clickable REQUIRED/OPTIONAL badge) once the document text
+--     is finalised. Migration 043 flips existing platforms.
 --
 -- ON CONFLICT DO NOTHING on (slug, version) so re-runs preserve
 -- any v1 the admin has already edited (admin edits mint v2+ and
@@ -45,22 +48,22 @@ INSERT INTO platform.policy_documents (slug, version, title, body_md, is_require
 VALUES
   ('terms_of_service', 1, 'Terms of Service',
    E'# Terms of Service\n\n[XRAY-POLICY-PLACEHOLDER] This document is a placeholder. The operator should publish v2 with the actual policy text before opening signups.\n\nUntil then, by using this service you acknowledge that the binding terms have not yet been published.\n',
-   TRUE),
+   FALSE),
   ('privacy_policy', 1, 'Privacy Policy',
    E'# Privacy Policy\n\n[XRAY-POLICY-PLACEHOLDER] This document is a placeholder. The operator should publish v2 with the actual policy text (GDPR Art. 13/14 disclosures: data categories, lawful basis, retention, third-party recipients, data subject rights) before opening signups.\n',
-   TRUE),
+   FALSE),
   ('cookie_policy', 1, 'Cookie Policy',
    E'# Cookie Policy\n\n[XRAY-POLICY-PLACEHOLDER] This document is a placeholder. The operator should publish v2 listing each cookie set by the application, its category (essential / analytics / marketing), retention, and lawful basis before opening signups.\n',
-   TRUE),
+   FALSE),
   ('dpa', 1, 'Data Processing Agreement',
    E'# Data Processing Agreement\n\n[XRAY-POLICY-PLACEHOLDER] This document is a placeholder. The operator should publish v2 with the GDPR Art. 28 controller-processor agreement (subject matter, duration, nature, types of personal data, categories of data subjects, controller obligations) before opening signups.\n',
-   TRUE),
+   FALSE),
   ('subprocessors', 1, 'Sub-processors',
    E'# Sub-processors\n\n[XRAY-POLICY-PLACEHOLDER] This document is a placeholder. The operator should publish v2 enumerating every third-party data processor (cloud hosting, payments, email, analytics, …) with the data categories shared and the legal basis before opening signups.\n',
-   TRUE),
+   FALSE),
   ('acceptable_use', 1, 'Acceptable Use Policy',
    E'# Acceptable Use Policy\n\n[XRAY-POLICY-PLACEHOLDER] This document is a placeholder. The operator should publish v2 describing prohibited content, abuse handling, and enforcement before opening signups.\n',
-   TRUE)
+   FALSE)
 ON CONFLICT (slug, version) DO NOTHING;
 
 COMMIT;
