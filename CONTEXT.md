@@ -3378,7 +3378,7 @@ Account → Privacy policy-history modal. First `withClient`
 allow-list addition since step 7's lock — `policy.service.ts`
 holds the public-read carve-out backing `/api/legal/<slug>`.
 
-### Commit trail (14 commits on `claude/privacy-compliance-docs-6S996`)
+### Commit trail (16 commits on `claude/privacy-compliance-docs-6S996`)
 
 | # | Concern | Ref |
 |---|---|---|
@@ -3396,10 +3396,14 @@ holds the public-read carve-out backing `/api/legal/<slug>`.
 | 12 | landing-page cookie consent banner | `frontend/landing.js`, `frontend/landing.css`, `frontend/app.js` |
 | 13 | Account → Privacy card policy-history modal | `frontend/bundles/general.json` |
 | 14 | csrf.test.ts — /api/legal skip-list + policy-accept | `middleware/csrf.test.ts` |
+| 15 | CONTEXT.md handoff (this section) | `CONTEXT.md` |
+| 16 | Admin → Policies UI bundle | `bundles/general.json`, `frontend/app.js`, `scripts/inject-admin-policies-view.py` |
 
-The kickoff allocated 10–12 commits; final landed shape is 14
+The kickoff allocated 10–12 commits; final landed shape is 16
 plus the kickoff doc (commit 0 from step 10's close-out).
-One-concern-per-commit discipline preserved end-to-end.
+One-concern-per-commit discipline preserved end-to-end. Commit
+16 closed the admin WYSIWYG gap originally deferred at commit
+15 — operator audit caught it before deploy.
 
 ### What shipped
 
@@ -3592,6 +3596,27 @@ pre-commit hook + the full-tree CI scan both pass.
   cell links to `/legal/<slug>/v/<n>` so the user can read
   the exact policy text they accepted. Bundle version bumped
   to bust the SPA cache.
+- Admin → Policies UI — `bundles/general.json` v
+  `2026-04-25-step11-admin-policies` adds an `admin_policies`
+  view mounted under the Platform sidebar section
+  (permission `platform.admin`, label "Policies"). One card
+  per slug listing the latest title + version + total
+  versions + total acceptors with PLACEHOLDER / REQUIRED /
+  OPTIONAL flag badges. Click expands the card to:
+  * Per-version row with View link → `/legal/<slug>/v/<n>`
+    and Acceptors link → lazy-loaded paginated table of
+    (user name, email, accepted_at) backed by
+    `GET /api/admin/policies/:slug/acceptances?version=N`.
+  * Publish-new-version form: title input, body_md
+    textarea, is_required checkbox, **live preview** of
+    the rendered markdown (`marked` from the same CDN the
+    public legal pages use, plain-text fallback if blocked).
+    Confirm dialog before submit — every signed-in user
+    will be forced to re-accept on next page load.
+  Implemented via `scripts/inject-admin-policies-view.py`
+  (committed to the repo) so the JSON-bundle diff stays
+  reviewable. Init wired into `app.js`'s `getInitCall` map
+  as `admin_policies → initAdminPolicies(container,api,user)`.
 
 ### What didn't ship (deliberately)
 
@@ -3609,16 +3634,11 @@ Per the kickoff's "Step 11 must NOT do" list:
   `policy.service.ts`.** Every other new code path uses
   `withTenantContext` / `withTenantTransaction` /
   `withAdminClient` per CLAUDE.md.
-- **No admin Policies WYSIWYG UI bundle.** The kickoff
-  alluded to one in section D but the Tier-1 surface is
-  the API + the public pages + the re-acceptance modal +
-  the cookie banner. The admin endpoints are wired
-  (`POST /api/admin/policies/:slug` accepts JSON body) so
-  an operator can publish v2 via `curl` against the
-  authenticated admin session today; an in-app markdown
-  editor is a follow-up (likely folded into step 13's
-  mini-queue cleanup bundle alongside the Admin "Last
-  failure" UI wiring).
+
+(The original close-out deferred the admin Policies WYSIWYG
+UI to step 13; an operator audit caught the gap and commit
+16 shipped it on the same branch — see "Admin → Policies UI"
+under "What shipped" above.)
 
 ### Acceptance
 
@@ -3787,7 +3807,7 @@ everything after that is hygiene + post-launch upgrades.
 | 8 | CI plumbing | 6 (shipped) | Dependabot, GitHub secret scanning, gitleaks pre-commit, CodeQL workflow, Trivy image scan, `engines.node` + `typecheck` script. See "Step 8 — CI plumbing (shipped)" above. |
 | 9 | Brute-force + MFA hardening | 14 (shipped) | App-layer rate limiting (100/60s IP+device, 20/24h per email on `/api/auth/*`); TOTP enrollment + verify + backup codes alongside existing passkey path; magic-link per-link attempt counter + "N attempts left" banner; passkey enumeration guard; `require_mfa_for_platform_admins` flag in `platform_settings`. See "Step 9 — Brute-force + MFA hardening (shipped)" above. |
 | 10 | Auth surface area cleanup | 20 (shipped) | CSRF (double-submit token); session rotation on auth state change (implicit via `createSession` at every transition); impersonation start/stop UI + persistent banner; magic-link IP/UA fingerprint capture (enforcement deferred behind a flag); account-deletion cascade endpoint (soft-delete); GDPR Art. 20 data-export endpoint. Post-deploy hardening dropped IP/UA-hash gates pending operator-flippable re-enable. See "Step 10 — Auth surface area cleanup (shipped)" above. |
-| 11 | Privacy & compliance docs | 14 (shipped) | `policy_documents` versioned append-only table; `policy_acceptances` per-user-per-version ledger; admin Policies CRUD endpoints; public `/legal/<slug>` SPA routes (markdown via `marked` lazy-loaded from CDN); re-acceptance modal on version bump; landing-page cookie banner (slim bottom bar, three-action pattern); Account → Privacy card policy-history modal. Slugs seeded with placeholder bodies + all required: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. See "Step 11 — Privacy & compliance docs (shipped)" below. |
+| 11 | Privacy & compliance docs | 16 (shipped) | `policy_documents` versioned append-only table; `policy_acceptances` per-user-per-version ledger; admin Policies CRUD endpoints + Admin → Policies UI (markdown editor with live preview + per-version acceptors audit panel); public `/legal/<slug>` SPA routes (markdown via `marked` lazy-loaded from CDN); re-acceptance modal on version bump; landing-page cookie banner (slim bottom bar, three-action pattern); Account → Privacy card policy-history modal. Slugs seeded with placeholder bodies + all required: `terms_of_service`, `privacy_policy`, `cookie_policy`, `dpa`, `subprocessors`, `acceptable_use`. See "Step 11 — Privacy & compliance docs (shipped)" below. |
 | 12 | Pipeline DB Model D + backups + PROBE_RLS in CI | 12-15 | Per `.claude/pipeline-hardening-notes.md` Model D: `tenant_id` + RLS + `app.current_tenant` per-workflow; `pipeline_user` role split (no ownership); pg_basebackup + WAL archiving + documented + tested restore drill in `docs/operator.md`; GitHub Actions runs `PROBE_RLS=1 npx vitest run src/db/rls-probe.test.ts` against ephemeral Postgres on every PR. **PRODUCTION READY AFTER THIS STEP.** |
 
 ### Pre-launch nice-to-have (clears the deck — optional)
