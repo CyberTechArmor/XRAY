@@ -22,6 +22,12 @@ ADMIN_POLICIES_CSS = """.policies-view .pol-card{background:var(--bg2);border:1p
 .policies-view .pol-flag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;background:rgba(245,158,11,0.15);color:#f59e0b}
 .policies-view .pol-flag.req{background:rgba(62,232,181,0.12);color:var(--acc)}
 .policies-view .pol-flag.opt{background:rgba(255,255,255,0.06);color:var(--t2)}
+.policies-view .pol-flag-toggle{font-family:inherit;border:1px solid transparent;cursor:pointer;letter-spacing:0.06em;transition:border-color 0.15s,background-color 0.15s,color 0.15s}
+.policies-view .pol-flag-toggle.req{border-color:rgba(62,232,181,0.35)}
+.policies-view .pol-flag-toggle.req:hover{background:rgba(62,232,181,0.18);border-color:var(--acc)}
+.policies-view .pol-flag-toggle.opt{border-color:rgba(255,255,255,0.12)}
+.policies-view .pol-flag-toggle.opt:hover{background:rgba(255,255,255,0.10);color:var(--t1);border-color:rgba(255,255,255,0.25)}
+.policies-view .pol-flag-toggle:disabled{cursor:wait}
 .policies-view .pol-body{display:none;border-top:1px solid var(--bdr);padding:18px}
 .policies-view .pol-body.open{display:block}
 .policies-view .pol-versions{display:flex;flex-direction:column;gap:6px;margin-bottom:18px}
@@ -120,13 +126,15 @@ ADMIN_POLICIES_JS = r"""function initAdminPolicies(container, api, user) {
 
   function renderSlugCard(slug) {
     var versions = slug.versions || [];
-    var latest = versions[0] || { version: 0, title: '', is_required: true, is_placeholder: false, published_at: null, acceptance_count: 0 };
+    var latest = versions[0] || { version: 0, title: '', is_required: false, is_placeholder: false, published_at: null, acceptance_count: 0 };
     var card = document.createElement('div');
     card.className = 'pol-card';
     var totalAcceptors = versions.reduce(function(a, v) { return a + (v.acceptance_count || 0); }, 0);
     var flagHtml = '';
     if (latest.is_placeholder) flagHtml += '<span class="pol-flag">PLACEHOLDER</span>';
-    flagHtml += latest.is_required ? '<span class="pol-flag req">REQUIRED</span>' : '<span class="pol-flag opt">OPTIONAL</span>';
+    var reqClass = latest.is_required ? 'req' : 'opt';
+    var reqLabel = latest.is_required ? 'REQUIRED' : 'OPTIONAL';
+    flagHtml += '<button type="button" class="pol-flag pol-flag-toggle ' + reqClass + '" data-act="toggle-required" title="Click to ' + (latest.is_required ? 'mark optional' : 'mark required') + '">' + reqLabel + '</button>';
     card.innerHTML = ''
       + '<div class="pol-head" data-act="toggle">'
       +   '<div class="pol-title">'
@@ -141,6 +149,55 @@ ADMIN_POLICIES_JS = r"""function initAdminPolicies(container, api, user) {
     var head = card.querySelector('.pol-head');
     var body = card.querySelector('.pol-body');
     var chev = card.querySelector('.pol-chev');
+    var reqBtn = card.querySelector('[data-act="toggle-required"]');
+
+    // Click on the REQUIRED/OPTIONAL badge toggles is_required without
+    // bumping the policy version. Stops propagation so the click
+    // doesn't also trigger the card-expand handler on .pol-head.
+    if (reqBtn) {
+      reqBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var nextRequired = !latest.is_required;
+        reqBtn.disabled = true;
+        reqBtn.style.opacity = '0.6';
+        api.fetch
+          ? null
+          : null;
+        // Use a manual fetch through the api wrapper so PATCH semantics
+        // pass through the CSRF cookie + bearer token.
+        var token = (window.__xrayGetAccessToken && window.__xrayGetAccessToken()) || '';
+        var csrf = '';
+        try { csrf = document.cookie.split(';').map(function(s){return s.trim();}).filter(function(s){return s.indexOf('xsrf_token=')===0;}).map(function(s){return decodeURIComponent(s.split('=')[1]||'');})[0] || ''; } catch(e) {}
+        fetch('/api/admin/policies/' + encodeURIComponent(slug.slug), {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { 'Authorization': 'Bearer ' + token } : {}, csrf ? { 'X-CSRF-Token': csrf } : {}),
+          body: JSON.stringify({ is_required: nextRequired }),
+        }).then(function(r) { return r.json(); }).then(function(d) {
+          reqBtn.disabled = false;
+          reqBtn.style.opacity = '';
+          if (!d.ok) {
+            console.warn('toggle is_required failed', d);
+            return;
+          }
+          latest.is_required = !!d.data.is_required;
+          // Mutate the slug summary as well so a card collapse + expand
+          // doesn't reset the badge.
+          if (slug.versions && slug.versions[0]) slug.versions[0].is_required = latest.is_required;
+          reqBtn.classList.toggle('req', latest.is_required);
+          reqBtn.classList.toggle('opt', !latest.is_required);
+          reqBtn.textContent = latest.is_required ? 'REQUIRED' : 'OPTIONAL';
+          reqBtn.title = 'Click to ' + (latest.is_required ? 'mark optional' : 'mark required');
+          // Mirror into the body's Required checkbox if rendered.
+          var cb = body.querySelector('[data-fld="is_required"]');
+          if (cb) cb.checked = latest.is_required;
+        }).catch(function() {
+          reqBtn.disabled = false;
+          reqBtn.style.opacity = '';
+        });
+      });
+    }
+
     head.addEventListener('click', function() {
       var open = body.classList.toggle('open');
       chev.style.transform = open ? 'rotate(180deg)' : '';
@@ -154,7 +211,7 @@ ADMIN_POLICIES_JS = r"""function initAdminPolicies(container, api, user) {
 
   function renderSlugBody(body, slug) {
     var versions = slug.versions || [];
-    var latest = versions[0] || { title: '', body_md: '', is_required: true, version: 0 };
+    var latest = versions[0] || { title: '', body_md: '', is_required: false, version: 0 };
 
     var versionsHtml = '<div class="pol-versions">';
     versions.forEach(function(v) {
@@ -300,7 +357,7 @@ def main():
     nav.insert(insert_at, new_item)
     b['nav'] = nav
     # Bump bundle version so the SPA cache busts
-    b['version'] = '2026-04-25-step11-admin-policies-xss'
+    b['version'] = '2026-04-26-step11-policies-ux2'
 
     BUNDLE.write_text(json.dumps(b, ensure_ascii=False))
     print('OK admin_policies view + nav entry injected')

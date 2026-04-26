@@ -1039,6 +1039,28 @@ router.post('/policies/:slug', async (req, res, next) => {
   }
 });
 
+// PATCH /api/admin/policies/:slug — toggle is_required on the latest
+// published version. Body: { is_required: boolean }. Does NOT mint
+// a new version (append-only applies to content, not to this
+// runtime flag). Audit-logged via policy.service.setRequired.
+router.patch('/policies/:slug', async (req, res, next) => {
+  try {
+    const { is_required } = req.body ?? {};
+    const data = await policyService.setRequired(
+      req.params.slug,
+      is_required,
+      req.user!.sub,
+    );
+    res.json({
+      ok: true,
+      data,
+      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/admin/policies/:slug/acceptances?version=N — paginated
 // list of every user who accepted the (slug, version) tuple.
 // Defaults version to the latest published version when omitted.

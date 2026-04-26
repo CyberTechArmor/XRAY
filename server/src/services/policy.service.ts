@@ -284,6 +284,79 @@ export async function publishVersion(
   return result;
 }
 
+// setRequired(slug, is_required, byUserId)
+//
+// Toggles is_required on the LATEST published version of a slug
+// without minting a new version. Append-only applies to body_md /
+// title (the document text); is_required is a runtime flag whose
+// only effect is whether pendingForUser surfaces this slug in the
+// re-acceptance modal. Treating it as content would force a
+// version bump every time the operator decides "actually let's
+// not gate signups on this one" — heavy, and would re-prompt
+// every user who already accepted the latest version.
+//
+// The audit log captures the change so the metadata edit is
+// traceable. Throws if the slug has no published versions.
+export async function setRequired(
+  slug: string,
+  isRequired: boolean,
+  byUserId: string,
+): Promise<PolicyDocument> {
+  if (!slug || typeof slug !== 'string') {
+    throw new AppError(400, 'INVALID_SLUG', 'slug is required');
+  }
+  if (typeof isRequired !== 'boolean') {
+    throw new AppError(400, 'INVALID_REQUIRED', 'is_required must be boolean');
+  }
+
+  const result = await withAdminClient(async (client) => {
+    const r = await client.query(
+      `UPDATE platform.policy_documents
+          SET is_required = $1
+        WHERE id = (
+          SELECT id FROM platform.policy_documents
+           WHERE slug = $2
+           ORDER BY version DESC
+           LIMIT 1
+        )
+        RETURNING slug, version, title, body_md, is_required,
+                  published_at, published_by`,
+      [isRequired, slug],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      slug: row.slug,
+      version: row.version,
+      title: row.title,
+      body_md: row.body_md,
+      is_required: row.is_required,
+      is_placeholder: isPlaceholder(row.body_md),
+      published_at: row.published_at,
+      published_by: row.published_by,
+    } as PolicyDocument;
+  });
+
+  if (!result) {
+    throw new AppError(404, 'LEGAL_SLUG_NOT_FOUND', 'No published version for that slug');
+  }
+
+  auditService.log({
+    tenantId: PLATFORM_AUDIT_TENANT,
+    userId: byUserId,
+    action: 'policy.set_required',
+    resourceType: 'policy_document',
+    resourceId: result.slug,
+    metadata: {
+      slug: result.slug,
+      version: result.version,
+      is_required: result.is_required,
+    },
+  });
+
+  return result;
+}
+
 export async function listAcceptors(
   slug: string,
   version: number,

@@ -494,3 +494,23 @@ input[type="file"]::file-selector-button:hover,input[type='file']::file-selector
    already keys on; we don't need to reflow the whole layout, just
    nudge the body padding when an impersonation is live. */
 body:has(.impersonation-banner) #app-shell { padding-top: 36px; }
+
+/* Step 11: re-acceptance modal — styled checkbox rows.
+   The native <input> is visually hidden but kept in the DOM (still
+   focusable, still keyboard-accessible). The .xc-box span next to
+   it is the visible square; sibling-selector CSS toggles the
+   checked state. The whole row is a clickable card. */
+.policy-accept-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1px solid var(--bdr); border-radius: 10px; margin-bottom: 8px; cursor: pointer; transition: border-color .15s, background-color .15s; }
+.policy-accept-row:hover { border-color: rgba(255,255,255,0.18); background: rgba(255,255,255,0.02); }
+.policy-accept-row .xc-input { position: absolute; opacity: 0; pointer-events: none; width: 0; height: 0; margin: 0; }
+.policy-accept-row .xc-box { flex-shrink: 0; width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--bdr); background: var(--bg4); display: inline-flex; align-items: center; justify-content: center; color: transparent; transition: background-color .12s, border-color .12s, color .12s; margin-top: 1px; }
+.policy-accept-row .xc-box svg { display: block; }
+.policy-accept-row .xc-input:checked + .xc-box { background: var(--acc); border-color: var(--acc); color: #001712; }
+.policy-accept-row .xc-input:focus-visible + .xc-box { box-shadow: 0 0 0 3px var(--acc-dim, rgba(62,232,181,0.25)); }
+.policy-accept-row:hover .xc-box { border-color: rgba(255,255,255,0.28); }
+.policy-accept-row:hover .xc-input:checked + .xc-box { border-color: var(--acc); }
+.policy-accept-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.policy-accept-row-title { font-size: 14px; font-weight: 600; color: var(--t1); line-height: 1.3; }
+.policy-accept-row-meta { font-size: 12px; color: var(--t2); }
+.policy-accept-row-link { font-size: 12px; color: var(--acc); text-decoration: none; align-self: flex-start; }
+.policy-accept-row-link:hover { text-decoration: underline; }
