@@ -4233,12 +4233,23 @@
       }
       if (window.marked && typeof window.marked.parse === 'function') {
         try {
-          // marked v9+ default behaviour escapes HTML in the markdown
-          // source — XSS-safe enough for the body_md surface where
-          // operators write policy text. If the operator pastes raw
-          // <script>, marked encodes it as literal text in <code>.
-          var html = window.marked.parse(md, { breaks: false, gfm: true });
-          applyMarkdown(html);
+          // Sanitize the rendered HTML before innerHTML. marked v12+
+          // dropped its built-in sanitize option, so a malicious admin
+          // (or a compromised admin session) publishing
+          // `<script>alert(1)</script>` in body_md would otherwise
+          // execute on every visitor's browser. DOMPurify v3 is
+          // loaded by loadMarkedAnd() alongside marked itself; if it
+          // failed to load (CDN blocked), we fall back to plain text
+          // rendering rather than risk an unsanitized innerHTML.
+          var raw = window.marked.parse(md, { breaks: false, gfm: true });
+          var safe = (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function')
+            ? window.DOMPurify.sanitize(raw)
+            : null;
+          if (safe !== null) {
+            applyMarkdown(safe);
+          } else {
+            applyMarkdown(plainFallback());
+          }
         } catch (e) {
           applyMarkdown(plainFallback());
         }
@@ -4249,22 +4260,35 @@
     }
 
     function loadMarkedAnd(callback) {
-      if (window.marked && typeof window.marked.parse === 'function') return callback();
-      var existing = document.getElementById('xray-marked-script');
-      if (existing) {
-        existing.addEventListener('load', callback);
-        existing.addEventListener('error', callback);
-        return;
+      // Lazy-load BOTH marked and DOMPurify before invoking the
+      // callback. The legal page is the only XSS-sensitive surface
+      // here — bundling the sanitizer with the parser keeps the
+      // fence at one place. Both are pinned to specific versions,
+      // both fall back to plain-text rendering on CDN failure.
+      var needMarked = !(window.marked && typeof window.marked.parse === 'function');
+      var needPurify = !(window.DOMPurify && typeof window.DOMPurify.sanitize === 'function');
+      if (!needMarked && !needPurify) return callback();
+
+      var pending = (needMarked ? 1 : 0) + (needPurify ? 1 : 0);
+      function done() { if (--pending === 0) callback(); }
+
+      function loadOnce(id, src) {
+        var existing = document.getElementById(id);
+        if (existing) {
+          existing.addEventListener('load', done);
+          existing.addEventListener('error', done);
+          return;
+        }
+        var s = document.createElement('script');
+        s.id = id;
+        s.src = src;
+        s.onload = done;
+        s.onerror = done;
+        document.head.appendChild(s);
       }
-      var s = document.createElement('script');
-      s.id = 'xray-marked-script';
-      s.src = 'https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js';
-      s.onload = callback;
-      s.onerror = function() {
-        // Network failure / offline / blocked CDN: render plain text fallback.
-        callback();
-      };
-      document.head.appendChild(s);
+
+      if (needMarked) loadOnce('xray-marked-script', 'https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js');
+      if (needPurify) loadOnce('xray-dompurify-script', 'https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js');
     }
 
     function fetchAndRender(url, opts) {

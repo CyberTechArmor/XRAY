@@ -61,22 +61,37 @@ ADMIN_POLICIES_JS = r"""function initAdminPolicies(container, api, user) {
     });
   }
 
-  // marked from the same CDN the public /legal pages use. Lazy-load
-  // once; the render-preview path falls back to <pre> if blocked.
+  // marked + DOMPurify from the same CDN the public /legal pages use.
+  // Lazy-load both before any preview render so marked's HTML output
+  // gets sanitized before innerHTML — marked v12 dropped its built-in
+  // sanitize option, and an admin pasting `<script>` into body_md
+  // would otherwise execute when they preview their own draft. Both
+  // pinned versions; CDN failure falls back to plain-text rendering.
   function loadMarked(cb) {
-    if (window.marked && typeof window.marked.parse === 'function') return cb();
-    var existing = document.getElementById('xray-marked-script');
-    if (existing) { existing.addEventListener('load', cb); existing.addEventListener('error', cb); return; }
-    var s = document.createElement('script');
-    s.id = 'xray-marked-script';
-    s.src = 'https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js';
-    s.onload = cb; s.onerror = cb;
-    document.head.appendChild(s);
+    var needMarked = !(window.marked && typeof window.marked.parse === 'function');
+    var needPurify = !(window.DOMPurify && typeof window.DOMPurify.sanitize === 'function');
+    if (!needMarked && !needPurify) return cb();
+    var pending = (needMarked ? 1 : 0) + (needPurify ? 1 : 0);
+    function done() { if (--pending === 0) cb(); }
+    function loadOnce(id, src) {
+      var existing = document.getElementById(id);
+      if (existing) { existing.addEventListener('load', done); existing.addEventListener('error', done); return; }
+      var s = document.createElement('script');
+      s.id = id; s.src = src; s.onload = done; s.onerror = done;
+      document.head.appendChild(s);
+    }
+    if (needMarked) loadOnce('xray-marked-script', 'https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js');
+    if (needPurify) loadOnce('xray-dompurify-script', 'https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js');
   }
 
   function renderMd(target, md) {
-    if (window.marked && typeof window.marked.parse === 'function') {
-      try { target.innerHTML = window.marked.parse(md || '', { breaks: false, gfm: true }); return; } catch (e) {}
+    if (window.marked && typeof window.marked.parse === 'function'
+        && window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+      try {
+        var raw = window.marked.parse(md || '', { breaks: false, gfm: true });
+        target.innerHTML = window.DOMPurify.sanitize(raw);
+        return;
+      } catch (e) {}
     }
     var pre = document.createElement('pre');
     pre.style.cssText = 'white-space:pre-wrap;font-family:inherit;background:transparent;border:0;padding:0;margin:0';
@@ -285,7 +300,7 @@ def main():
     nav.insert(insert_at, new_item)
     b['nav'] = nav
     # Bump bundle version so the SPA cache busts
-    b['version'] = '2026-04-25-step11-admin-policies'
+    b['version'] = '2026-04-25-step11-admin-policies-xss'
 
     BUNDLE.write_text(json.dumps(b, ensure_ascii=False))
     print('OK admin_policies view + nav entry injected')
