@@ -88,17 +88,38 @@ async function setup(): Promise<Fixture> {
 async function cleanup(): Promise<void> {
   const { withAdminClient } = await importDb();
   await withAdminClient(async (client) => {
-    // FK-order-safe teardown: children first, then dashboards/connections,
-    // then users, then tenants. audit_log / fan_out_deliveries don't have
-    // ON DELETE CASCADE on every side so we scrub them explicitly.
+    // FK-order-safe teardown: scrub every table that the probe inserts
+    // into BEFORE deleting users + tenants. Several FKs point back to
+    // users / tenants without ON DELETE CASCADE, so order matters.
+    // Grouped by dependency level (most-dependent first).
     await client.query(`DELETE FROM platform.audit_log WHERE tenant_id IN ($1, $2) AND action LIKE 'probe.%'`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.fan_out_deliveries WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.fan_out_runs WHERE idempotency_key LIKE 'probe-%'`);
-    // Inbox tables cascade from threads; scrub by subject prefix.
+    // Inbox cascade: thread deletion cascades participants + messages.
     await client.query(`DELETE FROM platform.inbox_threads WHERE subject LIKE 'probe-inbox-%'`);
+    // Tables that hold FKs back to users / tenants (no ON DELETE CASCADE
+    // on the user side). Must DELETE these before users.
+    await client.query(`DELETE FROM platform.invitations WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.api_keys WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.webhooks WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.file_uploads WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.user_sessions WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.user_passkeys WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.user_backup_codes WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.user_totp_secrets WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.tenant_notes WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    // dashboard children, then dashboards, then connections.
+    await client.query(`DELETE FROM platform.dashboard_access WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.dashboard_sources WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.dashboard_render_cache WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.dashboard_tenant_grants WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.dashboard_shares WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.dashboard_embeds WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.dashboards WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.connection_tables WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.connections WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
-    await client.query(`DELETE FROM platform.users WHERE tenant_id IN ($1, $2) AND email LIKE 'probe-%'`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.billing_state WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
+    await client.query(`DELETE FROM platform.users WHERE tenant_id IN ($1, $2)`, [TENANT_A, TENANT_B]);
     await client.query(`DELETE FROM platform.tenants WHERE id IN ($1, $2)`, [TENANT_A, TENANT_B]);
   }).then(async () => {
     const { closePool } = await importDb();
@@ -218,8 +239,8 @@ maybe('db/rls-probe — cross-tenant isolation', () => {
     const userId = (await withAdminClient(async (c) => {
       const roleId = (await c.query(`SELECT id FROM platform.roles LIMIT 1`)).rows[0].id;
       return (await c.query(
-        `INSERT INTO platform.users (tenant_id, email, role_id, status)
-         VALUES ($1, 'probe-note-author@example.test', $2, 'active') RETURNING id`,
+        `INSERT INTO platform.users (tenant_id, email, name, role_id, status)
+         VALUES ($1, 'probe-note-author@example.test', 'Probe Note Author', $2, 'active') RETURNING id`,
         [TENANT_A, roleId]
       )).rows[0].id;
     })) as string;

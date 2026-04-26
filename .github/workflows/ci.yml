@@ -26,6 +26,112 @@ jobs:
 
       - run: npm test
 
+  rls-probe-platform:
+    name: rls-probe (platform)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          # The bootstrap role for the ephemeral DB. xray OWNS the
+          # tables (init.sql runs as xray), which is also how the
+          # production docker stack is shaped. The probe runs as a
+          # SEPARATE non-owner role (xray_app) so RLS policies
+          # actually fire — owners bypass RLS by default. Migration
+          # 044 added FORCE ROW LEVEL SECURITY so the production
+          # connection user (which today is also the owner) starts
+          # being gated; the CI probe verifies that gate.
+          POSTGRES_DB: xray
+          POSTGRES_USER: xray
+          POSTGRES_PASSWORD: xray_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U xray"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: server
+    env:
+      # Probe connects as xray_app, NOT xray. Owner bypass would
+      # mask every RLS policy.
+      DATABASE_URL: postgres://xray_app:app_test@localhost:5432/xray
+      JWT_SECRET: probe-jwt-secret
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      PROBE_RLS: "1"
+      PGHOST: localhost
+      PGUSER: xray
+      PGPASSWORD: xray_test
+      PGDATABASE: xray
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: server/package.json
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+
+      - name: Apply schema (init.sql + migrations)
+        # Mirrors update.sh's apply pattern: tolerate the overlap
+        # between init.sql (latest schema snapshot) and the older
+        # numbered migrations that pre-date that snapshot. Benign
+        # signals: "already exists" / "duplicate object" / the
+        # cascading "current transaction is aborted" that follows
+        # an already-exists hit inside a BEGIN/COMMIT migration.
+        # Anything else is a real failure and fails the build.
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 -f ../init.sql > /dev/null
+          for m in $(ls -1 ../migrations/*.sql | sort); do
+            echo "applying $(basename "$m")"
+            out=$(psql -v ON_ERROR_STOP=0 -f "$m" 2>&1) || true
+            real_errors=$(echo "$out" | grep -iE "(ERROR|FATAL)" \
+              | grep -viE "already exists|duplicate|current transaction is aborted" || true)
+            if [ -n "$real_errors" ]; then
+              echo "$out"
+              echo "::error::migration $(basename "$m") had non-benign errors"
+              exit 1
+            fi
+          done
+
+      - name: Provision xray_app non-owner role
+        # Application-style role with DML grants but no ownership,
+        # mirroring the role split that production should adopt.
+        # CI's existence of this role is the contract the probe
+        # tests against: a connection that ISN'T the table owner
+        # must respect RLS.
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+            DO $$ BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'xray_app') THEN
+                CREATE ROLE xray_app WITH LOGIN PASSWORD 'app_test'
+                  NOSUPERUSER NOINHERIT NOCREATEDB NOCREATEROLE;
+              END IF;
+            END $$;
+            GRANT USAGE ON SCHEMA platform TO xray_app;
+            GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA platform TO xray_app;
+            GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA platform TO xray_app;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA platform
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO xray_app;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA platform
+              GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO xray_app;
+          SQL
+
+      - name: SQL probe (migrations/probes/probe-rls-cross-tenant.sql)
+        # Belt-and-braces: the SQL probe runs first because its failure
+        # mode is more localised (one script, one error message) than a
+        # vitest run with 26 specs. Connects as xray_app so the policies
+        # actually fire.
+        run: PGUSER=xray_app PGPASSWORD=app_test psql -v ON_ERROR_STOP=1 -f ../migrations/probes/probe-rls-cross-tenant.sql
+
+      - name: TypeScript probe (PROBE_RLS=1 vitest)
+        run: npx vitest run src/db/rls-probe.test.ts
+
   image-scan:
     name: trivy (server image)
     runs-on: ubuntu-latest

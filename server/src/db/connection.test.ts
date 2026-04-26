@@ -45,7 +45,7 @@ describe('db/connection', () => {
     __setPoolForTest(null);
   });
 
-  it('withClient sets no context and releases the client', async () => {
+  it('withClient resets RLS context to default-deny on every checkout', async () => {
     const { withClient, __setPoolForTest } = await importLib();
     const { pool, queries, getReleaseCount } = makeFakePool();
     __setPoolForTest(pool);
@@ -54,11 +54,18 @@ describe('db/connection', () => {
       await c.query('SELECT 1');
     });
 
-    expect(queries.map((q) => q.sql)).toEqual(['SELECT 1']);
+    expect(queries).toHaveLength(2);
+    // First query: bulk reset of all three RLS GUCs to defaults
+    // (empty / empty / 'false') so a prior pool occupant's state
+    // cannot leak into this checkout.
+    expect(queries[0].sql).toMatch(/set_config\('app\.current_tenant', ''/);
+    expect(queries[0].sql).toMatch(/set_config\('app\.current_user_id', ''/);
+    expect(queries[0].sql).toMatch(/set_config\('app\.is_platform_admin', 'false'/);
+    expect(queries[1].sql).toBe('SELECT 1');
     expect(getReleaseCount()).toBe(1);
   });
 
-  it('withTenantContext sets current_tenant and clears is_platform_admin', async () => {
+  it('withTenantContext sets current_tenant after the reset baseline', async () => {
     const { withTenantContext, __setPoolForTest } = await importLib();
     const { pool, queries } = makeFakePool();
     __setPoolForTest(pool);
@@ -68,13 +75,14 @@ describe('db/connection', () => {
     });
 
     expect(queries).toHaveLength(3);
-    expect(queries[0].sql).toMatch(/set_config\('app\.current_tenant'/);
-    expect(queries[0].params).toEqual(['11111111-1111-1111-1111-111111111111']);
-    expect(queries[1].sql).toMatch(/set_config\('app\.is_platform_admin', 'false'/);
+    // (0) reset, (1) tenant set, (2) user query
+    expect(queries[0].sql).toMatch(/set_config\('app\.current_tenant', ''/);
+    expect(queries[1].sql).toMatch(/set_config\('app\.current_tenant', \$1/);
+    expect(queries[1].params).toEqual(['11111111-1111-1111-1111-111111111111']);
     expect(queries[2].sql).toBe('SELECT 1');
   });
 
-  it('withAdminClient sets is_platform_admin=true and nothing else', async () => {
+  it('withAdminClient sets is_platform_admin=true after reset', async () => {
     const { withAdminClient, __setPoolForTest } = await importLib();
     const { pool, queries } = makeFakePool();
     __setPoolForTest(pool);
@@ -83,12 +91,13 @@ describe('db/connection', () => {
       await c.query('SELECT 1');
     });
 
-    expect(queries).toHaveLength(2);
-    expect(queries[0].sql).toMatch(/set_config\('app\.is_platform_admin', 'true'/);
-    expect(queries[1].sql).toBe('SELECT 1');
+    expect(queries).toHaveLength(3);
+    expect(queries[0].sql).toMatch(/set_config\('app\.is_platform_admin', 'false'/); // reset
+    expect(queries[1].sql).toMatch(/set_config\('app\.is_platform_admin', 'true'/);
+    expect(queries[2].sql).toBe('SELECT 1');
   });
 
-  it('withTenantTransaction wraps in BEGIN/COMMIT with tenant context', async () => {
+  it('withTenantTransaction wraps in BEGIN/COMMIT with reset + tenant context', async () => {
     const { withTenantTransaction, __setPoolForTest } = await importLib();
     const { pool, queries } = makeFakePool();
     __setPoolForTest(pool);
@@ -98,9 +107,10 @@ describe('db/connection', () => {
     });
 
     expect(queries[0].sql).toBe('BEGIN');
-    expect(queries[1].sql).toMatch(/set_config\('app\.current_tenant'/);
-    expect(queries[1].params).toEqual(['22222222-2222-2222-2222-222222222222']);
-    expect(queries[2].sql).toMatch(/set_config\('app\.is_platform_admin', 'false'/);
+    // The reset uses is_local=true inside the transaction.
+    expect(queries[1].sql).toMatch(/set_config\('app\.current_tenant', '',/);
+    expect(queries[2].sql).toMatch(/set_config\('app\.current_tenant', \$1/);
+    expect(queries[2].params).toEqual(['22222222-2222-2222-2222-222222222222']);
     expect(queries[3].sql).toBe('SELECT 1');
     expect(queries[4].sql).toBe('COMMIT');
   });
@@ -115,9 +125,10 @@ describe('db/connection', () => {
     });
 
     expect(queries[0].sql).toBe('BEGIN');
-    expect(queries[1].sql).toMatch(/set_config\('app\.is_platform_admin', 'true'/);
-    expect(queries[2].sql).toBe('SELECT 1');
-    expect(queries[3].sql).toBe('COMMIT');
+    expect(queries[1].sql).toMatch(/set_config\('app\.current_tenant', '',/); // reset
+    expect(queries[2].sql).toMatch(/set_config\('app\.is_platform_admin', 'true'/);
+    expect(queries[3].sql).toBe('SELECT 1');
+    expect(queries[4].sql).toBe('COMMIT');
   });
 
   it('withTransaction rolls back on throw', async () => {
@@ -131,6 +142,11 @@ describe('db/connection', () => {
       })
     ).rejects.toThrow('boom');
 
-    expect(queries.map((q) => q.sql)).toEqual(['BEGIN', 'ROLLBACK']);
+    // BEGIN, reset, ROLLBACK — the user fn never ran far enough to
+    // emit additional queries, so the next thing on the wire is the
+    // rollback path.
+    expect(queries[0].sql).toBe('BEGIN');
+    expect(queries[1].sql).toMatch(/set_config\('app\.current_tenant', '',/);
+    expect(queries[queries.length - 1].sql).toBe('ROLLBACK');
   });
 });

@@ -313,3 +313,336 @@ need re-issue.
 - Inbox threads / messages (operational; out-of-band if needed).
 - Render cache rows (`platform.dashboard_render_cache`) — repopulated
   on next render.
+
+## Backups
+
+The platform Postgres has continuous WAL archiving + nightly base
+backups. Local-first by design: the local volume is the primary
+target; an S3-compatible offsite mirror layers on top of that and is
+opt-in via env vars. Step 12 ships the scripts; the operator
+schedules them via host cron.
+
+The n8n DB is **out of scope** for this backup track — n8n keeps its
+own state (workflow history, execution logs) on a separate cadence,
+treated as operational telemetry, not config.
+
+### What the backup volume contains
+
+Inside the named volume `xray_pg_backups` (mounted at
+`/var/lib/postgresql/backups` in the postgres container):
+
+```
+/var/lib/postgresql/backups/
+├── base/
+│   ├── 20260426T0230Z/
+│   │   ├── base.tar.gz       — pg_basebackup tar payload
+│   │   ├── pg_wal.tar.gz     — WAL captured during the base run
+│   │   └── MANIFEST.txt      — version + timestamp + restore hint
+│   └── 20260427T0230Z/
+│       └── …
+└── wal/
+    ├── 000000010000000000000003   — archived WAL segments
+    ├── 000000010000000000000004
+    └── …
+```
+
+WAL segments arrive every ~5 minutes (`archive_timeout=300`) or
+sooner if write traffic fills a 16 MB segment. Base backups arrive
+nightly per the operator's cron entry.
+
+### 1. Schedule (host cron)
+
+Add to the host's crontab (`crontab -e`):
+
+```cron
+# Nightly base backup at 02:30 UTC + retention prune + S3 base sync
+30 2 * * * cd /opt/xray && ./scripts/backup-platform.sh >> /var/log/xray-backup.log 2>&1
+
+# Mirror new WAL segments to S3 every 5 minutes (no-op if BACKUP_S3_BUCKET unset)
+*/5 * * * * cd /opt/xray && ./scripts/backup-s3-sync.sh wal >> /var/log/xray-backup.log 2>&1
+
+# Monthly restore drill — proves the backups are restorable
+0 3 1 * * cd /opt/xray && ./scripts/restore-drill.sh >> /var/log/xray-restore-drill.log 2>&1
+```
+
+Tune the times to your timezone and traffic pattern. Keep the
+restore drill date predictable — operators set a calendar alert to
+verify the log emitted `PASS` and there's no growing backlog of
+orphan sidecar volumes.
+
+### 2. Retention
+
+`BACKUP_RETAIN_DAYS=14` is the default in `scripts/backup-platform.sh`
+and matches the chosen retention window. Override per-deploy with
+the env var. The most recent base backup is kept regardless of age
+so a misconfigured `RETAIN_DAYS=0` can't leave you empty-handed.
+
+WAL segments older than `BACKUP_RETAIN_DAYS` are pruned at the same
+time. The S3 side intentionally does NOT delete on every WAL sync —
+remote prune is a separate, operator-driven mode:
+
+```sh
+./scripts/backup-s3-sync.sh prune
+```
+
+…and is safe to run after the local prune step. Use sparingly; an
+accidental run with the wrong `BACKUP_S3_PREFIX` deletes more than
+you want.
+
+### 3. S3 mirror — opt-in offsite
+
+Set in `.env`:
+
+```sh
+BACKUP_S3_BUCKET=xray-backups-prod
+BACKUP_S3_ENDPOINT=https://s3.us-east-005.backblazeb2.com    # omit for AWS S3
+BACKUP_S3_REGION=us-east-005
+BACKUP_S3_ACCESS_KEY_ID=...
+BACKUP_S3_SECRET_ACCESS_KEY=...
+BACKUP_S3_PREFIX=platform                                     # default
+```
+
+Any S3-compatible endpoint works (AWS S3, Backblaze B2,
+DigitalOcean Spaces, Cloudflare R2, MinIO). The script invokes the
+official `amazon/aws-cli:latest` image via `docker run --rm` so the
+host doesn't need `aws` installed — only Docker.
+
+Decoupled from Postgres on purpose: WAL `archive_command` writes to
+the local volume only and ALWAYS succeeds (assuming local disk has
+space). An S3 outage doesn't stall WAL recycling — exactly the
+failure mode you don't want under network glitches.
+
+If `BACKUP_S3_BUCKET` is unset, every script stays on the local-only
+behavior. No errors, no fallback, no fan-out attempts.
+
+### 4. Restore drill (monthly)
+
+`scripts/restore-drill.sh` spins up a SIDECAR Postgres container,
+restores the latest local base backup + replays WAL into it, runs
+schema + smoke queries, and tears down. **Never** touches the live
+platform DB.
+
+Run interactively:
+
+```sh
+./scripts/restore-drill.sh                     # latest base, all WAL, teardown after
+./scripts/restore-drill.sh --base 20260426T0230Z
+./scripts/restore-drill.sh --target-time '2026-04-26 03:15:00'
+./scripts/restore-drill.sh --keep              # leave sidecar up for triage
+./scripts/restore-drill.sh --teardown          # clean up after a --keep run
+./scripts/restore-drill.sh --from-s3           # cold-restore-from-S3 dry-run
+```
+
+A green run prints `PASS — schema present + smoke query OK` and
+exits 0. A red run leaves the sidecar in place for triage; tear it
+down with `--teardown`.
+
+#### First-run output (paste here on first execution)
+
+```
+# Operator: replace this fenced block with the verbatim output of
+# `./scripts/restore-drill.sh` against your live system. The block
+# is the proof the backups are restorable on your hardware. Date the
+# run and keep prior outputs in the section below for trend
+# tracking.
+
+# Date: <YYYY-MM-DD>
+# Host: <hostname>
+# Operator: <name>
+```
+
+## Cold-restore — when the platform DB is gone
+
+Use this runbook when (a) the host is dead and you're spinning up a
+fresh server, (b) the data volume is corrupted or accidentally
+deleted, or (c) you need to clone production into a staging host.
+
+### Pre-flight
+
+You need:
+
+- The `.env` file from the previous host (or its values rebuilt
+  from your secret store). **`ENCRYPTION_KEY` MUST match** — every
+  encrypted column on the restored DB is bound to the
+  `ENCRYPTION_KEY` that signed it. A mismatch is a bricked DB.
+  Same for `JWT_SECRET` (existing sessions / magic links).
+- The base + WAL backup material. Either:
+  - The `xray_pg_backups` Docker volume from the old host, copied
+    into the new host's Docker volume directory, OR
+  - S3 access to the offsite mirror (`BACKUP_S3_*` env vars).
+
+### Steps
+
+1. **Bring up the new host.** Install Docker, clone the XRay repo,
+   write `.env` with the SAME `ENCRYPTION_KEY` + `JWT_SECRET` as
+   the source host:
+   ```sh
+   git clone <xray repo url> /opt/xray
+   cd /opt/xray
+   cp /path/to/saved/.env .                  # or rebuild from secret store
+   ```
+
+2. **Stage the backups.** Either copy the volume directly or pull
+   from S3:
+   ```sh
+   # Option A — copy the local volume from the old host
+   docker volume create xray_pg_backups
+   tar -xzf /backups/old-host-pg_backups.tar.gz \
+     -C /var/lib/docker/volumes/xray_pg_backups/_data
+
+   # Option B — pull from S3
+   docker volume create xray_pg_backups
+   ./scripts/backup-s3-sync.sh all  # reads BACKUP_S3_* from .env
+   ```
+
+3. **Run the restore drill against the staged backups.** This
+   verifies the material is intact BEFORE you bring up the
+   production stack on top of it:
+   ```sh
+   ./scripts/restore-drill.sh --keep
+   ```
+   Expect `PASS`. If `--keep` was specified, the drill sidecar is
+   still running and you can interactively inspect it. Tear down
+   after:
+   ```sh
+   ./scripts/restore-drill.sh --teardown
+   ```
+
+4. **Restore into the production data volume.** With the drill
+   green, restore the same base + WAL into `xray_pg_data` (the
+   actual production volume). Easiest path: extract the base into
+   an empty `xray_pg_data` and let Postgres replay WAL on startup.
+
+   ```sh
+   # Pick a base
+   BASE_TS=$(docker run --rm -v xray_pg_backups:/data:ro \
+              postgres:16-alpine ls /data/base | sort | tail -n 1)
+
+   # Reset the production data volume
+   docker volume rm xray_pg_data 2>/dev/null || true
+   docker volume create xray_pg_data
+
+   # Extract the base + pg_wal
+   docker run --rm \
+     -v xray_pg_backups:/backups:ro \
+     -v xray_pg_data:/var/lib/postgresql/data \
+     --entrypoint sh \
+     postgres:16-alpine \
+     -c "
+       set -eu
+       cd /var/lib/postgresql/data
+       tar -xzf /backups/base/${BASE_TS}/base.tar.gz -C .
+       mkdir -p pg_wal
+       tar -xzf /backups/base/${BASE_TS}/pg_wal.tar.gz -C pg_wal
+       cat >> postgresql.auto.conf <<'CFGEOF'
+   restore_command = 'cp /backups/wal/%f %p'
+   CFGEOF
+       touch recovery.signal
+       chown -R postgres:postgres .
+       chmod 700 .
+     "
+   ```
+
+5. **Bring up the stack.**
+   ```sh
+   docker compose up -d
+   ```
+   Postgres starts in recovery mode (because `recovery.signal` is
+   present) and replays every WAL segment in the archive before
+   accepting writes. Watch the logs:
+   ```sh
+   docker compose logs -f postgres
+   ```
+   Wait for `database system is ready to accept connections`.
+
+6. **Verify the migrations + RLS shape.**
+   The server's startup self-heal applies any migrations not yet
+   recorded as applied; for a same-version restore this is a no-op.
+   Run the cross-tenant probe to confirm RLS is intact post-restore:
+   ```sh
+   docker compose exec -T postgres \
+     psql -U xray -d xray < migrations/probes/probe-rls-cross-tenant.sql
+   ```
+   Expect `PROBE PASS`.
+
+7. **Smoke-test the app.** Hit `/api/health` (returns 200), log in
+   as platform admin, render a dashboard. Tenants whose OAuth
+   refresh tokens have expired since the backup will need to
+   reconnect — the same caveat as the export/import flow.
+
+If anything fails between step 5 and step 7, the safest revert is
+to wipe the production data volume + stack, restore from a known-
+good base, and re-run from step 4.
+
+## RLS probe — what CI checks
+
+`.github/workflows/ci.yml` runs an `rls-probe (platform)` job on
+every PR. It spins up an ephemeral Postgres, applies `init.sql` +
+every numbered migration, provisions a non-owner `xray_app` role,
+and runs both the SQL probe (`migrations/probes/probe-rls-cross-tenant.sql`)
+and the TypeScript probe (`server/src/db/rls-probe.test.ts`) under
+`PROBE_RLS=1`. **The job gates merges** — a red probe means
+tenant-data isolation has regressed.
+
+### What the probe asserts
+
+For every RLS-enabled tenant-scoped table:
+
+1. **Cross-tenant SELECT returns zero rows.** A query under
+   tenant A's `app.current_tenant` context must return no rows
+   that belong to tenant B.
+2. **Cross-tenant INSERT raises.** An attempt to INSERT a row with
+   `tenant_id = B` while `app.current_tenant = A` raises
+   `new row violates row-level security policy`. The
+   `tenant_isolation` policy now sets `WITH CHECK` explicitly
+   (migration 044) so write paths are gated identically to
+   read paths.
+3. **Admin bypass works.** With `app.is_platform_admin='true'`,
+   the `platform_admin_bypass` policy admits queries across
+   every tenant (used for admin UI, fan-out dispatch, Stripe
+   webhook reverse-lookups).
+4. **User-scope tables stay user-scoped.** The inbox tables
+   (`inbox_threads`, `inbox_messages`, `inbox_thread_participants`)
+   gate on `app.current_user_id` — user A cannot see a thread
+   that lists only user B as a participant, even if both users
+   live in the same tenant.
+5. **Default-deny on no context.** A `withClient` checkout (no
+   tenant + no admin context) returns zero rows from any RLS-
+   enabled table — this is what guards the unauthenticated
+   bootstrap paths from accidentally surfacing tenant data.
+
+### Why the probe runs as `xray_app`, not `xray`
+
+Postgres bypasses RLS for table owners by default. The platform
+DB's `xray` user (the docker bootstrap superuser) owns every
+table, so a probe connecting as `xray` would never exercise the
+policies. CI provisions a separate `xray_app` role with DML
+grants but no ownership and no superuser bit; the probe connects
+as that role so the policies actually fire.
+
+Migration 044 added `ALTER TABLE … FORCE ROW LEVEL SECURITY` to
+every tenant-scoped table so the same enforcement applies even
+when the connecting user is the owner. Production deployments
+should follow up by switching the application's runtime
+connection from `xray` to a non-owner role; that change is
+out of step 12's scope but lined up by the FORCE RLS migration
+already landed.
+
+### Reading a failed probe log
+
+The CI job runs the SQL probe first (one script, one error
+message), then the vitest probe (26 specs covering every
+RLS-enabled table individually). A red SQL probe usually points
+at a missing or mis-shaped policy on a specific table — the
+`RAISE EXCEPTION` message names the table:
+
+```
+ERROR:  LEAK: platform.<table> in tenant A saw <N> probe rows (want 1)
+```
+
+A red vitest probe with most specs failing typically points at
+a bug in one of the connection helpers (`withClient` /
+`withTenantContext` / `withAdminClient`) rather than a per-table
+policy issue. Run the failing spec locally with
+`PROBE_RLS=1 DATABASE_URL=… npx vitest run src/db/rls-probe.test.ts`
+to triage.
