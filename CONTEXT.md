@@ -3804,8 +3804,9 @@ required:
   tested restore drill + `PROBE_RLS=1` in CI.
 
 After **step 12** the system meets the production-readiness gate
-described in the Roadmap below. Step 11 is three of four pre-
-launch steps closed (8, 9, 10, 11 shipped; 12 remaining).
+described in the Roadmap below. Step 11 was three of four
+pre-launch steps closed; step 12 closed the fourth (8, 9, 10, 11,
+12 all shipped).
 
 
 ## Step 12 — Platform DB backups + PROBE_RLS=1 in CI (shipped)
@@ -4141,8 +4142,11 @@ everything after that is hygiene + post-launch upgrades.
 
 After step 12, the system meets:
 
-- **Tenant data isolation:** RLS top-to-bottom (platform DB step
-  6/7, pipeline DB step 12).
+- **Tenant data isolation:** Platform DB RLS top-to-bottom — step 6/7
+  fixed the application-layer helpers, step 12 fixed the DB-layer
+  enforcement (FORCE RLS + NULL-safe policies + helper transaction
+  scope), gated on every PR by the rls-probe (platform) CI job.
+  Pipeline DB hardening lands in step 15+.
 - **Auth strength:** Passkey + TOTP + backup codes; MFA-required
   for admins; brute-force throttled at 100/min device + 20/day
   user.
@@ -4153,9 +4157,10 @@ After step 12, the system meets:
   tracked; GDPR Art. 17 + 20 endpoints.
 - **Supply chain:** SCA + SAST + container scanning + secrets
   scanning all in CI.
-- **Backups:** WAL-archive + tested restore drill.
-- **Audit trail:** platform.audit_log + pipeline.access_audit
-  (Model D's foundation, expanded in Model J at step 15).
+- **Backups:** Local-first pg_basebackup + WAL archive on the
+  platform DB; opt-in S3-compatible offsite mirror; tested
+  restore drill + cold-restore-from-S3 runbook.
+- **Audit trail:** platform.audit_log.
 
 What's still gapped after step 12 (out of scope for "production
 ready," addressed under separate tracks):
@@ -4176,8 +4181,11 @@ The gate isn't *importance* — it's *whether deferring leaves a
 permanent gap or breaks a contract you can't unsign*:
 
 - **Tier 1 (hard blockers, regulatory/data-shape):** all of
-  step 11, backups + restore drill (folded into step 12),
-  pipeline DB Model D (step 12).
+  step 11, backups + restore drill + DB-level RLS enforcement
+  (folded into step 12). Pipeline DB Model D was originally
+  scoped into step 12 but reassigned mid-flight to step 15+;
+  the platform DB is what carries every tenant's UI state and
+  is the actual hard-blocker scope.
 - **Tier 2 (strong, exposure-window cost):** step 9, step 10,
   step 8's secret-scanning + Dependabot subset.
 - **Tier 3 (defer-with-no-penalty):** steps 13, 14, 15, 16-21,
