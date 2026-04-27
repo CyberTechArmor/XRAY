@@ -182,6 +182,7 @@ describe('integration.service.decryptIntegrationClientSecret', () => {
       extra_authorize_params: {},
       api_key_header_name: null,
       api_key_instructions: null,
+      seed_url: null,
       created_at: '',
       updated_at: '',
     });
@@ -208,6 +209,7 @@ describe('integration.service.decryptIntegrationClientSecret', () => {
       extra_authorize_params: {},
       api_key_header_name: null,
       api_key_instructions: null,
+      seed_url: null,
       created_at: '',
       updated_at: '',
     });

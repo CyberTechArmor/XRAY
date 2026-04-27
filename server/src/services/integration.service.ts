@@ -42,6 +42,11 @@ export interface IntegrationRow {
   fan_out_secret?: string | null;
   fan_out_secret_set?: boolean;
   fan_out_parallelism?: number;
+  // Seed-on-connect webhook (migration 048). Optional. When set, the
+  // server POSTs a notification to this URL the first time each tenant
+  // establishes a connection to the integration. Receiver can use it
+  // to backfill / seed beyond what the dashboard render path covers.
+  seed_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -140,6 +145,8 @@ export interface IntegrationCreateInput {
   // a fan-out secret until they actually get called from n8n.
   fanOutSecret?: string;
   fanOutParallelism?: number;
+  // Seed URL (migration 048). Optional. Empty string clears the value.
+  seedUrl?: string | null;
 }
 
 export async function createIntegration(
@@ -153,8 +160,8 @@ export async function createIntegration(
          (slug, display_name, icon_url, status, supports_oauth, supports_api_key,
           auth_url, token_url, client_id, client_secret, scopes, extra_authorize_params,
           api_key_header_name, api_key_instructions,
-          fan_out_secret, fan_out_parallelism)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          fan_out_secret, fan_out_parallelism, seed_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        RETURNING *`,
       [
         input.slug,
@@ -173,6 +180,7 @@ export async function createIntegration(
         input.apiKeyInstructions || null,
         encryptSecret(input.fanOutSecret || null),
         input.fanOutParallelism ?? 5,
+        input.seedUrl || null,
       ]
     );
     const row = result.rows[0];
@@ -226,6 +234,7 @@ export async function updateIntegration(
     // signal, same as client_secret.
     fanOutSecret: updates.fanOutSecret,
     fanOutParallelism: updates.fanOutParallelism ?? existing.fan_out_parallelism,
+    seedUrl: updates.seedUrl !== undefined ? updates.seedUrl : existing.seed_url,
   };
   validateIntegrationConfig(merged);
 
@@ -281,6 +290,11 @@ export async function updateIntegration(
         );
       }
       addField('fan_out_parallelism', updates.fanOutParallelism);
+    }
+    if (updates.seedUrl !== undefined) {
+      // Empty string clears the URL (consistent with the client_secret /
+      // fan_out_secret contract); undefined leaves the existing value.
+      addField('seed_url', updates.seedUrl || null);
     }
 
     if (fields.length === 0) {
