@@ -495,10 +495,16 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT USAGE, SELECT, UPDATE ON SEQUE
 SQL
   if [ $? -eq 0 ]; then
     ok "Runtime role ${DB_APP_USER:-xray_app} provisioned (NOSUPERUSER, NOINHERIT, DML grants on platform.*)"
-    # Restart server so it reconnects under xray_app via DATABASE_URL.
-    docker compose restart server >/dev/null 2>&1 \
-      && ok "Server restarted on xray_app connection" \
-      || warn "Could not restart server — restart manually with 'docker compose restart server'"
+    # Force-recreate the server so it reconnects under xray_app. On a
+    # fresh install the server was created in step 8 with .env already
+    # holding DB_APP_USER + DB_APP_PASSWORD, so its env is correct;
+    # `docker compose restart` would suffice. We use --force-recreate
+    # --no-deps anyway so this path is identical to update.sh's step 5
+    # — single shape, no divergence between install + update flows.
+    # --no-deps keeps postgres untouched.
+    docker compose up -d --force-recreate --no-deps server >/dev/null 2>&1 \
+      && ok "Server force-recreated on xray_app connection" \
+      || warn "Could not recreate server — run manually: docker compose up -d --force-recreate --no-deps server"
   else
     warn "xray_app provisioning had errors — server will fall back to ${DB_USER:-xray} (RLS decorative until fixed)"
   fi
