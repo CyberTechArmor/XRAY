@@ -144,14 +144,14 @@ async function readBaseBackups(): Promise<BaseBackupSummary[]> {
       };
     })
   );
-  // Sort newest first by created_at; fall back to name (lexicographic
-  // works for the UTC-ISO naming scheme backup-platform.sh uses).
-  summaries.sort((a, b) => {
-    const ad = a.created_at || '';
-    const bd = b.created_at || '';
-    if (ad === bd) return b.name.localeCompare(a.name);
-    return bd.localeCompare(ad);
-  });
+  // Sort newest first by directory name. backup-platform.sh names
+  // every base after a UTC timestamp (YYYYMMDDTHHMMSSZ-ish), so
+  // lexicographic descending IS chronological descending. We
+  // deliberately do NOT sort by created_at: filesystem mtimes can
+  // be unstable across docker bind mounts, network FS, and CI
+  // environments (mkdir-then-touch races, ext4 noatime, etc.). Name
+  // ordering is deterministic regardless of where the volume lives.
+  summaries.sort((a, b) => b.name.localeCompare(a.name));
   return summaries;
 }
 
@@ -253,6 +253,7 @@ export async function getBackupStatus(): Promise<BackupStatus> {
   }
 
   if (!mountReachable) {
+    const s3 = await readS3Config();
     return {
       available: false,
       bases: [],
@@ -264,8 +265,8 @@ export async function getBackupStatus(): Promise<BackupStatus> {
         lag_seconds: null,
       },
       volume: { total_bytes: 0, base_bytes: 0, wal_bytes: 0 },
-      s3: await readS3Config(),
-      retain_days: (await readS3Config()).retain_days,
+      s3,
+      retain_days: s3.retain_days,
     };
   }
 
