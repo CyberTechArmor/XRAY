@@ -26,11 +26,16 @@
 --
 -- Idempotent: re-applying on an already-stripped role is a no-op.
 --
--- If a future migration needs superuser (e.g. an extension install),
--- the operator temporarily restores the bit with:
---   docker exec xray-postgres psql -U postgres -d xray -c \
---     'ALTER ROLE xray SUPERUSER;'
--- and restores the strip after.
+-- IMPORTANT — bootstrap-user limitation. Postgres refuses to let
+-- the cluster bootstrap user demote its own SUPERUSER attribute
+-- (would orphan the cluster). The XRay docker stack runs
+-- `initdb --username=xray`, making xray the bootstrap user, so on
+-- a default install this migration ALWAYS NOTICEs rather than
+-- stripping. The actual production-ready path is the role split
+-- documented in docs/operator.md ("If migration 045 emits a NOTICE
+-- instead of stripping" → "Role-split"): create a non-super
+-- xray_app role, switch the application's DATABASE_URL to use it,
+-- xray remains as the bootstrap super for admin ops.
 
 DO $$
 DECLARE
