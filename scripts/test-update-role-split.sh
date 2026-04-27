@@ -47,16 +47,14 @@ if [ ! -f "${ROOT_DIR}/.env" ]; then
   exit 64
 fi
 
-# Source .env so DB_APP_USER / DB_USER / DB_NAME / APP_PORT are in scope.
-set -a
-# shellcheck disable=SC1091
-. "${ROOT_DIR}/.env"
-set +a
-
-DB_USER="${DB_USER:-xray}"
-DB_APP_USER="${DB_APP_USER:-xray_app}"
-DB_NAME="${DB_NAME:-xray}"
-APP_PORT="${APP_PORT:-3000}"
+# Extract DB_* / APP_PORT via grep, NOT via `. .env`. dotenv files allow
+# unquoted values with spaces (e.g. RP_NAME=XRay BI), which bash's
+# source command parses as `RP_NAME=XRay; BI` and aborts under set -e.
+DB_USER=$(grep -oP '^DB_USER=\K.*' "${ROOT_DIR}/.env" 2>/dev/null || echo "xray")
+DB_APP_USER=$(grep -oP '^DB_APP_USER=\K.*' "${ROOT_DIR}/.env" 2>/dev/null || echo "xray_app")
+DB_APP_PASSWORD=$(grep -oP '^DB_APP_PASSWORD=\K.*' "${ROOT_DIR}/.env" 2>/dev/null || echo "")
+DB_NAME=$(grep -oP '^DB_NAME=\K.*' "${ROOT_DIR}/.env" 2>/dev/null || echo "xray")
+APP_PORT=$(grep -oP '^APP_PORT=\K.*' "${ROOT_DIR}/.env" 2>/dev/null || echo "3000")
 
 cd "${ROOT_DIR}"
 
