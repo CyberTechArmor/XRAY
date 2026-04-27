@@ -380,7 +380,7 @@ export async function getDrillRun(id: string): Promise<DrillRun | null> {
 // The server enqueues; the backup-worker sidecar polls, claims, runs,
 // and writes back. Frontend polls GET /jobs/:id for terminal status.
 
-export type BackupJobKind = 'base' | 's3sync' | 'drill';
+export type BackupJobKind = 'base' | 's3sync' | 'drill' | 'delete_base';
 export type BackupJobStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export interface BackupJob {

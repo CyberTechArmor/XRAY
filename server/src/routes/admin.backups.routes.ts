@@ -154,18 +154,58 @@ router.post('/s3-sync', async (req, res, next) => {
 });
 
 // ── POST /api/admin/backups/drill ───────────────────────────────
-// Body: { from_s3?: boolean, target_time?: ISO }
+// Body: { from_s3?: boolean, target_time?: ISO, base?: string }
 // from_s3 stages from S3 first (cold-restore-from-S3 dry-run);
-// target_time enables PITR. Both optional.
+// target_time enables PITR; base picks a specific backup directory
+// (per-row "Test restore" button — sidecar only, does NOT touch live).
+// All three optional.
 router.post('/drill', async (req, res, next) => {
   try {
     const args: Record<string, unknown> = {};
     const b = req.body || {};
     if (typeof b.from_s3 === 'boolean') args.from_s3 = b.from_s3;
     if (typeof b.target_time === 'string') args.target_time = b.target_time;
+    if (typeof b.base === 'string' && /^[A-Za-z0-9._:-]+$/.test(b.base)) {
+      // Same whitelist as /delete-base — keeps shell metacharacters
+      // out of the worker's --base argument when restore-drill.sh
+      // expands it.
+      args.base = b.base;
+    }
     const job = await backupService.enqueueJob({
       kind: 'drill',
       args,
+      requested_by: req.user?.sub ?? null,
+    });
+    res.json({ ok: true, data: job });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/admin/backups/delete-base ─────────────────────────
+// Body: { name: string }  — directory name under pg_backups/base/
+// Enqueues a delete_base job for the worker. Worker rm -rf's the
+// directory inside the postgres container so the volume mount stays
+// RO from the server's perspective. Always allows deleting any base —
+// the operator chose to click; the UI confirms with a modal.
+router.post('/delete-base', async (req, res, next) => {
+  try {
+    const name = (req.body && req.body.name) || '';
+    if (typeof name !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(name)) {
+      // Whitelist alphanumerics + dot/underscore/colon/hyphen so a
+      // crafted name can't escape the base/ directory or contain shell
+      // metacharacters when the worker passes it to the rm command.
+      // backup-platform.sh names every base after a UTC timestamp
+      // (YYYYMMDDTHHMMSSZ) which fits the whitelist.
+      res.status(400).json({
+        ok: false,
+        error: { code: 'BAD_REQUEST', message: 'name required (alphanumeric + . _ : - only)' },
+      });
+      return;
+    }
+    const job = await backupService.enqueueJob({
+      kind: 'delete_base',
+      args: { name },
       requested_by: req.user?.sub ?? null,
     });
     res.json({ ok: true, data: job });
