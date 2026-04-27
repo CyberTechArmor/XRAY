@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import type { Dirent } from 'fs';
 import * as path from 'path';
 import { withAdminClient } from '../db/connection';
 import type { PoolClient } from '../db/connection';
@@ -86,7 +87,7 @@ export interface DrillRun {
 // first deploy). Symlinks aren't followed; we only count real files.
 async function dirSizeBytes(dir: string): Promise<number> {
   let total = 0;
-  let entries: Awaited<ReturnType<typeof fs.readdir>>;
+  let entries: Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
@@ -111,7 +112,7 @@ async function dirSizeBytes(dir: string): Promise<number> {
 }
 
 async function readBaseBackups(): Promise<BaseBackupSummary[]> {
-  let entries: Awaited<ReturnType<typeof fs.readdir>>;
+  let entries: Dirent[];
   try {
     entries = await fs.readdir(baseDir(), { withFileTypes: true });
   } catch {
@@ -155,7 +156,7 @@ async function readWalSummary(): Promise<WalArchiveSummary> {
     newest_segment_at: null,
     lag_seconds: null,
   };
-  let entries: Awaited<ReturnType<typeof fs.readdir>>;
+  let entries: Dirent[];
   try {
     entries = await fs.readdir(walDir(), { withFileTypes: true });
   } catch {
