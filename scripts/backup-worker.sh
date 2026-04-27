@@ -234,6 +234,20 @@ run_job() {
 }
 
 echo "[backup-worker] starting; poll every ${POLL_INTERVAL_SEC}s"
+echo "[backup-worker] DB ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+
+# Connectivity probe at startup so misconfigured DB creds surface in
+# the worker log instead of failing silently on every claim attempt.
+if ! run_psql -c 'SELECT 1' >/dev/null 2>&1; then
+  echo "[backup-worker] FATAL: cannot connect to postgres — check DB_PASSWORD in .env" >&2
+  echo "[backup-worker] container will keep retrying; pollling will resume once postgres is reachable" >&2
+fi
+
+# Same for docker.sock — without it, every job-dispatch will fail.
+if ! docker version >/dev/null 2>&1; then
+  echo "[backup-worker] FATAL: docker.sock not reachable from this container" >&2
+  echo "[backup-worker] expected mount: /var/run/docker.sock — check docker-compose.yml" >&2
+fi
 
 # Graceful shutdown: stop polling on SIGTERM. Any job currently
 # running will finish (the docker stop default 10s timeout means a
@@ -243,7 +257,16 @@ echo "[backup-worker] starting; poll every ${POLL_INTERVAL_SEC}s"
 trap 'echo "[backup-worker] received SIGTERM; exiting after current job"; exit 0' TERM
 
 while true; do
-  result=$(claim_next_job || true)
+  result=$(claim_next_job 2>&1 || true)
+  # claim_next_job's stderr (psql connection failure, RLS policy
+  # rejection, etc.) goes into $result alongside its stdout under
+  # `2>&1 || true`. Detect that case so a transient error logs
+  # cleanly rather than getting parsed as a job row.
+  if echo "$result" | grep -qiE 'error|fatal|could not connect'; then
+    echo "[backup-worker] WARN claim failed: $(echo "$result" | head -2)" >&2
+    sleep "$POLL_INTERVAL_SEC"
+    continue
+  fi
   if [ -z "$result" ]; then
     sleep "$POLL_INTERVAL_SEC"
     continue

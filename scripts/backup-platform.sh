@@ -29,8 +29,37 @@
 set -euo pipefail
 
 BACKUP_ROOT="${BACKUP_ROOT:-/var/lib/postgresql/backups}"
-POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-postgres}"
 RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-14}"
+
+# Resolve the postgres container in a way that works from BOTH:
+#   - host cron (runs from /opt/xray, has docker-compose.yml in CWD)
+#   - the backup-worker sidecar (runs inside a container with
+#     /var/run/docker.sock mounted but no docker-compose.yml).
+#
+# Strategy: ask the docker daemon directly via the compose service
+# label that compose stamps on every container it creates. Falls back
+# to the legacy POSTGRES_CONTAINER name if the label lookup fails
+# (e.g. the operator is using an exotic container-naming setup).
+resolve_pg_container() {
+  local found
+  found=$(docker ps \
+    --filter "label=com.docker.compose.service=${POSTGRES_SERVICE:-postgres}" \
+    --filter "status=running" \
+    --format "{{.ID}}" 2>/dev/null | head -1 || true)
+  if [ -n "$found" ]; then
+    echo "$found"
+    return 0
+  fi
+  # Fallback for hosts where the label query fails (rare, but
+  # operator-set custom labels could make it miss).
+  echo "${POSTGRES_CONTAINER:-postgres}"
+}
+PG_ID="$(resolve_pg_container)"
+if [ -z "$PG_ID" ]; then
+  echo "[backup-platform] FATAL: could not find a running postgres container" >&2
+  exit 1
+fi
+echo "[backup-platform] resolved postgres container: ${PG_ID}"
 
 # pg_basebackup connects via the host network (after compose-port-
 # mapping the postgres service) by default. We instead exec the
@@ -45,9 +74,9 @@ echo "[backup-platform] starting base backup → ${LOCAL_BASE_DIR}"
 # named-volume path that the archive script also writes to. -Ft
 # (tar format) gives us a single base.tar.gz + pg_wal.tar.gz pair —
 # straightforward to restore on a fresh host.
-docker compose exec -T \
+docker exec -i \
   -e PGPASSWORD="${PGPASSWORD:-${DB_PASSWORD:-}}" \
-  "${POSTGRES_CONTAINER}" \
+  "${PG_ID}" \
   sh -c "
     set -eu
     mkdir -p '${LOCAL_BASE_DIR}'
@@ -63,7 +92,7 @@ docker compose exec -T \
 # Manifest — captures restore metadata so the operator (or the
 # restore drill) can pick the right base backup without reading
 # pg_basebackup's binary headers. Plain text, version-stamped.
-docker compose exec -T "${POSTGRES_CONTAINER}" sh -c "
+docker exec -i "${PG_ID}" sh -c "
   cat > '${LOCAL_BASE_DIR}/MANIFEST.txt' <<MANIFEST_EOF
 xray-backup-version: 1
 backup-kind: pg_basebackup-tar-gz
@@ -85,7 +114,7 @@ echo "[backup-platform] base backup complete: ${LOCAL_BASE_DIR}"
 # portable mechanism (busybox `date` in Alpine doesn't accept
 # "N days ago" syntax).
 echo "[backup-platform] pruning base backups + WAL older than ${RETAIN_DAYS} days"
-docker compose exec -T "${POSTGRES_CONTAINER}" sh -c "
+docker exec -i "${PG_ID}" sh -c "
   set -eu
   KEEP_LATEST=\$(ls -1 '${BACKUP_ROOT}/base' 2>/dev/null | sort | tail -n 1 || true)
   if [ -n \"\${KEEP_LATEST:-}\" ]; then
