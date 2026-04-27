@@ -156,9 +156,25 @@ docker run -d \
   postgres -c listen_addresses='localhost' >/dev/null
 
 # ── Poll for ready (recovery may take a while; cap at 120s) ──────
+# Two short-circuit checks per iteration:
+#   1. If the sidecar container exited unexpectedly (postgres crashed
+#      during recovery — bad PGDATA, locale mismatch, file ownership
+#      drift), bail out immediately with the container's logs instead
+#      of waiting the full 120s.
+#   2. pg_isready against the unix socket inside the container.
 echo -n "[restore-drill] waiting for recovery to complete"
 READY="false"
+EXITED_EARLY="false"
 for _ in $(seq 1 60); do
+  # Container died? (state == "exited"). docker inspect returns the
+  # state in its own format; grep is the smallest portable shape.
+  STATE=$(docker inspect -f '{{.State.Status}}' "${SIDECAR_NAME}" 2>/dev/null || echo "missing")
+  if [ "$STATE" = "exited" ] || [ "$STATE" = "missing" ]; then
+    EXITED_EARLY="true"
+    echo ""
+    echo "[restore-drill] FAIL: sidecar exited during recovery (state=${STATE})"
+    break
+  fi
   if docker exec "${SIDECAR_NAME}" pg_isready -h /var/run/postgresql -U "${DB_USER}" -d "${DB_NAME}" >/dev/null 2>&1; then
     READY="true"
     echo ""
@@ -169,12 +185,33 @@ for _ in $(seq 1 60); do
 done
 
 if [ "$READY" != "true" ]; then
+  if [ "$EXITED_EARLY" != "true" ]; then
+    echo ""
+    echo "[restore-drill] FAIL: postgres did not become ready within 120s"
+  fi
+  echo "[restore-drill] sidecar inspect:"
+  docker inspect -f 'state={{.State.Status}} exitcode={{.State.ExitCode}} startedat={{.State.StartedAt}} finishedat={{.State.FinishedAt}}' "${SIDECAR_NAME}" 2>&1 || true
+  echo "[restore-drill] sidecar logs (last 100 lines):"
+  docker logs --tail 100 "${SIDECAR_NAME}" 2>&1 || true
   echo ""
-  echo "[restore-drill] FAIL: postgres did not become ready within 120s"
-  echo "[restore-drill] last 30 lines of sidecar log:"
-  docker logs --tail 30 "${SIDECAR_NAME}" 2>&1 || true
+  echo "[restore-drill] hint: common failure modes —"
+  echo "  - 'invalid locale' → original cluster initialized with a locale"
+  echo "    not in postgres:16-alpine (LC_COLLATE / LC_CTYPE drift)"
+  echo "  - 'incorrect checksum' / 'requires WAL' → base backup tar"
+  echo "    incomplete; rerun ./scripts/backup-platform.sh on the live DB"
+  echo "  - 'permission denied on PGDATA' → ownership chown didn't take"
+  echo "    inside the prep container; check the SIDECAR_VOLUME mount"
+  echo "  - hangs on 'requested WAL segment ... has already been removed'"
+  echo "    → WAL archive missing segments needed for consistency;"
+  echo "      check /var/lib/postgresql/backups/wal/ on the live host"
   exit 1
 fi
+
+# Drill succeeded — surface the sidecar's recovery banner anyway so
+# the operator (and the audit row) has the full chain of evidence.
+echo "[restore-drill] sidecar startup log (last 30 lines):"
+docker logs --tail 30 "${SIDECAR_NAME}" 2>&1 || true
+echo ""
 
 # ── Schema + smoke query ─────────────────────────────────────────
 echo "[restore-drill] schema check (\d platform.tenants):"
