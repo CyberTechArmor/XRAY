@@ -2750,6 +2750,7 @@
       admin_webhooks: 'if(typeof initWebhooks==="function")initWebhooks(container,api,user);',
       admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);',
       admin_backups: 'if(typeof initAdminBackups==="function")initAdminBackups(container,api,user);',
+      admin_pipeline: 'if(typeof initAdminPipeline==="function")initAdminPipeline(container,api,user);',
       admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);',
       inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);',
       files: 'if(typeof initFiles==="function")initFiles(container,api,user);',
