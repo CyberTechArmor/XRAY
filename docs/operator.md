@@ -622,11 +622,45 @@ as that role so the policies actually fire.
 
 Migration 044 added `ALTER TABLE … FORCE ROW LEVEL SECURITY` to
 every tenant-scoped table so the same enforcement applies even
-when the connecting user is the owner. Production deployments
-should follow up by switching the application's runtime
-connection from `xray` to a non-owner role; that change is
-out of step 12's scope but lined up by the FORCE RLS migration
-already landed.
+when the connecting user is the owner. Migration 045 strips the
+`SUPERUSER` + `BYPASSRLS` attributes from the runtime role so
+the bypass-via-superuser bit can no longer mask RLS in
+production.
+
+### If migration 045 emits a NOTICE instead of stripping
+
+In some environments — GitHub Actions's `postgres:16-alpine`
+service container, certain hosted Postgres providers — `ALTER
+ROLE … NOSUPERUSER` raises `insufficient_privilege` even when
+the calling role has `rolsuper=true`. The error is *"The
+bootstrap user must have the SUPERUSER attribute"* — a
+constraint about WHO can alter, not about whether the alter
+would otherwise succeed. Migration 045 catches this with an
+exception handler so the apply never fails; the strip is
+documented but not performed. Run this manually as the cluster
+bootstrap user to complete the strip:
+
+```sh
+docker exec xray-postgres psql -U postgres -d xray -c \
+  "ALTER ROLE xray WITH NOSUPERUSER NOBYPASSRLS REPLICATION;"
+```
+
+Then verify with:
+
+```sh
+docker exec xray-postgres psql -U postgres -d xray -c \
+  "SELECT rolname, rolsuper, rolbypassrls, rolreplication
+     FROM pg_roles WHERE rolname='xray';"
+```
+
+Expected: `rolsuper=f, rolbypassrls=f, rolreplication=t`.
+
+Without this, the policies attached by migrations 029 + 044
+exist but are bypassed because the runtime user is still a
+superuser. RLS probe in CI catches the policy correctness on
+every PR via the non-owner `xray_app` role; the production
+strip is the matching half that makes the same enforcement
+apply to the actual application connection.
 
 ### Reading a failed probe log
 
