@@ -160,6 +160,19 @@ fi
 # Destructive schema changes. Safe to run now because the new container
 # is up and no code path in the new image SELECTs the dropped columns.
 echo "  [5c] Running post-rebuild migrations..."
+# Re-capture PG_CONTAINER. Step 5's `docker compose up -d` recreates any
+# service whose config has drifted (new volume mount, new command flag,
+# new env var) — postgres included. The ID captured at line 89 may now
+# be stale and `docker exec` would fail with "No such container".
+PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null || echo "")
+if [ -n "$PG_CONTAINER" ]; then
+  for i in $(seq 1 15); do
+    if docker exec "$PG_CONTAINER" pg_isready -U "${DB_USER:-xray}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+fi
 apply_migrations_from "$SCRIPT_DIR/migrations/post-rebuild" "post-rebuild"
 
 # ── Step 5b0: Ensure Pipeline JWT keypair + OAuth redirect URI in .env ──
