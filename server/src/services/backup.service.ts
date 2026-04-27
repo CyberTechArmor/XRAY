@@ -47,6 +47,11 @@ export interface S3Config {
   endpoint: string | null;      // null → default AWS S3
   region: string | null;
   prefix: string | null;
+  access_key_id: string | null; // not secret — operator can rotate via UI
+  secret_set: boolean;          // BACKUP_S3_SECRET_ACCESS_KEY env var is set
+                                // (the secret value never leaves the server;
+                                // the boolean tells the admin UI whether to
+                                // render "configured" vs. "not yet provided")
   retain_days: number | null;
 }
 
@@ -210,11 +215,12 @@ async function readSettingOrEnv(settingKey: string, envKey: string): Promise<str
 }
 
 async function readS3Config(): Promise<S3Config> {
-  const [bucket, endpoint, region, prefix, retainStr] = await Promise.all([
+  const [bucket, endpoint, region, prefix, accessKeyId, retainStr] = await Promise.all([
     readSettingOrEnv(S3_SETTING_KEYS.bucket, 'BACKUP_S3_BUCKET'),
     readSettingOrEnv(S3_SETTING_KEYS.endpoint, 'BACKUP_S3_ENDPOINT'),
     readSettingOrEnv(S3_SETTING_KEYS.region, 'BACKUP_S3_REGION'),
     readSettingOrEnv(S3_SETTING_KEYS.prefix, 'BACKUP_S3_PREFIX'),
+    readSettingOrEnv(S3_SETTING_KEYS.access_key_id, 'BACKUP_S3_ACCESS_KEY_ID'),
     readSettingOrEnv(S3_SETTING_KEYS.retain_days, 'BACKUP_RETAIN_DAYS'),
   ]);
   const configured = bucket.length > 0;
@@ -225,6 +231,11 @@ async function readS3Config(): Promise<S3Config> {
     endpoint: endpoint || null,
     region: region || null,
     prefix: prefix || null,
+    access_key_id: accessKeyId || null,
+    // The secret access key never leaves the server. Only the boolean
+    // "is it set in env?" is exposed so the admin UI can show
+    // configured / not-yet-set state without revealing the value.
+    secret_set: !!(process.env.BACKUP_S3_SECRET_ACCESS_KEY || '').trim(),
     retain_days: Number.isFinite(retainDays as number) ? (retainDays as number) : null,
   };
 }
@@ -254,7 +265,7 @@ export async function getBackupStatus(): Promise<BackupStatus> {
       },
       volume: { total_bytes: 0, base_bytes: 0, wal_bytes: 0 },
       s3: await readS3Config(),
-      retain_days: null,
+      retain_days: (await readS3Config()).retain_days,
     };
   }
 

@@ -79,6 +79,42 @@ RETURNING j.id, j.kind, j.args::text, COALESCE(j.requested_by::text, '');
 SQL
 }
 
+# ── Phase C: hot-reload S3 config from platform_settings ──────
+# Server admins edit bucket/endpoint/region/prefix/access-key-id/
+# retention via Admin → Backups (writes to platform.platform_settings).
+# Read those rows here and export as the BACKUP_S3_* env vars the
+# existing scripts already consume — DB takes precedence, env stays
+# as fallback (so first-deploy + .env-only installs keep working
+# until the operator seeds the settings rows).
+#
+# The SECRET access key (BACKUP_S3_SECRET_ACCESS_KEY) is NOT in this
+# fetch — it stays env-only. Decrypting an AES-GCM ciphertext from
+# the DB inside this bash daemon requires either a Node runtime in
+# the worker image (image bloat) or a hand-rolled openssl pipeline
+# (fragile). The rare-rotation cost of restarting the worker on .env
+# edits is acceptable.
+fetch_s3_settings_into_env() {
+  local row
+  for kv in \
+    "backup_s3_bucket:BACKUP_S3_BUCKET" \
+    "backup_s3_endpoint:BACKUP_S3_ENDPOINT" \
+    "backup_s3_region:BACKUP_S3_REGION" \
+    "backup_s3_prefix:BACKUP_S3_PREFIX" \
+    "backup_s3_access_key_id:BACKUP_S3_ACCESS_KEY_ID" \
+    "backup_retain_days:BACKUP_RETAIN_DAYS"
+  do
+    local setting_key="${kv%%:*}"
+    local env_key="${kv##*:}"
+    row=$(run_psql -c "SELECT COALESCE(value, '') FROM platform.platform_settings WHERE key = '${setting_key}'" 2>/dev/null || echo "")
+    # Trim trailing newline / whitespace from psql output.
+    row="${row//[$'\t\r\n ']}"
+    if [ -n "$row" ]; then
+      export "$env_key"="$row"
+      echo "[backup-worker] $env_key from platform_settings"
+    fi
+  done
+}
+
 # ── Job dispatch ──────────────────────────────────────────────
 # Each kind shells out to the existing script and captures the
 # combined stdout+stderr. Output is capped at 1 MB before write-back
@@ -104,6 +140,12 @@ run_job() {
       local mode
       mode=$(echo "$args" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
       [ -z "$mode" ] && mode="all"
+      # Phase C: pull non-secret S3 config from platform_settings
+      # before invoking the script. .env stays as fallback (the
+      # script reads $BACKUP_S3_* via env). DB row precedence keeps
+      # the admin-UI-edited values authoritative; if a row isn't
+      # set, env wins. Secret access key stays env-only.
+      fetch_s3_settings_into_env
       "$WORKER_SCRIPTS_DIR/backup-s3-sync.sh" "$mode" >"$output_file" 2>&1 || exit_code=$?
       ;;
     drill)
