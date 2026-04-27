@@ -180,24 +180,38 @@ run_job() {
   local final_status='completed'
   if [ "$exit_code" -ne 0 ]; then final_status='failed'; fi
 
-  # Write terminal status + output in one UPDATE. psql's -v binding
-  # gives us :'name' interpolation that handles arbitrary text safely
-  # (it does the proper SQL string escaping); shell-doubling single
-  # quotes via ${var//\'/\'\'} is the same belt-and-braces psql does
-  # internally, but explicit here so a stray single quote in script
-  # output never produces malformed SQL.
-  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-       -v ON_ERROR_STOP=1 \
-       -v out="${capped//\'/\'\'}" \
-       -v jid="$id" \
-       -v st="$final_status" \
-       -c "UPDATE platform.backup_jobs
-              SET status = :'st',
-                  exit_code = ${exit_code},
-                  finished_at = NOW(),
-                  output = :'out'
-            WHERE id = :'jid'" \
-       >/dev/null 2>&1 || echo "[backup-worker] WARN failed to write terminal status for $id" >&2
+  # Write terminal status + output. Use a file-based SQL script with
+  # PostgreSQL dollar-quoting ($xrayout$…$xrayout$) so the output text
+  # can contain arbitrary content — single quotes, backslashes, tens
+  # of KB of pg_basebackup verbose logs — without any escaping
+  # contortions or ARG_MAX hazards (psql -v out=... goes through the
+  # bash command line; large drill outputs can exceed ARG_MAX on
+  # constrained hosts and silently truncate).
+  #
+  # Using a unique dollar-quote tag ($xrayout$) makes it impossible
+  # for the output itself to terminate the literal — the chance of
+  # script output containing the exact bytes "$xrayout$" is zero in
+  # any realistic backup/drill log.
+  local sql_file
+  sql_file=$(mktemp)
+  {
+    echo "UPDATE platform.backup_jobs"
+    echo "   SET status = '${final_status}',"
+    echo "       exit_code = ${exit_code},"
+    echo "       finished_at = NOW(),"
+    echo "       output = \$xrayout\$"
+    head -c "$MAX_OUTPUT_BYTES" "$output_file"
+    echo ""
+    echo "\$xrayout\$"
+    echo " WHERE id = '${id}';"
+  } > "$sql_file"
+
+  if ! psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+            -v ON_ERROR_STOP=1 -f "$sql_file" >/dev/null 2>&1; then
+    echo "[backup-worker] WARN terminal-status write failed for $id (sql in ${sql_file}; not removed for triage)" >&2
+  else
+    rm -f "$sql_file"
+  fi
 
   # ── Drill-specific: also write to backup_drill_runs ──
   # Lets the Backups admin "Drill history" panel pick up worker-driven
@@ -219,14 +233,25 @@ run_job() {
     if grep -q "PROBE PASS\|drill PASS" "$output_file" 2>/dev/null; then
       schema_ok='true'
     fi
+    # Same dollar-quoted approach as the backup_jobs UPDATE above —
+    # arbitrary drill output (verbose pg_basebackup + WAL replay logs)
+    # is bytes-of-anything safe and not subject to ARG_MAX truncation.
+    local drill_sql_file
+    drill_sql_file=$(mktemp)
+    {
+      echo "INSERT INTO platform.backup_drill_runs"
+      echo "  (started_at, finished_at, exit_code, from_s3,"
+      echo "   schema_check_ok, output, triggered_by, user_id)"
+      echo "VALUES ('${started_at}', NOW(), ${exit_code}, false,"
+      echo "        ${schema_ok}, \$xrayout\$"
+      head -c "$MAX_OUTPUT_BYTES" "$output_file"
+      echo ""
+      echo "\$xrayout\$, '${triggered_by}', ${user_id_arg});"
+    } > "$drill_sql_file"
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-         -v ON_ERROR_STOP=1 -v out="${capped//\'/\'\'}" \
-         -c "INSERT INTO platform.backup_drill_runs
-               (started_at, finished_at, exit_code, from_s3,
-                schema_check_ok, output, triggered_by, user_id)
-             VALUES ('$started_at', NOW(), $exit_code, false,
-                     $schema_ok, :'out', '$triggered_by', $user_id_arg)" \
-         >/dev/null 2>&1 || true
+         -v ON_ERROR_STOP=1 -f "$drill_sql_file" >/dev/null 2>&1 \
+      && rm -f "$drill_sql_file" \
+      || echo "[backup-worker] WARN drill-history write failed for $id (sql in ${drill_sql_file})" >&2
   fi
 
   rm -f "$output_file"
