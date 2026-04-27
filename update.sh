@@ -24,9 +24,26 @@ echo "  [1/7] Pulling latest code..."
 cd "$SCRIPT_DIR"
 if git rev-parse --is-inside-work-tree &>/dev/null; then
   BRANCH=$(git rev-parse --abbrev-ref HEAD)
+  PRE_PULL_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
   git pull origin "$BRANCH" --ff-only 2>/dev/null && ok "Code updated (branch: $BRANCH)" || {
     warn "Git pull failed — using local files as-is"
   }
+  # Re-exec if update.sh itself was changed by the pull. Without this,
+  # bash keeps reading the OLD update.sh content from the held-open
+  # inode (git pull swaps the file via rename; the inode stays open
+  # until this process exits). Any fix that landed in update.sh would
+  # otherwise not take effect until the operator runs ./update.sh a
+  # SECOND time. UPDATE_SH_REEXEC guards against an infinite re-exec
+  # loop if anything goes wrong.
+  POST_PULL_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+  if [ -n "$PRE_PULL_SHA" ] && [ -n "$POST_PULL_SHA" ] \
+     && [ "$PRE_PULL_SHA" != "$POST_PULL_SHA" ] \
+     && [ -z "${UPDATE_SH_REEXEC:-}" ] \
+     && git diff --name-only "$PRE_PULL_SHA" "$POST_PULL_SHA" 2>/dev/null | grep -qx 'update.sh'; then
+    ok "update.sh changed — re-executing with the fresh version"
+    export UPDATE_SH_REEXEC=1
+    exec bash "$SCRIPT_DIR/update.sh" "$@"
+  fi
 else
   warn "Not a git repo — using local files"
 fi
