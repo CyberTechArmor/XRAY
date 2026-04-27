@@ -35,6 +35,14 @@ services:
       - SMTP_FROM=${SMTP_FROM:-}
     volumes:
       - uploads_data:/app/uploads
+      # pg_backups mounted read-only so the Backups admin view can
+      # report status (latest base, WAL count/lag, total size) by
+      # reading the filesystem directly. RO is the load-bearing
+      # word — a misbehaving server process can't corrupt the
+      # operator's backup history. Triggering new backups + drills
+      # is a separate (Phase B) concern — that path will go through
+      # a worker / docker.sock approach, not this mount.
+      - pg_backups:/var/lib/postgresql/backups:ro
     restart: unless-stopped
     depends_on:
       postgres:
