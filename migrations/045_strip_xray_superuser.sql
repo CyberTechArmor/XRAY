@@ -61,21 +61,21 @@ BEGIN
   -- postgres:16-alpine service container, certain hosted Postgres
   -- providers that delegate role-attribute alteration only to the
   -- cluster bootstrap user) ALTER ROLE … NOSUPERUSER raises
-  -- insufficient_privilege even when current_user has rolsuper=true.
-  -- The error is "The bootstrap user must have the SUPERUSER
-  -- attribute" — a constraint about WHO can alter, not about
-  -- WHETHER the alter would otherwise succeed. In those
-  -- environments the strip must be performed externally, by
-  -- whichever role IS the cluster bootstrap. Catch the exception
-  -- here so the migration apply never fails on a clean DB — RLS
-  -- still enforces correctly via FORCE RLS (migration 044), the
-  -- strip is the additional defense layer.
+  -- regardless of the caller's rolsuper. The exact SQLSTATE varies
+  -- across PG versions / providers (42501 insufficient_privilege,
+  -- 0LP01 invalid_grant_operation, others on hosted Postgres), so
+  -- we catch WHEN OTHERS to make the migration bulletproof. The
+  -- strip becomes "best-effort": it succeeds where possible,
+  -- NOTICEs otherwise, never fails the apply. The platform DB still
+  -- gets RLS enforcement via FORCE RLS (migration 044) — the strip
+  -- is the additional defense layer that the operator can complete
+  -- out-of-band as the cluster bootstrap user.
   BEGIN
     EXECUTE format('ALTER ROLE %I WITH NOSUPERUSER NOBYPASSRLS REPLICATION', app_role);
     RAISE NOTICE 'Stripped SUPERUSER + BYPASSRLS from role %, kept REPLICATION', app_role;
-  EXCEPTION WHEN insufficient_privilege THEN
+  EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE
-      'Could not strip SUPERUSER from %: %. Operator must run as the cluster bootstrap user, e.g. ALTER ROLE %I WITH NOSUPERUSER NOBYPASSRLS REPLICATION;',
-      app_role, SQLERRM, app_role;
+      'Could not strip SUPERUSER from % (sqlstate=%, sqlerrm=%). Operator must run as the cluster bootstrap, e.g.: docker exec <postgres-container> psql -U postgres -d <db> -c ''ALTER ROLE %I WITH NOSUPERUSER NOBYPASSRLS REPLICATION;''',
+      app_role, SQLSTATE, SQLERRM, app_role;
   END;
 END $$;
