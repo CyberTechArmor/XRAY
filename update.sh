@@ -367,6 +367,23 @@ else
   warn "Nginx not found"
 fi
 
+# ── Step 8: Self-verify the role-split deploy ──
+# Catches the failure mode that prompted PR #283's hotfix: .env got
+# DB_APP_USER, the role got created, but the server kept connecting
+# under the bootstrap xray role because docker compose didn't
+# recreate. WARN-don't-fail: surfaces the regression but doesn't
+# abort the script (the server is up either way; RLS just stays
+# decorative until the operator force-recreates manually).
+if [ -x "$SCRIPT_DIR/scripts/test-update-role-split.sh" ]; then
+  echo "  [8/8] Verifying role-split deploy..."
+  if "$SCRIPT_DIR/scripts/test-update-role-split.sh"; then
+    ok "Role-split self-verify passed"
+  else
+    warn "Role-split self-verify FAILED — review output above. Common recovery:"
+    warn "  docker compose up -d --force-recreate --no-deps server"
+  fi
+fi
+
 echo ""
 ok "Update complete!"
 echo ""
