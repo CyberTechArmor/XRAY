@@ -217,7 +217,21 @@ echo "  [5/7] Rebuilding backend..."
 if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
   cd "$SCRIPT_DIR"
   docker compose build --no-cache 2>&1 | tail -5 && ok "Backend rebuilt" || warn "Docker build failed"
-  docker compose up -d 2>/dev/null && ok "Backend restarted" || warn "Docker restart failed"
+  # Bring the stack up first (idempotent — starts anything not running,
+  # leaves running services alone). Then explicitly --force-recreate the
+  # server so it picks up env changes from .env (DB_APP_USER /
+  # DB_APP_PASSWORD added in step 4b above). docker compose up -d ALONE
+  # is unreliable for env-only drift on interpolated values across
+  # compose versions — see docker/compose#9961 — and skipping the
+  # recreate leaves the server connecting under the old DATABASE_URL.
+  # --no-deps keeps postgres untouched (its data volume + bootstrap are
+  # stable across redeploys; recreating it is needless churn).
+  docker compose up -d 2>&1 | tail -5 || warn "Docker up failed"
+  if docker compose up -d --force-recreate --no-deps server 2>&1 | tail -5; then
+    ok "Backend restarted (server force-recreated to pick up .env changes)"
+  else
+    warn "Server force-recreate failed"
+  fi
 else
   warn "No docker-compose.yml found — skipping backend rebuild"
 fi
