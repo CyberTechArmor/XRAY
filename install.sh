@@ -125,6 +125,11 @@ step 4 "Generating secrets"
 JWT_SECRET=$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 64)
 ENCRYPTION_KEY=$(openssl rand -hex 32)
 DB_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
+# Separate password for the application's runtime DB role (xray_app).
+# xray (DB_USER) stays as the cluster bootstrap superuser for migrations
+# + admin ops; the application server connects as xray_app (NOSUPERUSER
+# NOINHERIT) so RLS policies actually fire on every query.
+DB_APP_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
 STRIPE_WEBHOOK_SECRET=""
 
 # VAPID keys will be generated after Docker launch (step 8b)
@@ -145,6 +150,7 @@ rm -rf "$PIPELINE_JWT_DIR"
 ok "JWT secret generated (64 chars)"
 ok "Encryption key generated (256-bit hex)"
 ok "Database password generated (32 chars)"
+ok "Application DB role password generated (32 chars)"
 ok "Pipeline JWT RS256 keypair generated (2048-bit)"
 
 # ── Step 5: .env File ──────────────────────────────────────
@@ -161,11 +167,21 @@ APP_PORT=${APP_PORT}
 APP_URL=https://${DOMAIN}
 
 # ─── Database ───
+# DB_USER is the cluster bootstrap superuser (created by the postgres
+# image's initdb --username=xray). Used by install.sh / update.sh to
+# apply migrations and for ad-hoc admin work.
 DB_HOST=postgres
 DB_PORT=5432
 DB_NAME=xray
 DB_USER=xray
 DB_PASSWORD=${DB_PASSWORD}
+
+# DB_APP_USER is the runtime role the application server connects as
+# (NOSUPERUSER NOINHERIT, owns nothing). RLS policies fire for queries
+# made under this connection because the role is neither the table
+# owner nor a superuser. Provisioned by install.sh step 9c.
+DB_APP_USER=xray_app
+DB_APP_PASSWORD=${DB_APP_PASSWORD}
 
 # ─── Authentication ───
 JWT_SECRET=${JWT_SECRET}
@@ -447,6 +463,45 @@ if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
   run_migrations "$SCRIPT_DIR/migrations/post-rebuild" "post-rebuild"
 else
   warn "Could not run migrations (postgres container not found or no migrations/)"
+fi
+
+# ── Step 9c: Provision the application's runtime DB role (xray_app) ──
+# RLS only fires when the connecting user is NEITHER the table owner
+# NOR a superuser. The bootstrap user (xray) is both — created by
+# initdb --username=xray and owns every platform.* table from
+# init.sql. Provisioning a separate xray_app role with DML grants but
+# no ownership and no superuser bit makes the runtime application
+# connection RLS-respecting from boot 0. xray stays as the bootstrap
+# super for migrations and admin work; the server reconnects as
+# xray_app at the end of step 8 (DATABASE_URL in docker-compose.yml
+# points at DB_APP_USER + DB_APP_PASSWORD by default).
+if [ -n "$PG_CONTAINER" ]; then
+  step 9c "Provisioning runtime DB role (xray_app)"
+  docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" >/dev/null <<SQL
+DO \$\$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${DB_APP_USER:-xray_app}') THEN
+    CREATE ROLE "${DB_APP_USER:-xray_app}" WITH LOGIN PASSWORD '${DB_APP_PASSWORD}'
+      NOSUPERUSER NOINHERIT NOCREATEDB NOCREATEROLE NOREPLICATION
+      CONNECTION LIMIT 50;
+  ELSE
+    ALTER ROLE "${DB_APP_USER:-xray_app}" WITH PASSWORD '${DB_APP_PASSWORD}';
+  END IF;
+END \$\$;
+GRANT USAGE ON SCHEMA platform TO "${DB_APP_USER:-xray_app}";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA platform TO "${DB_APP_USER:-xray_app}";
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA platform TO "${DB_APP_USER:-xray_app}";
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "${DB_APP_USER:-xray_app}";
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO "${DB_APP_USER:-xray_app}";
+SQL
+  if [ $? -eq 0 ]; then
+    ok "Runtime role ${DB_APP_USER:-xray_app} provisioned (NOSUPERUSER, NOINHERIT, DML grants on platform.*)"
+    # Restart server so it reconnects under xray_app via DATABASE_URL.
+    docker compose restart server >/dev/null 2>&1 \
+      && ok "Server restarted on xray_app connection" \
+      || warn "Could not restart server — restart manually with 'docker compose restart server'"
+  else
+    warn "xray_app provisioning had errors — server will fall back to ${DB_USER:-xray} (RLS decorative until fixed)"
+  fi
 fi
 
 # ── Step 9b: Backfill encrypted credentials (migration 017 companion) ──
