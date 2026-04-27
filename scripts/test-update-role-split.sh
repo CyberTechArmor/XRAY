@@ -81,15 +81,20 @@ else
 fi
 
 # ── Check 2: xray_app role exists, NOT superuser ────────────────
+# rolsuper / rolbypassrls are booleans. psql's tuples-only mode prints
+# them as t/f, but `::text` casts them to true/false. Use the cast
+# explicitly so the comparison is unambiguous regardless of psql
+# defaults — the role is correctly configured iff both come back
+# false,false.
 ROLE_INFO="$(docker exec "$PG_CONTAINER" psql -tA -U "$DB_USER" -d "$DB_NAME" \
   -c "SELECT rolsuper::text || ',' || rolbypassrls::text FROM pg_roles WHERE rolname='${DB_APP_USER}'" \
   2>/dev/null || true)"
 if [ -z "$ROLE_INFO" ]; then
   fail "${DB_APP_USER} role does not exist in postgres"
-elif [ "$ROLE_INFO" = "f,f" ]; then
-  ok "${DB_APP_USER} role exists with rolsuper=f, rolbypassrls=f"
+elif [ "$ROLE_INFO" = "false,false" ]; then
+  ok "${DB_APP_USER} role exists with rolsuper=false, rolbypassrls=false"
 else
-  fail "${DB_APP_USER} has wrong attributes: ${ROLE_INFO} (expect f,f)"
+  fail "${DB_APP_USER} has wrong attributes: ${ROLE_INFO} (expect false,false)"
 fi
 
 # ── Check 3: server pool is connecting as xray_app, NOT xray ────
