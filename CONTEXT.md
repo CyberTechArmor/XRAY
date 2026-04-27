@@ -4190,3 +4190,104 @@ permanent gap or breaks a contract you can't unsign*:
   step 8's secret-scanning + Dependabot subset.
 - **Tier 3 (defer-with-no-penalty):** steps 13, 14, 15, 16-21,
   observability.
+
+
+## Step 12 — Operator-side close-out + Backups admin UI Phase A (shipped)
+
+After step 12's main PR (#277) and the four hotfix PRs (#278, #280,
+#281, #283), several operator-side gaps surfaced on the live VPS
+deploy. This batch of commits closed them and stood up the
+read-only Backups admin view.
+
+### Bugs found + fixed (the real-deploy hotfix chain)
+
+The first `./update.sh` after PR #283 left the server pool still
+connecting as `xray` instead of switching to `xray_app`. Five
+distinct bugs surfaced in sequence — fixed across PRs #284, #285,
+plus `claude/xray-step12-closeout-bvSD8`:
+
+| Bug | Fix |
+|---|---|
+| `update.sh` step 5 ran `docker compose up -d` without `--force-recreate`. Compose's drift-detection on env vars resolved from `.env` is unreliable across versions (docker/compose#9961); the running server kept its create-time `DATABASE_URL=…xray:OLDPWD…`. | Split step 5 into two `up -d` calls; the second is `--force-recreate --no-deps server`. Bulletproof regardless of compose version. |
+| `install.sh` step 9c used `docker compose restart server` to flip the server onto `xray_app`. Restart doesn't pick up `.env` changes; it only worked on `install.sh` because step 5 wrote `.env` *before* the first `up -d`. Latent footgun if step ordering ever changed. | Same shape as `update.sh` step 5 — `docker compose up -d --force-recreate --no-deps server`. Single shape across both scripts. |
+| `update.sh` step 4c sourced `.env` via `. .env` to pull `DB_APP_USER` / `DB_APP_PASSWORD` into scope. `.env` files use dotenv syntax — unquoted values with spaces (e.g. `RP_NAME=XRay BI`) are valid. Bash parsed `BI` as a command; `set -e` aborted the script before step 5 ran. | Replaced the `. .env` block with four `grep -oP '^VAR=\K.*'` extractions — same pattern the rest of `update.sh` uses (`APP_URL_VAL`, `ADMIN_EMAIL_VAL`). |
+| Self-modifying `update.sh`: step 1's `git pull` swaps the file via rename, but bash holds the old inode open and continues reading the pre-pull content. Fixes that landed in `update.sh` itself didn't apply until the operator ran the script a *second* time. | Added a re-exec at the tail of step 1: capture HEAD before/after the pull; if `update.sh` itself changed, `exec bash …` the fresh script. `UPDATE_SH_REEXEC=1` env guard prevents infinite loops. |
+| `scripts/test-update-role-split.sh` Check #2 compared `rolsuper::text` against `'f,f'` — but `boolean::text` casts to `"true"`/`"false"`, not `t`/`f`. False fail every run. | Compare against `'false,false'`. |
+
+### Step 12 — final operator state
+
+After all five fixes, `./update.sh` on the VPS produces:
+
+```
+[5/7] Rebuilding backend...
+✓ Backend rebuilt
+✓ Backend restarted (server force-recreated to pick up .env changes)
+…
+[8/8] Verifying role-split deploy...
+✓ .env has DB_APP_USER + DB_APP_PASSWORD
+✓ xray_app role exists with rolsuper=false, rolbypassrls=false
+✓ server pool has 2 connection(s) under xray_app
+✓ cross-tenant SQL probe: PROBE PASS
+✓ /api/health returns 200
+All checks PASS — role-split deploy is healthy.
+✓ Role-split self-verify passed
+✓ Update complete!
+```
+
+Production RLS is now enforcing end-to-end: app layer (helpers in
+`server/src/db/connection.ts`), DB layer (FORCE RLS + NULL-safe
+policies, mig 044), AND connecting role (`xray_app`,
+`rolsuper=false`, `rolbypassrls=false`). The operator-pending
+manual strip-superuser command from the original step 12 close-out
+is gone — automation picked it up via the role-split.
+
+### Backups admin UI — Phase A (read-only)
+
+The `/api/admin/backups/*` surface and the `admin_backups` view
+landed as a self-contained read-only dashboard. Six commits:
+
+| # | Concern | Files |
+|---|---|---|
+| F1 | mig 046 `backup_drill_runs` + pg_backups RO mount on server | `migrations/046_backup_drill_runs.sql`, `docker-compose.yml` |
+| F2 | `backup.service.ts` + 10-spec unit suite | `server/src/services/backup.service.ts`, `…test.ts` |
+| F3 | `admin.backups.routes.ts` + `index.ts` wiring | `server/src/routes/admin.backups.routes.ts`, `server/src/index.ts` |
+| F4 | `admin_backups` view + `Backups` sidebar nav entry | `frontend/bundles/general.json` |
+
+What's live:
+
+- **Status panel** — five tiles in a responsive grid (latest base, WAL lag, volume size, retention, S3 mirror). Auto-refreshes every 30s. Mount unreachable → explicit "Unavailable" tile.
+- **Recent base backups table** — newest-first, with a retention countdown column computed from `BACKUP_RETAIN_DAYS − age`.
+- **Drill history table** — past `restore-drill.sh` runs with PASS / FAIL pills, schema-check pill, smoke-query row count. Click a row to expand and load the full output via `GET /api/admin/backups/drill/:id`.
+- **Recommended cron block** — verbatim from `docs/operator.md`, displayed for copy-paste into `crontab -e`.
+
+What's stubbed (Phase B):
+
+- **Backup now / Sync to S3 / Run drill** buttons exist but `POST /run|/s3-sync|/drill` return `501` with a structured `recovery` field naming the SSH command (`./scripts/backup-platform.sh`, etc.). Click → toast surfaces the command. The contract is stable; only the wiring is missing.
+
+### Phase B follow-up — actually triggering backups
+
+Two architectural options for Phase B; the right call is operator-dependent:
+
+1. **docker.sock mount** into the server container. Server uses `dockerode` (or `child_process` `docker exec`) to invoke the existing scripts on the postgres container. Pro: fastest to ship, no new components. Con: server compromise → host compromise (it can spawn arbitrary containers). Acceptable since admin endpoints are already platform-admin-only, but it's a one-way security door.
+
+2. **Backup-worker sidecar container.** New service in `docker-compose.yml` that polls a `platform.backup_jobs` queue table (table not yet created — would land in mig 047) and runs the scripts. Pro: cleanest architecturally, server-side compromise can't escalate. Con: new long-running container in the stack; small.
+
+Recommendation: **option 2** if Phase B happens before pipeline DB Model J (step 15+); the worker sidecar is a single ~150-line bash daemon and avoids the docker-socket footgun. If Phase B is more urgent, option 1 ships in a single afternoon and the security trade-off is acceptable for a self-hosted admin-only path.
+
+### Phase C follow-up — S3 credentials in platform_settings
+
+Today, `BACKUP_S3_*` env vars are read on every status fetch (read-only display in the admin UI). Editing them requires SSH + `.env` edit + server restart — same ergonomic as pre-Stripe-keys-in-DB.
+
+The natural follow-up (independent of Phase B): move `BACKUP_S3_BUCKET / ENDPOINT / REGION / ACCESS_KEY_ID / SECRET_ACCESS_KEY / PREFIX / RETAIN_DAYS` into `platform_settings` rows, with hot-reload via `services/settings.service.refreshCache()` (the same path Stripe keys, SMTP, and VAPID followed). Adds in-browser editing of S3 config without a restart. Estimated 1-2 commits.
+
+### Bundle version
+
+`2026-04-26-step12-stripe-promo` → `2026-04-27-step12-stripe-promo-toggle` → `2026-04-27-step12-backups-admin`.
+
+### Stripe promo toggle (incidental)
+
+The Allow-promo-codes setting was a plain native checkbox under the Save Keys button. Converted to an iOS-style auto-saving toggle:
+
+- New `.toggle-switch` CSS in `app.css` (general — `admin_backups` and any future boolean-setting UIs reuse it).
+- Toggle hits `PATCH /api/admin/settings { stripe_allow_promotion_codes }` on every flip. Disables during round-trip; reverts on error. Toast on save.
+- Removed from the Save-Keys bulk save handler to prevent races.

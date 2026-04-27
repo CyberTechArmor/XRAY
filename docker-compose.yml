@@ -35,6 +35,64 @@ services:
       - SMTP_FROM=${SMTP_FROM:-}
     volumes:
       - uploads_data:/app/uploads
+      # pg_backups mounted read-only so the Backups admin view can
+      # report status (latest base, WAL count/lag, total size) by
+      # reading the filesystem directly. RO is the load-bearing
+      # word — a misbehaving server process can't corrupt the
+      # operator's backup history. Triggering new backups + drills
+      # is a separate (Phase B) concern — that path will go through
+      # a worker / docker.sock approach, not this mount.
+      - pg_backups:/var/lib/postgresql/backups:ro
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Backup-worker sidecar — Phase B of the Backups admin UI.
+  # Polls platform.backup_jobs and shells out to the matching script
+  # in scripts/. Kept separate from the main server so the server
+  # doesn't need docker.sock access (that would turn server compromise
+  # into host compromise). The worker has docker.sock + the scripts
+  # volume; nothing else.
+  backup-worker:
+    build:
+      context: .
+      dockerfile: server/backup-worker.Dockerfile
+    environment:
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=5432
+      # Connect as the bootstrap super (xray) so the worker bypasses
+      # RLS on platform.backup_jobs + platform.backup_drill_runs.
+      # The application server uses xray_app and stays gated.
+      - DB_USER=${DB_USER:-xray}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME:-xray}
+      - POLL_INTERVAL_SEC=${BACKUP_WORKER_POLL_SEC:-5}
+      # S3 mirror config — pass-through to backup-s3-sync.sh. Phase C
+      # will move these to platform_settings + override at job-pickup
+      # time, but the env-var path stays as a fallback.
+      - BACKUP_S3_BUCKET=${BACKUP_S3_BUCKET:-}
+      - BACKUP_S3_ENDPOINT=${BACKUP_S3_ENDPOINT:-}
+      - BACKUP_S3_REGION=${BACKUP_S3_REGION:-}
+      - BACKUP_S3_ACCESS_KEY_ID=${BACKUP_S3_ACCESS_KEY_ID:-}
+      - BACKUP_S3_SECRET_ACCESS_KEY=${BACKUP_S3_SECRET_ACCESS_KEY:-}
+      - BACKUP_S3_PREFIX=${BACKUP_S3_PREFIX:-}
+      - BACKUP_RETAIN_DAYS=${BACKUP_RETAIN_DAYS:-14}
+      # Tell the scripts where the postgres container lives so their
+      # `docker exec postgres ...` calls land on the right service.
+      - POSTGRES_CONTAINER=${COMPOSE_PROJECT_NAME:-xray}-postgres-1
+    volumes:
+      # Scripts mounted RO — operator updates propagate via git pull
+      # without rebuilding the worker image.
+      - ./scripts:/scripts:ro
+      # docker.sock so the worker can `docker exec postgres ...` and
+      # `docker run` the aws-cli + restore-drill sidecar containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Backup volume — workers write here when scripts call
+      # pg_basebackup --dest=… inside the postgres container, but the
+      # output_file in backup-worker.sh wants a writable scratch dir
+      # too; use the same volume.
+      - pg_backups:/var/lib/postgresql/backups
     restart: unless-stopped
     depends_on:
       postgres:

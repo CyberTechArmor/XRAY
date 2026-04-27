@@ -514,3 +514,16 @@ body:has(.impersonation-banner) #app-shell { padding-top: 36px; }
 .policy-accept-row-meta { font-size: 12px; color: var(--t2); }
 .policy-accept-row-link { font-size: 12px; color: var(--acc); text-decoration: none; align-self: flex-start; }
 .policy-accept-row-link:hover { text-decoration: underline; }
+
+/* ── Toggle switch (iOS-style) ──
+   Used for boolean settings that auto-save on change. Wraps the
+   native checkbox so existing form code (e.g. admin_stripe's promo
+   toggle) keeps working, but renders as a styled pill. */
+.toggle-switch { position: relative; display: inline-block; width: 36px; height: 20px; flex-shrink: 0; vertical-align: middle; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.toggle-switch .slider { position: absolute; cursor: pointer; inset: 0; background: var(--bg4); border-radius: 20px; transition: background .18s ease; }
+.toggle-switch .slider::before { content: ""; position: absolute; height: 16px; width: 16px; left: 2px; top: 2px; background: var(--t1); border-radius: 50%; transition: transform .18s ease; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.toggle-switch input:checked + .slider { background: var(--acc); }
+.toggle-switch input:checked + .slider::before { transform: translateX(16px); background: #001712; }
+.toggle-switch input:disabled + .slider { opacity: .5; cursor: wait; }
+.toggle-switch input:focus-visible + .slider { box-shadow: 0 0 0 3px var(--acc-dim, rgba(62,232,181,0.25)); }
