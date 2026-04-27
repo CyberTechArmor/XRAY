@@ -49,7 +49,7 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS platform.backup_jobs (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   kind          TEXT NOT NULL
-                  CHECK (kind IN ('base','s3sync','drill')),
+                  CHECK (kind IN ('base','s3sync','drill','delete_base')),
   status        TEXT NOT NULL DEFAULT 'pending'
                   CHECK (status IN ('pending','running','completed','failed')),
   args          JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -60,6 +60,19 @@ CREATE TABLE IF NOT EXISTS platform.backup_jobs (
   started_at    TIMESTAMPTZ,
   finished_at   TIMESTAMPTZ
 );
+
+-- Idempotently widen the CHECK constraint on existing installs.
+-- Migration 047 originally only allowed ('base','s3sync','drill');
+-- migration 048 (folded into the same file for atomicity since the
+-- two are tightly coupled) adds 'delete_base' so the Backups admin
+-- UI can issue per-row deletes through the same queue.
+DO $$ BEGIN
+  ALTER TABLE platform.backup_jobs
+    DROP CONSTRAINT IF EXISTS backup_jobs_kind_check;
+  ALTER TABLE platform.backup_jobs
+    ADD CONSTRAINT backup_jobs_kind_check
+    CHECK (kind IN ('base','s3sync','drill','delete_base'));
+END $$;
 
 -- Worker's claim query orders by (status, created_at) to find the
 -- oldest pending job. Status-then-time index keeps that planner-friendly.

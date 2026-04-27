@@ -163,7 +163,53 @@ run_job() {
       if [ -n "$target_time" ]; then
         drill_args+=(--target-time "$target_time")
       fi
+      # Per-row "Test restore" sends a base name in args.base — the
+      # restore-drill script's --base flag picks it; default 'latest'
+      # otherwise (the cron / catch-all path).
+      local base_name
+      base_name=$(echo "$args" | sed -n 's/.*"base"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      if [ -n "$base_name" ]; then
+        drill_args+=(--base "$base_name")
+      fi
       "$WORKER_SCRIPTS_DIR/restore-drill.sh" "${drill_args[@]}" >"$output_file" 2>&1 || exit_code=$?
+      ;;
+    delete_base)
+      # Per-row delete from the Backups admin UI. Resolve the postgres
+      # container by compose label (same pattern as backup-platform.sh)
+      # and rm -rf the named directory under base/. The name was
+      # whitelisted server-side to alphanumerics + . _ : - so no shell
+      # metacharacters can land here, but we double-quote anyway as
+      # belt-and-braces.
+      local del_name
+      del_name=$(echo "$args" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      if [ -z "$del_name" ]; then
+        echo "[delete_base] FATAL: args.name missing" >"$output_file"
+        exit_code=64
+      else
+        local pg_id
+        pg_id=$(docker ps \
+          --filter "label=com.docker.compose.service=postgres" \
+          --filter "status=running" \
+          --format "{{.ID}}" 2>/dev/null | head -1 || true)
+        if [ -z "$pg_id" ]; then
+          echo "[delete_base] FATAL: no running postgres container" >"$output_file"
+          exit_code=2
+        else
+          {
+            echo "[delete_base] removing /var/lib/postgresql/backups/base/${del_name} from container ${pg_id}"
+            docker exec -i "$pg_id" sh -c "
+              set -eu
+              target='/var/lib/postgresql/backups/base/${del_name}'
+              if [ ! -d \"\$target\" ]; then
+                echo \"[delete_base] not found: \$target\"
+                exit 3
+              fi
+              rm -rf -- \"\$target\"
+              echo \"[delete_base] removed \$target\"
+            " 2>&1
+          } >"$output_file" 2>&1 || exit_code=$?
+        fi
+      fi
       ;;
     *)
       echo "[backup-worker] unknown kind: $kind" >"$output_file"
