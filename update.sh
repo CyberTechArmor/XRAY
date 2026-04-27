@@ -142,6 +142,72 @@ else
   warn "Skipping migrations (no postgres container or migrations/ dir)"
 fi
 
+# ── Step 4b: Ensure DB_APP_USER + DB_APP_PASSWORD in .env ──
+# RLS only fires when the connecting user is NEITHER the table owner
+# NOR a superuser. Existing installs ran with DB_USER=xray (the
+# bootstrap super) as the runtime connection — RLS was decorative.
+# This step adds DB_APP_USER + DB_APP_PASSWORD for the application's
+# new non-owner non-super runtime role; xray stays as the bootstrap
+# super for migrations and admin work. Idempotent: skipped if already
+# configured.
+if [ -f "$SCRIPT_DIR/.env" ] && ! grep -q '^DB_APP_PASSWORD=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
+  echo "  [4b] Generating DB_APP_PASSWORD for runtime role split..."
+  GENERATED_DB_APP_PW=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
+  cat >> "$SCRIPT_DIR/.env" <<APPENVEOF
+
+# ─── Application runtime DB role (added by update.sh) ───
+# DB_USER (xray) is the bootstrap superuser — used by install.sh /
+# update.sh for migrations + admin work. DB_APP_USER is the runtime
+# role the application connects as (NOSUPERUSER NOINHERIT, owns
+# nothing) so RLS policies actually fire on every query.
+DB_APP_USER=xray_app
+DB_APP_PASSWORD=${GENERATED_DB_APP_PW}
+APPENVEOF
+  ok "DB_APP_USER + DB_APP_PASSWORD added to .env"
+elif [ -f "$SCRIPT_DIR/.env" ]; then
+  ok "DB_APP_PASSWORD already configured in .env"
+fi
+
+# ── Step 4c: Provision (or sync) the runtime DB role ──
+# Idempotent — creates xray_app if missing, otherwise rotates its
+# password to match the .env value (handles the case where .env was
+# regenerated but the role already exists from a prior run).
+if [ -n "$PG_CONTAINER" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+  # Source .env so $DB_APP_USER / $DB_APP_PASSWORD are in scope. Run in
+  # a subshell so we don't pollute the rest of update.sh's environment.
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/.env"
+    set +a
+    if [ -n "${DB_APP_PASSWORD:-}" ]; then
+      echo "  [4c] Syncing runtime DB role (${DB_APP_USER:-xray_app})..."
+      docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 \
+        -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" >/dev/null <<SQL
+DO \$\$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${DB_APP_USER:-xray_app}') THEN
+    CREATE ROLE "${DB_APP_USER:-xray_app}" WITH LOGIN PASSWORD '${DB_APP_PASSWORD}'
+      NOSUPERUSER NOINHERIT NOCREATEDB NOCREATEROLE NOREPLICATION
+      CONNECTION LIMIT 50;
+  ELSE
+    ALTER ROLE "${DB_APP_USER:-xray_app}" WITH PASSWORD '${DB_APP_PASSWORD}';
+  END IF;
+END \$\$;
+GRANT USAGE ON SCHEMA platform TO "${DB_APP_USER:-xray_app}";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA platform TO "${DB_APP_USER:-xray_app}";
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA platform TO "${DB_APP_USER:-xray_app}";
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "${DB_APP_USER:-xray_app}";
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO "${DB_APP_USER:-xray_app}";
+SQL
+      if [ $? -eq 0 ]; then
+        ok "Runtime role synced — server will reconnect as ${DB_APP_USER:-xray_app} after the rebuild step"
+      else
+        warn "Runtime role sync had errors — server will fall back to ${DB_USER:-xray} (RLS decorative until fixed)"
+      fi
+    fi
+  )
+fi
+
 # ── Step 5: Rebuild and restart backend ──
 # Ordered AFTER pre-rebuild migrations so the new code boots into a
 # schema that already has any new columns it SELECTs, and BEFORE the
