@@ -28,8 +28,11 @@
 --
 -- If a future migration needs superuser (e.g. an extension install),
 -- the operator temporarily restores the bit with:
---   docker exec xray-postgres psql -U postgres -d xray -c \
+--   docker compose exec postgres psql -U postgres -d xray -c \
 --     'ALTER ROLE xray SUPERUSER;'
+-- (run from the directory containing docker-compose.yml — uses the
+-- compose service name `postgres`, not the auto-generated
+-- container name)
 -- and restores the strip after.
 
 DO $$
