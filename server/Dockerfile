@@ -34,6 +34,11 @@ COPY --from=builder /app/dist ./dist
 # Migrations live at the repo root. They are read at startup by index.ts
 # to self-heal missing tables (014_ai_integration, 015_ai_pricing_feedback, ...).
 COPY migrations ./migrations
+# Pipeline-schema templates served read-only by /api/admin/pipeline/*
+# (Admin → Pipeline view). Per-integration .sql files are operator-
+# managed and NOT included here; only globals.sql + future cross-
+# integration files ship with the platform.
+COPY scripts/pipeline-schemas ./scripts/pipeline-schemas
 RUN mkdir -p /app/uploads && chown node:node /app/uploads
 EXPOSE 3000
 USER node

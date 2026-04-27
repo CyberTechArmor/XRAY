@@ -35,6 +35,7 @@ import replayRoutes from './routes/replay.routes';
 import aiRoutes from './routes/ai.routes';
 import adminAiRoutes from './routes/admin.ai.routes';
 import adminBackupsRoutes from './routes/admin.backups.routes';
+import adminPipelineRoutes from './routes/admin.pipeline.routes';
 import oauthRoutes from './routes/oauth.routes';
 import integrationRoutes from './routes/integration.routes';
 import legalRoutes from './routes/legal.routes';
@@ -133,6 +134,7 @@ app.use('/api/v1/replay', replayRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/admin/ai', adminAiRoutes);
 app.use('/api/admin/backups', adminBackupsRoutes);
+app.use('/api/admin/pipeline', adminPipelineRoutes);
 app.use('/api/oauth', oauthRoutes);
 app.use('/api/integrations', integrationRoutes);
 // Step 11: public legal-pages surface (GET-only, no auth, no CSRF).
