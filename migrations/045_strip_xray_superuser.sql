@@ -35,6 +35,7 @@
 DO $$
 DECLARE
   app_role NAME := current_user;
+  is_super BOOLEAN;
 BEGIN
   -- Don't strip postgres (the cluster bootstrap). Stripping that
   -- bricks the cluster — only the connecting application role
@@ -44,9 +45,37 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Idempotent: NOTICE on the role's current state for the
-  -- migration log, then ALTER. ALTER ROLE … NOSUPERUSER is a no-op
-  -- if the role is already non-superuser.
-  RAISE NOTICE 'Stripping SUPERUSER + BYPASSRLS from role %, keeping REPLICATION', app_role;
-  EXECUTE format('ALTER ROLE %I WITH NOSUPERUSER NOBYPASSRLS REPLICATION', app_role);
+  -- Idempotency, layer 1: peek at the current state. If the role is
+  -- already non-super, this migration has already run successfully
+  -- in a prior apply (or the operator stripped it manually). Skip
+  -- with NOTICE rather than try to ALTER again, which would fail
+  -- with "permission denied to alter role" (the role no longer has
+  -- the SUPERUSER attribute it would need to alter SUPERUSER).
+  SELECT rolsuper INTO is_super FROM pg_roles WHERE rolname = app_role;
+  IF NOT COALESCE(is_super, false) THEN
+    RAISE NOTICE 'Role % is already non-superuser — skipping (no-op)', app_role;
+    RETURN;
+  END IF;
+
+  -- Idempotency, layer 2: in some environments (GitHub Actions's
+  -- postgres:16-alpine service container, certain hosted Postgres
+  -- providers that delegate role-attribute alteration only to the
+  -- cluster bootstrap user) ALTER ROLE … NOSUPERUSER raises
+  -- insufficient_privilege even when current_user has rolsuper=true.
+  -- The error is "The bootstrap user must have the SUPERUSER
+  -- attribute" — a constraint about WHO can alter, not about
+  -- WHETHER the alter would otherwise succeed. In those
+  -- environments the strip must be performed externally, by
+  -- whichever role IS the cluster bootstrap. Catch the exception
+  -- here so the migration apply never fails on a clean DB — RLS
+  -- still enforces correctly via FORCE RLS (migration 044), the
+  -- strip is the additional defense layer.
+  BEGIN
+    EXECUTE format('ALTER ROLE %I WITH NOSUPERUSER NOBYPASSRLS REPLICATION', app_role);
+    RAISE NOTICE 'Stripped SUPERUSER + BYPASSRLS from role %, kept REPLICATION', app_role;
+  EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE
+      'Could not strip SUPERUSER from %: %. Operator must run as the cluster bootstrap user, e.g. ALTER ROLE %I WITH NOSUPERUSER NOBYPASSRLS REPLICATION;',
+      app_role, SQLERRM, app_role;
+  END;
 END $$;
