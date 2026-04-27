@@ -173,39 +173,43 @@ fi
 # password to match the .env value (handles the case where .env was
 # regenerated but the role already exists from a prior run).
 if [ -n "$PG_CONTAINER" ] && [ -f "$SCRIPT_DIR/.env" ]; then
-  # Source .env so $DB_APP_USER / $DB_APP_PASSWORD are in scope. Run in
-  # a subshell so we don't pollute the rest of update.sh's environment.
-  (
-    set -a
-    # shellcheck disable=SC1091
-    . "$SCRIPT_DIR/.env"
-    set +a
-    if [ -n "${DB_APP_PASSWORD:-}" ]; then
-      echo "  [4c] Syncing runtime DB role (${DB_APP_USER:-xray_app})..."
-      docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 \
-        -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" >/dev/null <<SQL
+  # Extract DB_APP_* via grep — sourcing .env via `. .env` breaks on
+  # unquoted values with spaces (e.g. RP_NAME=XRay BI is a valid
+  # docker-compose .env line, but bash parses `BI` as a command and
+  # `set -e` aborts the script before step 5 runs). The values we
+  # actually need (DB_APP_USER, DB_APP_PASSWORD, DB_USER, DB_NAME)
+  # are all token-only by the format install.sh / step 4b write, so
+  # grep -oP is safe and matches the pattern used elsewhere in this
+  # script (APP_URL_VAL, ADMIN_EMAIL_VAL).
+  DB_APP_USER_VAL=$(grep -oP '^DB_APP_USER=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "xray_app")
+  DB_APP_PASSWORD_VAL=$(grep -oP '^DB_APP_PASSWORD=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "")
+  DB_USER_VAL=$(grep -oP '^DB_USER=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "xray")
+  DB_NAME_VAL=$(grep -oP '^DB_NAME=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "xray")
+  if [ -n "$DB_APP_PASSWORD_VAL" ]; then
+    echo "  [4c] Syncing runtime DB role (${DB_APP_USER_VAL})..."
+    docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 \
+      -U "$DB_USER_VAL" -d "$DB_NAME_VAL" >/dev/null <<SQL
 DO \$\$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${DB_APP_USER:-xray_app}') THEN
-    CREATE ROLE "${DB_APP_USER:-xray_app}" WITH LOGIN PASSWORD '${DB_APP_PASSWORD}'
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${DB_APP_USER_VAL}') THEN
+    CREATE ROLE "${DB_APP_USER_VAL}" WITH LOGIN PASSWORD '${DB_APP_PASSWORD_VAL}'
       NOSUPERUSER NOINHERIT NOCREATEDB NOCREATEROLE NOREPLICATION
       CONNECTION LIMIT 50;
   ELSE
-    ALTER ROLE "${DB_APP_USER:-xray_app}" WITH PASSWORD '${DB_APP_PASSWORD}';
+    ALTER ROLE "${DB_APP_USER_VAL}" WITH PASSWORD '${DB_APP_PASSWORD_VAL}';
   END IF;
 END \$\$;
-GRANT USAGE ON SCHEMA platform TO "${DB_APP_USER:-xray_app}";
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA platform TO "${DB_APP_USER:-xray_app}";
-GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA platform TO "${DB_APP_USER:-xray_app}";
-ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "${DB_APP_USER:-xray_app}";
-ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO "${DB_APP_USER:-xray_app}";
+GRANT USAGE ON SCHEMA platform TO "${DB_APP_USER_VAL}";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA platform TO "${DB_APP_USER_VAL}";
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA platform TO "${DB_APP_USER_VAL}";
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "${DB_APP_USER_VAL}";
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO "${DB_APP_USER_VAL}";
 SQL
-      if [ $? -eq 0 ]; then
-        ok "Runtime role synced — server will reconnect as ${DB_APP_USER:-xray_app} after the rebuild step"
-      else
-        warn "Runtime role sync had errors — server will fall back to ${DB_USER:-xray} (RLS decorative until fixed)"
-      fi
+    if [ $? -eq 0 ]; then
+      ok "Runtime role synced — server will reconnect as ${DB_APP_USER_VAL} after the rebuild step"
+    else
+      warn "Runtime role sync had errors — server will fall back to ${DB_USER_VAL} (RLS decorative until fixed)"
     fi
-  )
+  fi
 fi
 
 # ── Step 5: Rebuild and restart backend ──
