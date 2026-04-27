@@ -336,6 +336,120 @@ export async function getDrillRun(id: string): Promise<DrillRun | null> {
   });
 }
 
+// ── Backup jobs queue (Phase B) ──────────────────────────────────
+//
+// The server enqueues; the backup-worker sidecar polls, claims, runs,
+// and writes back. Frontend polls GET /jobs/:id for terminal status.
+
+export type BackupJobKind = 'base' | 's3sync' | 'drill';
+export type BackupJobStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface BackupJob {
+  id: string;
+  kind: BackupJobKind;
+  status: BackupJobStatus;
+  args: Record<string, unknown>;
+  exit_code: number | null;
+  output: string | null;          // truncated in listing, full in single
+  requested_by: string | null;
+  requested_by_email: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+interface BackupJobRow {
+  id: string;
+  kind: BackupJobKind;
+  status: BackupJobStatus;
+  args: Record<string, unknown>;
+  exit_code: number | null;
+  output: string | null;
+  requested_by: string | null;
+  requested_by_email: string | null;
+  created_at: Date;
+  started_at: Date | null;
+  finished_at: Date | null;
+}
+
+const JOB_OUTPUT_PREVIEW_BYTES = 4 * 1024;
+
+function rowToJob(row: BackupJobRow, fullOutput: boolean): BackupJob {
+  const out = row.output || '';
+  const output = fullOutput
+    ? out
+    : out.length > JOB_OUTPUT_PREVIEW_BYTES
+      ? out.slice(0, JOB_OUTPUT_PREVIEW_BYTES) + '\n…[truncated]'
+      : out;
+  return {
+    id: row.id,
+    kind: row.kind,
+    status: row.status,
+    args: row.args || {},
+    exit_code: row.exit_code,
+    output: output || null,
+    requested_by: row.requested_by,
+    requested_by_email: row.requested_by_email,
+    created_at: row.created_at.toISOString(),
+    started_at: row.started_at ? row.started_at.toISOString() : null,
+    finished_at: row.finished_at ? row.finished_at.toISOString() : null,
+  };
+}
+
+export interface EnqueueJobInput {
+  kind: BackupJobKind;
+  args?: Record<string, unknown>;
+  requested_by?: string | null;
+}
+
+export async function enqueueJob(input: EnqueueJobInput): Promise<BackupJob> {
+  const args = input.args || {};
+  return withAdminClient(async (client: PoolClient) => {
+    const result = await client.query<BackupJobRow>(
+      `INSERT INTO platform.backup_jobs (kind, args, requested_by)
+       VALUES ($1, $2::jsonb, $3)
+       RETURNING id, kind, status, args, exit_code, output,
+                 requested_by, NULL::text AS requested_by_email,
+                 created_at, started_at, finished_at`,
+      [input.kind, JSON.stringify(args), input.requested_by ?? null]
+    );
+    return rowToJob(result.rows[0], true);
+  });
+}
+
+export async function getJob(id: string): Promise<BackupJob | null> {
+  return withAdminClient(async (client: PoolClient) => {
+    const result = await client.query<BackupJobRow>(
+      `SELECT j.id, j.kind, j.status, j.args, j.exit_code, j.output,
+              j.requested_by, u.email AS requested_by_email,
+              j.created_at, j.started_at, j.finished_at
+         FROM platform.backup_jobs j
+         LEFT JOIN platform.users u ON u.id = j.requested_by
+        WHERE j.id = $1`,
+      [id]
+    );
+    if (result.rows.length === 0) return null;
+    return rowToJob(result.rows[0], true);
+  });
+}
+
+export async function listJobs(limit = 25): Promise<BackupJob[]> {
+  const cap = Math.max(1, Math.min(100, Math.floor(limit)));
+  return withAdminClient(async (client: PoolClient) => {
+    const result = await client.query<BackupJobRow>(
+      `SELECT j.id, j.kind, j.status, j.args, j.exit_code, j.output,
+              j.requested_by, u.email AS requested_by_email,
+              j.created_at, j.started_at, j.finished_at
+         FROM platform.backup_jobs j
+         LEFT JOIN platform.users u ON u.id = j.requested_by
+        ORDER BY j.created_at DESC
+        LIMIT $1`,
+      [cap]
+    );
+    return result.rows.map((r) => rowToJob(r, false));
+  });
+}
+
 export interface DrillLogInput {
   started_at: string;          // ISO
   finished_at?: string | null; // ISO or null/undefined

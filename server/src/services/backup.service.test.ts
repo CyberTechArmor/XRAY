@@ -341,3 +341,149 @@ describe('backup.service — drill history', () => {
     expect(run).toBeNull();
   });
 });
+
+interface JobRow {
+  id: string;
+  kind: 'base' | 's3sync' | 'drill';
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  args: Record<string, unknown>;
+  exit_code: number | null;
+  output: string | null;
+  requested_by: string | null;
+  requested_by_email: string | null;
+  created_at: Date;
+  started_at: Date | null;
+  finished_at: Date | null;
+}
+
+function makeJobsPool() {
+  const rows: JobRow[] = [];
+  let idSeq = 0;
+  const client = {
+    query: (sql: string, params?: unknown[]) => {
+      const s = sql.trim();
+      const ps = (params || []) as any[];
+
+      if (s.startsWith('SELECT set_config')) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+
+      // INSERT
+      if (s.startsWith('INSERT INTO platform.backup_jobs')) {
+        idSeq++;
+        const id = `job-${idSeq}`;
+        const row: JobRow = {
+          id,
+          kind: ps[0],
+          status: 'pending',
+          args: typeof ps[1] === 'string' ? JSON.parse(ps[1]) : ps[1] || {},
+          exit_code: null,
+          output: null,
+          requested_by: ps[2],
+          requested_by_email: null,
+          created_at: new Date(),
+          started_at: null,
+          finished_at: null,
+        };
+        rows.push(row);
+        return Promise.resolve({ rows: [row], rowCount: 1 });
+      }
+
+      // SELECT … WHERE j.id = $1
+      if (s.startsWith('SELECT j.id') && s.includes('WHERE j.id = $1')) {
+        const id = ps[0] as string;
+        const found = rows.find((r) => r.id === id);
+        return Promise.resolve({ rows: found ? [found] : [], rowCount: found ? 1 : 0 });
+      }
+
+      // SELECT … LIMIT $1
+      if (s.startsWith('SELECT j.id') && s.includes('LIMIT $1')) {
+        const limit = ps[0] as number;
+        const sorted = [...rows].sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
+        return Promise.resolve({ rows: sorted.slice(0, limit), rowCount: Math.min(sorted.length, limit) });
+      }
+
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    },
+    release: () => {},
+  };
+  return {
+    pool: {
+      connect: () => Promise.resolve(client),
+      on: () => {},
+      end: () => Promise.resolve(),
+    } as unknown as import('pg').Pool,
+    rows,
+  };
+}
+
+describe('backup.service — job queue', () => {
+  beforeEach(async () => {
+    const { __setPoolForTest } = await import('../db/connection');
+    __setPoolForTest(null);
+  });
+
+  it('enqueueJob writes a pending row with the requested args', async () => {
+    const { __setPoolForTest } = await import('../db/connection');
+    const { pool, rows } = makeJobsPool();
+    __setPoolForTest(pool);
+    const mod = await import('./backup.service');
+
+    const job = await mod.enqueueJob({
+      kind: 's3sync',
+      args: { mode: 'all' },
+      requested_by: 'user-1',
+    });
+    expect(job.kind).toBe('s3sync');
+    expect(job.status).toBe('pending');
+    expect(job.args).toEqual({ mode: 'all' });
+    expect(job.requested_by).toBe('user-1');
+    expect(rows.length).toBe(1);
+  });
+
+  it('getJob returns full output (no truncation)', async () => {
+    const { __setPoolForTest } = await import('../db/connection');
+    const { pool, rows } = makeJobsPool();
+    __setPoolForTest(pool);
+    const mod = await import('./backup.service');
+
+    await mod.enqueueJob({ kind: 'base' });
+    rows[0].output = 'z'.repeat(10 * 1024);
+    rows[0].status = 'completed';
+    rows[0].exit_code = 0;
+
+    const job = await mod.getJob(rows[0].id);
+    expect(job).not.toBeNull();
+    expect(job?.output?.length).toBe(10 * 1024);
+    expect(job?.status).toBe('completed');
+  });
+
+  it('listJobs returns rows newest-first with truncated output', async () => {
+    const { __setPoolForTest } = await import('../db/connection');
+    const { pool, rows } = makeJobsPool();
+    __setPoolForTest(pool);
+    const mod = await import('./backup.service');
+
+    await mod.enqueueJob({ kind: 'base' });
+    await new Promise((r) => setTimeout(r, 5));
+    await mod.enqueueJob({ kind: 'drill' });
+    rows[1].output = 'big-' + 'x'.repeat(10 * 1024);
+
+    const list = await mod.listJobs();
+    expect(list.length).toBe(2);
+    expect(list[0].kind).toBe('drill');     // newest first
+    expect(list[1].kind).toBe('base');
+    expect(list[0].output!.length).toBeLessThan(10 * 1024);
+    expect(list[0].output!.endsWith('[truncated]')).toBe(true);
+  });
+
+  it('getJob returns null for unknown id', async () => {
+    const { __setPoolForTest } = await import('../db/connection');
+    const { pool } = makeJobsPool();
+    __setPoolForTest(pool);
+    const mod = await import('./backup.service');
+
+    const job = await mod.getJob('does-not-exist');
+    expect(job).toBeNull();
+  });
+});
