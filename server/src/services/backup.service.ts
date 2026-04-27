@@ -3,6 +3,7 @@ import type { Dirent } from 'fs';
 import * as path from 'path';
 import { withAdminClient } from '../db/connection';
 import type { PoolClient } from '../db/connection';
+import { getSetting } from './settings.service';
 
 // Mount point for the pg_backups named volume inside the server
 // container. Compose-mounted read-only — see docker-compose.yml.
@@ -187,17 +188,43 @@ async function readWalSummary(): Promise<WalArchiveSummary> {
   };
 }
 
-function readS3Config(): S3Config {
-  const bucket = (process.env.BACKUP_S3_BUCKET || '').trim();
+// S3 config keys in platform_settings (Phase C). DB rows take
+// precedence over env vars so operators can change bucket/region/etc.
+// from Admin → Backups without a server restart. The actual SECRET
+// access key stays in .env (BACKUP_S3_SECRET_ACCESS_KEY) — encrypting
+// it in DB and decrypting from inside the bash worker is more
+// complexity than the rare-rotation use case justifies.
+const S3_SETTING_KEYS = {
+  bucket: 'backup_s3_bucket',
+  endpoint: 'backup_s3_endpoint',
+  region: 'backup_s3_region',
+  prefix: 'backup_s3_prefix',
+  access_key_id: 'backup_s3_access_key_id',
+  retain_days: 'backup_retain_days',
+} as const;
+
+async function readSettingOrEnv(settingKey: string, envKey: string): Promise<string> {
+  const fromDb = await getSetting(settingKey);
+  if (fromDb !== null && fromDb !== '') return fromDb;
+  return (process.env[envKey] || '').trim();
+}
+
+async function readS3Config(): Promise<S3Config> {
+  const [bucket, endpoint, region, prefix, retainStr] = await Promise.all([
+    readSettingOrEnv(S3_SETTING_KEYS.bucket, 'BACKUP_S3_BUCKET'),
+    readSettingOrEnv(S3_SETTING_KEYS.endpoint, 'BACKUP_S3_ENDPOINT'),
+    readSettingOrEnv(S3_SETTING_KEYS.region, 'BACKUP_S3_REGION'),
+    readSettingOrEnv(S3_SETTING_KEYS.prefix, 'BACKUP_S3_PREFIX'),
+    readSettingOrEnv(S3_SETTING_KEYS.retain_days, 'BACKUP_RETAIN_DAYS'),
+  ]);
   const configured = bucket.length > 0;
-  const retainStr = (process.env.BACKUP_RETAIN_DAYS || '').trim();
   const retainDays = retainStr ? parseInt(retainStr, 10) : null;
   return {
     configured,
     bucket: configured ? bucket : null,
-    endpoint: (process.env.BACKUP_S3_ENDPOINT || '').trim() || null,
-    region: (process.env.BACKUP_S3_REGION || '').trim() || null,
-    prefix: (process.env.BACKUP_S3_PREFIX || '').trim() || null,
+    endpoint: endpoint || null,
+    region: region || null,
+    prefix: prefix || null,
     retain_days: Number.isFinite(retainDays as number) ? (retainDays as number) : null,
   };
 }
@@ -226,7 +253,7 @@ export async function getBackupStatus(): Promise<BackupStatus> {
         lag_seconds: null,
       },
       volume: { total_bytes: 0, base_bytes: 0, wal_bytes: 0 },
-      s3: readS3Config(),
+      s3: await readS3Config(),
       retain_days: null,
     };
   }
@@ -237,7 +264,7 @@ export async function getBackupStatus(): Promise<BackupStatus> {
     dirSizeBytes(baseDir()),
     dirSizeBytes(walDir()),
   ]);
-  const s3 = readS3Config();
+  const s3 = await readS3Config();
   return {
     available: true,
     bases,

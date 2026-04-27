@@ -106,6 +106,31 @@ function makeDrillPool() {
   };
 }
 
+// readS3Config now reads from platform_settings via getSetting, which
+// hits the DB. Install a no-rows pool so the settings cache loads and
+// every getSetting() call falls through to process.env. The test env
+// vars (BACKUP_S3_*) drive the assertions.
+function installEmptySettingsPool() {
+  const client = {
+    query: (sql: string) => {
+      // settings.service loads via "SELECT key, value, is_secret FROM
+      // platform.platform_settings". Return zero rows so the cache is
+      // empty; getSetting() falls through to env via the
+      // null-or-empty branch in readSettingOrEnv.
+      if (sql.trim().startsWith('SELECT key')) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    },
+    release: () => {},
+  };
+  return {
+    connect: () => Promise.resolve(client),
+    on: () => {},
+    end: () => Promise.resolve(),
+  } as unknown as import('pg').Pool;
+}
+
 describe('backup.service — filesystem status', () => {
   let tmpRoot: string;
   let originalEnv: string | undefined;
@@ -114,6 +139,15 @@ describe('backup.service — filesystem status', () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xray-backup-test-'));
     originalEnv = process.env.BACKUPS_ROOT;
     process.env.BACKUPS_ROOT = tmpRoot;
+  });
+
+  beforeEach(async () => {
+    const { __setPoolForTest } = await import('../db/connection');
+    __setPoolForTest(installEmptySettingsPool());
+    // Bust the settings cache so each test reloads against the
+    // empty-rows pool fresh.
+    const settings = await import('./settings.service');
+    await settings.refreshCache();
   });
 
   afterAll(async () => {
@@ -231,6 +265,57 @@ describe('backup.service — filesystem status', () => {
     expect(status.s3.configured).toBe(false);
     expect(status.s3.bucket).toBeNull();
     if (orig !== undefined) process.env.BACKUP_S3_BUCKET = orig;
+  });
+
+  it('platform_settings rows override env vars', async () => {
+    // Pool that returns DB-side settings rows for the S3 keys. When
+    // both DB and env have a value, DB wins.
+    const settingsPool = {
+      connect: () => Promise.resolve({
+        query: (sql: string) => {
+          if (sql.trim().startsWith('SELECT key')) {
+            return Promise.resolve({
+              rows: [
+                { key: 'backup_s3_bucket', value: 'db-bucket', is_secret: false },
+                { key: 'backup_s3_region', value: 'db-region', is_secret: false },
+                { key: 'backup_retain_days', value: '7', is_secret: false },
+              ],
+              rowCount: 3,
+            });
+          }
+          return Promise.resolve({ rows: [], rowCount: 0 });
+        },
+        release: () => {},
+      }),
+      on: () => {},
+      end: () => Promise.resolve(),
+    } as unknown as import('pg').Pool;
+    const { __setPoolForTest } = await import('../db/connection');
+    __setPoolForTest(settingsPool);
+    const settings = await import('./settings.service');
+    await settings.refreshCache();
+
+    const orig: Record<string, string | undefined> = {
+      bucket: process.env.BACKUP_S3_BUCKET,
+      region: process.env.BACKUP_S3_REGION,
+      retain: process.env.BACKUP_RETAIN_DAYS,
+    };
+    process.env.BACKUP_S3_BUCKET = 'env-bucket-should-be-ignored';
+    process.env.BACKUP_S3_REGION = 'env-region-should-be-ignored';
+    process.env.BACKUP_RETAIN_DAYS = '999';
+
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+    expect(status.s3.bucket).toBe('db-bucket');
+    expect(status.s3.region).toBe('db-region');
+    expect(status.retain_days).toBe(7);
+
+    if (orig.bucket === undefined) delete process.env.BACKUP_S3_BUCKET;
+    else process.env.BACKUP_S3_BUCKET = orig.bucket;
+    if (orig.region === undefined) delete process.env.BACKUP_S3_REGION;
+    else process.env.BACKUP_S3_REGION = orig.region;
+    if (orig.retain === undefined) delete process.env.BACKUP_RETAIN_DAYS;
+    else process.env.BACKUP_RETAIN_DAYS = orig.retain;
   });
 });
 
