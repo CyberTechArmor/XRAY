@@ -131,8 +131,15 @@ docker run --rm \
     cd /var/lib/postgresql/data
     rm -rf ./* ./.[!.]* 2>/dev/null || true
     tar -xzf /backups/base/${BASE}/base.tar.gz -C .
+    # pg_wal.tar.gz is only produced by pg_basebackup with -X stream
+    # (separate replication connection). Our backup-platform.sh uses
+    # -X fetch which embeds the WAL needed for consistency directly
+    # in base.tar.gz under pg_wal/. Treat the standalone file as
+    # optional — its absence is the normal case for our backups.
     mkdir -p pg_wal
-    tar -xzf /backups/base/${BASE}/pg_wal.tar.gz -C pg_wal
+    if [ -f /backups/base/${BASE}/pg_wal.tar.gz ]; then
+      tar -xzf /backups/base/${BASE}/pg_wal.tar.gz -C pg_wal
+    fi
     cat >> postgresql.auto.conf <<CFGEOF
 # Restore drill — recovery configuration
 restore_command = 'cp /backups/wal/%f %p'

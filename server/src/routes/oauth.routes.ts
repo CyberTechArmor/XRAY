@@ -97,7 +97,9 @@ router.get('/callback', async (req: Request, res: Response) => {
   // source_type=slug row (legacy pre-step-4 data) before inserting a
   // new one — avoids leaving orphan rows for tenants who were
   // previously manually provisioned.
-  await withTenantContext(claims.t, async (client) => {
+  // newConnectionId is set only on the INSERT path so the seed hook
+  // below fires once per (tenant × integration) on first-connect.
+  const newConnectionId = await withTenantContext(claims.t, async (client) => {
     const existing = await client.query(
       `SELECT id FROM platform.connections
         WHERE tenant_id = $1 AND (integration_id = $2 OR source_type = $3)
@@ -128,26 +130,37 @@ router.get('/callback', async (req: Request, res: Response) => {
           new Date(Date.now() + pair.expiresIn * 1000).toISOString(),
         ]
       );
-    } else {
-      await client.query(
-        `INSERT INTO platform.connections
-           (tenant_id, name, source_type, integration_id, auth_method,
-            oauth_refresh_token, oauth_access_token,
-            oauth_access_token_expires_at, oauth_last_refreshed_at,
-            status)
-         VALUES ($1, $2, $3, $4, 'oauth', $5, $6, $7, now(), 'active')`,
-        [
-          claims.t,
-          integration.display_name,
-          integration.slug,
-          integration.id,
-          encryptSecret(pair.refreshToken || ''),
-          encryptSecret(pair.accessToken),
-          new Date(Date.now() + pair.expiresIn * 1000).toISOString(),
-        ]
-      );
+      return null;
     }
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO platform.connections
+         (tenant_id, name, source_type, integration_id, auth_method,
+          oauth_refresh_token, oauth_access_token,
+          oauth_access_token_expires_at, oauth_last_refreshed_at,
+          status)
+       VALUES ($1, $2, $3, $4, 'oauth', $5, $6, $7, now(), 'active')
+       RETURNING id`,
+      [
+        claims.t,
+        integration.display_name,
+        integration.slug,
+        integration.id,
+        encryptSecret(pair.refreshToken || ''),
+        encryptSecret(pair.accessToken),
+        new Date(Date.now() + pair.expiresIn * 1000).toISOString(),
+      ]
+    );
+    return inserted.rows[0].id;
   });
+
+  if (newConnectionId) {
+    const { fireSeedHookForConnection } = await import('../services/seed-hook.service');
+    void fireSeedHookForConnection({
+      integrationId: integration.id,
+      tenantId: claims.t,
+      connectionId: newConnectionId,
+    });
+  }
 
   auditService.log({
     tenantId: claims.t,

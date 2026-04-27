@@ -124,7 +124,10 @@ router.post(
       }
 
       const tenantId = req.user!.tid;
-      await withTenantContext(tenantId, async (client) => {
+      // Capture whether this call CREATED a new connection (vs. updated
+      // an existing one) so the seed hook only fires on first-connect.
+      // newConnectionId is set only on the INSERT path.
+      const newConnectionId = await withTenantContext(tenantId, async (client) => {
         const existing = await client.query(
           `SELECT id FROM platform.connections
             WHERE tenant_id = $1 AND (integration_id = $2 OR source_type = $3)
@@ -148,20 +151,22 @@ router.post(
               WHERE id = $1`,
             [existing.rows[0].id, integration.id, encryptSecret(data.apiKey)]
           );
-        } else {
-          await client.query(
-            `INSERT INTO platform.connections
-               (tenant_id, name, source_type, integration_id, auth_method, api_key, status)
-             VALUES ($1, $2, $3, $4, 'api_key', $5, 'active')`,
-            [
-              tenantId,
-              integration.display_name,
-              integration.slug,
-              integration.id,
-              encryptSecret(data.apiKey),
-            ]
-          );
+          return null;
         }
+        const inserted = await client.query<{ id: string }>(
+          `INSERT INTO platform.connections
+             (tenant_id, name, source_type, integration_id, auth_method, api_key, status)
+           VALUES ($1, $2, $3, $4, 'api_key', $5, 'active')
+           RETURNING id`,
+          [
+            tenantId,
+            integration.display_name,
+            integration.slug,
+            integration.id,
+            encryptSecret(data.apiKey),
+          ]
+        );
+        return inserted.rows[0].id;
       });
 
       auditService.log({
@@ -172,6 +177,19 @@ router.post(
         resourceId: integration.id,
         metadata: { integration_slug: integration.slug },
       });
+
+      // Seed hook: fire-and-forget on first-connect only (newConnectionId
+      // is null when this was an UPDATE — token rotation, re-key, etc.).
+      // Loaded dynamically to avoid pulling the import into the hot path
+      // for integrations that don't use seed URLs.
+      if (newConnectionId) {
+        const { fireSeedHookForConnection } = await import('../services/seed-hook.service');
+        void fireSeedHookForConnection({
+          integrationId: integration.id,
+          tenantId,
+          connectionId: newConnectionId,
+        });
+      }
 
       try {
         const { broadcastToTenant } = await import('../ws');
