@@ -109,27 +109,100 @@ router.post('/drill-log', async (req, res, next) => {
   }
 });
 
-// ── POST /api/admin/backups/run | /s3-sync | /drill ─────────────
-// Action triggers — Phase B. Stubbed today so the API contract is
-// stable and the frontend can render the buttons in their final
-// shape. They return 501 with operator-runnable command suggestions
-// so an admin who clicks one immediately sees what they'd run via
-// SSH instead.
-function notYetWired(action: string, recoveryCmd: string) {
-  return (_req: import('express').Request, res: import('express').Response) => {
-    res.status(501).json({
-      ok: false,
-      error: {
-        code: 'NOT_IMPLEMENTED',
-        message: `${action} is not wired yet (Phase B). Run on the deploy host:`,
-        recovery: recoveryCmd,
-      },
+// ── POST /api/admin/backups/run ─────────────────────────────────
+// Enqueue a base-backup job. The backup-worker sidecar will pick
+// it up on its next poll and run scripts/backup-platform.sh.
+// Returns the job row so the frontend can immediately start polling
+// /jobs/:id.
+router.post('/run', async (req, res, next) => {
+  try {
+    const job = await backupService.enqueueJob({
+      kind: 'base',
+      args: {},
+      requested_by: req.user?.sub ?? null,
     });
-  };
-}
+    res.json({ ok: true, data: job });
+  } catch (err) {
+    next(err);
+  }
+});
 
-router.post('/run', notYetWired('Backup now', './scripts/backup-platform.sh'));
-router.post('/s3-sync', notYetWired('S3 sync', './scripts/backup-s3-sync.sh wal|base|all'));
-router.post('/drill', notYetWired('Run drill', './scripts/restore-drill.sh'));
+// ── POST /api/admin/backups/s3-sync ─────────────────────────────
+// Body: { mode?: 'wal' | 'base' | 'all' | 'prune' }
+// Default mode is 'all' — operator usually wants a full reconcile
+// when triggering manually. Mode is validated server-side; an
+// invalid value returns 400 (don't let it sit pending in the queue).
+router.post('/s3-sync', async (req, res, next) => {
+  try {
+    const mode = (req.body && req.body.mode) || 'all';
+    if (!['wal', 'base', 'all', 'prune'].includes(mode)) {
+      res.status(400).json({
+        ok: false,
+        error: { code: 'BAD_REQUEST', message: "mode must be 'wal' | 'base' | 'all' | 'prune'" },
+      });
+      return;
+    }
+    const job = await backupService.enqueueJob({
+      kind: 's3sync',
+      args: { mode },
+      requested_by: req.user?.sub ?? null,
+    });
+    res.json({ ok: true, data: job });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/admin/backups/drill ───────────────────────────────
+// Body: { from_s3?: boolean, target_time?: ISO }
+// from_s3 stages from S3 first (cold-restore-from-S3 dry-run);
+// target_time enables PITR. Both optional.
+router.post('/drill', async (req, res, next) => {
+  try {
+    const args: Record<string, unknown> = {};
+    const b = req.body || {};
+    if (typeof b.from_s3 === 'boolean') args.from_s3 = b.from_s3;
+    if (typeof b.target_time === 'string') args.target_time = b.target_time;
+    const job = await backupService.enqueueJob({
+      kind: 'drill',
+      args,
+      requested_by: req.user?.sub ?? null,
+    });
+    res.json({ ok: true, data: job });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/admin/backups/jobs ─────────────────────────────────
+// Listing of recent jobs (newest first). Useful for the admin UI's
+// "what just ran?" row and for catching stuck-running jobs.
+router.get('/jobs', async (req, res, next) => {
+  try {
+    const limitRaw = req.query.limit;
+    const limit = typeof limitRaw === 'string' ? parseInt(limitRaw, 10) : 25;
+    const safe = Number.isFinite(limit) ? Math.max(1, Math.min(100, limit)) : 25;
+    const jobs = await backupService.listJobs(safe);
+    res.json({ ok: true, data: jobs });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/admin/backups/jobs/:id ─────────────────────────────
+// Single job — full output. Frontend polls this every ~2s after
+// enqueuing until status terminates ('completed' or 'failed').
+router.get('/jobs/:id', async (req, res, next) => {
+  try {
+    const job = await backupService.getJob(req.params.id);
+    if (!job) {
+      res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Job not found' } });
+      return;
+    }
+    res.json({ ok: true, data: job });
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;
