@@ -17,22 +17,11 @@ try {
   console.warn('Web Push VAPID keys not configured - push notifications disabled');
 }
 
-/**
- * Ensure push_subscriptions table exists.
- */
-async function ensureTable(client: any): Promise<void> {
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS platform.push_subscriptions (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES platform.users(id) ON DELETE CASCADE,
-      endpoint TEXT NOT NULL,
-      keys_p256dh TEXT NOT NULL,
-      keys_auth TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE(user_id, endpoint)
-    )
-  `);
-}
+// platform.push_subscriptions table is owned by the postgres bootstrap
+// user and created by migration 049. Runtime (xray_app, non-owner)
+// must NOT do DDL — even CREATE TABLE IF NOT EXISTS errors with
+// "permission denied for schema platform" because Postgres checks
+// privilege before evaluating IF NOT EXISTS.
 
 /**
  * Save a push subscription for a user.
@@ -42,7 +31,6 @@ export async function saveSubscription(
   subscription: { endpoint: string; keys: { p256dh: string; auth: string } }
 ): Promise<void> {
   await withAdminClient(async (client) => {
-    await ensureTable(client);
     await client.query(
       `INSERT INTO platform.push_subscriptions (user_id, endpoint, keys_p256dh, keys_auth)
        VALUES ($1, $2, $3, $4)
@@ -75,7 +63,6 @@ export async function sendPushToUser(
 ): Promise<void> {
   if (!pushConfigured) return;
   await withAdminClient(async (client) => {
-    await ensureTable(client);
     const result = await client.query(
       'SELECT endpoint, keys_p256dh, keys_auth FROM platform.push_subscriptions WHERE user_id = $1',
       [userId]
@@ -107,7 +94,6 @@ export async function sendPushToUser(
 export async function sendPushToAdmins(payload: Record<string, unknown>): Promise<void> {
   if (!pushConfigured) return;
   await withAdminClient(async (client) => {
-    await ensureTable(client);
     // Try to include preferences if column exists, fallback to without
     let result;
     try {

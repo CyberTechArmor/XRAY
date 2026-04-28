@@ -245,20 +245,13 @@ export function getJoinUrl(serverUrl: string, roomName: string, participantName?
 
 // ── Support call functions ──
 
-// platform.support_calls is created inline on demand and has no RLS
-// policy — operates as a cross-tenant admin surface. withAdminClient
-// throughout for intent.
+// platform.support_calls is owned by the postgres bootstrap user
+// (created by migration 008 + init.sql) and operates as a cross-tenant
+// admin surface — no RLS policy. The runtime CREATE TABLE IF NOT EXISTS
+// that used to live here was removed post-role-split; xray_app is
+// non-owner and can't run DDL even when it would be a no-op.
 export async function createSupportCall(callerId: string, tenantId: string, roomCode: string, joinUrl: string): Promise<Record<string, unknown>> {
   return withAdminClient(async (client) => {
-    // Ensure table exists (idempotent)
-    await client.query(`CREATE TABLE IF NOT EXISTS platform.support_calls (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      room_code TEXT NOT NULL, join_url TEXT NOT NULL,
-      caller_id UUID NOT NULL, tenant_id UUID NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      answered_at TIMESTAMPTZ, expired_at TIMESTAMPTZ
-    )`);
     const result = await client.query(
       `INSERT INTO platform.support_calls (room_code, join_url, caller_id, tenant_id, status)
        VALUES ($1, $2, $3, $4, 'pending') RETURNING *`,

@@ -284,15 +284,13 @@ export async function updateUser(
 
 // ── User Settings (stored in preferences JSONB column) ──
 
+// platform.users.preferences column is owned by the postgres bootstrap
+// user and added by migration 050. Runtime ALTER TABLE attempts fail
+// post-role-split with "must be owner of table users" — Postgres
+// checks ownership before evaluating ADD COLUMN IF NOT EXISTS.
+
 export async function getUserSettings(userId: string): Promise<Record<string, unknown>> {
   return withAdminClient(async (client) => {
-    // Ensure preferences column exists
-    await client.query(`
-      DO $$ BEGIN
-        ALTER TABLE platform.users ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}';
-      EXCEPTION WHEN duplicate_column THEN NULL;
-      END $$;
-    `);
     const result = await client.query('SELECT preferences FROM platform.users WHERE id = $1', [userId]);
     if (result.rows.length === 0) throw new AppError(404, 'NOT_FOUND', 'User not found');
     return result.rows[0].preferences || {};
@@ -301,13 +299,6 @@ export async function getUserSettings(userId: string): Promise<Record<string, un
 
 export async function updateUserSettings(userId: string, settings: Record<string, unknown>): Promise<Record<string, unknown>> {
   return withAdminClient(async (client) => {
-    // Ensure preferences column exists
-    await client.query(`
-      DO $$ BEGIN
-        ALTER TABLE platform.users ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}';
-      EXCEPTION WHEN duplicate_column THEN NULL;
-      END $$;
-    `);
     const result = await client.query(
       `UPDATE platform.users SET preferences = COALESCE(preferences, '{}'::jsonb) || $1::jsonb WHERE id = $2 RETURNING preferences`,
       [JSON.stringify(settings), userId]
