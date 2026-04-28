@@ -414,6 +414,50 @@ else
   warn "Server container not running — skipping backfill"
 fi
 
+# ── Step 6b: Record deploy timestamps in platform_settings ──
+# Surfaces under Admin → Server health. Three keys:
+#   - update_last_run_at      : every successful update.sh run
+#   - update_last_no_cache_at : only when NO_CACHE=1 (alpine CVE refresh)
+#   - update_last_commit_sha  : the SHA the build was cut from
+#   - update_last_commit_branch
+# The admin UI nags the operator to run `NO_CACHE=1 ./update.sh`
+# when no_cache_stale_at is null or > 7 days old. Best-effort —
+# failures here don't fail the deploy (the running container
+# doesn't depend on these values).
+PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null || echo "")
+if [ -n "$PG_CONTAINER" ]; then
+  echo "  [6b] Recording deploy timestamps for Admin → Server health..."
+  RUN_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  COMMIT_SHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo "")
+  COMMIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  NO_CACHE_AT=""
+  if [ "${NO_CACHE:-0}" = "1" ]; then
+    NO_CACHE_AT="$RUN_AT"
+  fi
+  # platform_settings is in the no-RLS carve-out and the schema
+  # is platform.platform_settings. UPSERT pattern keeps the
+  # idempotent guarantee. is_secret stays false (timestamps and
+  # SHAs are not secret).
+  docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 \
+    -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" >/dev/null 2>&1 <<HEALTHSQL || warn "Could not record deploy timestamps (Admin → Server health will show stale data)"
+INSERT INTO platform.platform_settings (key, value, is_secret)
+  VALUES ('update_last_run_at', '${RUN_AT}', false)
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO platform.platform_settings (key, value, is_secret)
+  VALUES ('update_last_commit_sha', '${COMMIT_SHA}', false)
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO platform.platform_settings (key, value, is_secret)
+  VALUES ('update_last_commit_branch', '${COMMIT_BRANCH}', false)
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+$(
+if [ -n "$NO_CACHE_AT" ]; then
+  echo "INSERT INTO platform.platform_settings (key, value, is_secret) VALUES ('update_last_no_cache_at', '${NO_CACHE_AT}', false) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
+fi
+)
+HEALTHSQL
+  ok "Deploy timestamps recorded ($([ -n "$NO_CACHE_AT" ] && echo "NO_CACHE refresh" || echo "cached build"))"
+fi
+
 # ── Step 7: Reload nginx ──
 echo "  [7/7] Reloading nginx..."
 if command -v nginx &>/dev/null; then

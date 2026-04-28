@@ -1130,7 +1130,8 @@
     link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
     video: '<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>',
     inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
-    database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>'
+    database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
+    activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'
   };
 
   function iconSvg(name) {
@@ -2751,6 +2752,7 @@
       admin_audit: 'if(typeof initAdminAudit==="function")initAdminAudit(container,api,user);',
       admin_backups: 'if(typeof initAdminBackups==="function")initAdminBackups(container,api,user);',
       admin_pipeline: 'if(typeof initAdminPipeline==="function")initAdminPipeline(container,api,user);',
+      admin_health: 'if(typeof initAdminHealth==="function")initAdminHealth(container,api,user);',
       admin_portability: 'if(typeof initAdminPortability==="function")initAdminPortability(container,api,user);',
       inbox: 'if(typeof initInbox==="function")initInbox(container,api,user);',
       files: 'if(typeof initFiles==="function")initFiles(container,api,user);',
