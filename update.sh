@@ -234,10 +234,30 @@ fi
 # schema that already has any new columns it SELECTs, and BEFORE the
 # post-rebuild migrations so destructive changes only land after the old
 # code stops serving traffic.
+#
+# Cache policy: default is a CACHED build — Docker reuses unchanged
+# layers (alpine pkgs, npm ci) so a typical update only rebuilds the
+# layers downstream of `COPY server/src` (a few seconds vs. the
+# minutes a from-scratch rebuild takes). Set NO_CACHE=1 to force a
+# full rebuild — that's the path that re-runs `apk upgrade --no-cache`
+# from scratch and pulls fresh Alpine CVE patches into the image.
+# Run `NO_CACHE=1 ./update.sh` weekly or after Trivy flags an OS-level
+# CVE; routine deploys don't need it.
 echo "  [5/7] Rebuilding backend..."
 if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
   cd "$SCRIPT_DIR"
-  docker compose build --no-cache 2>&1 | tail -5 && ok "Backend rebuilt" || warn "Docker build failed"
+  BUILD_FLAGS=""
+  if [ "${NO_CACHE:-0}" = "1" ]; then
+    BUILD_FLAGS="--no-cache"
+    echo "    NO_CACHE=1 — forcing from-scratch rebuild (alpine CVE refresh)"
+  fi
+  BUILD_OK=0
+  if docker compose build $BUILD_FLAGS 2>&1 | tail -5; then
+    ok "Backend rebuilt"
+    BUILD_OK=1
+  else
+    warn "Docker build failed"
+  fi
   # Bring the stack up first (idempotent — starts anything not running,
   # leaves running services alone). Then explicitly --force-recreate the
   # server so it picks up env changes from .env (DB_APP_USER /
@@ -252,6 +272,20 @@ if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
     ok "Backend restarted (server force-recreated to pick up .env changes)"
   else
     warn "Server force-recreate failed"
+  fi
+
+  # Prune dangling images after a successful rebuild. Each rebuild
+  # supersedes the previous server image and orphans its layers
+  # (~500MB-1GB). Without cleanup these accumulate on disk indefinitely
+  # — 20-30 deploys later the host is 15-30GB into the swap. `prune -f`
+  # only touches dangling (unreferenced) images, never tagged ones, so
+  # rollback to any tagged image is unaffected. Skipped on build
+  # failure to keep the previous image's layers reachable for rollback.
+  if [ "$BUILD_OK" = "1" ]; then
+    PRUNED=$(docker image prune -f 2>/dev/null | tail -1)
+    if [ -n "$PRUNED" ]; then
+      ok "Pruned dangling images ($PRUNED)"
+    fi
   fi
 else
   warn "No docker-compose.yml found — skipping backend rebuild"
