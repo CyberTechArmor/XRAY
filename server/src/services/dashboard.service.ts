@@ -124,16 +124,11 @@ export async function listDashboards(
   isPlatformAdmin: boolean = false
 ): Promise<Dashboard[]> {
   return withAdminClient(async (client) => {
-
-    // Ensure dashboard_views table exists (added in migration 007)
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS platform.dashboard_views (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        dashboard_id UUID NOT NULL REFERENCES platform.dashboards(id) ON DELETE CASCADE,
-        user_id UUID NOT NULL REFERENCES platform.users(id),
-        viewed_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `);
+    // platform.dashboard_views was originally self-healed via runtime
+    // CREATE TABLE IF NOT EXISTS. After the role split (post-step-12)
+    // the runtime user is non-owner and can't run DDL — Postgres
+    // checks privilege before evaluating IF NOT EXISTS. Migration 007
+    // owns the table; the runtime DDL is removed.
 
     // Subquery for view count (excludes platform admin role views)
     const viewCountSub = `(SELECT COUNT(*)::int FROM platform.dashboard_views dv
