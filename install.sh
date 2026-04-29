@@ -37,6 +37,51 @@ err()  { echo -e "  ${RED}✗${NC} $1"; }
 
 banner
 
+# ── Helpers: secret generation + idempotent preservation ──
+# load_or_generate is the load-bearing piece of T.2 in the install
+# fix series: re-running install.sh on a host that already has a
+# postgres data volume MUST NOT rotate the password, or the server
+# can no longer authenticate. The named pg_data volume persists
+# across `docker compose down`, so the password baked into it is
+# the source of truth — .env has to match. We do that by reading
+# whatever value is already in .env and only generating a fresh
+# one if the key is missing entirely. Operators who genuinely want
+# new secrets delete .env first.
+gen_password() {
+  openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32
+}
+gen_hex() {
+  local bytes="${1:-32}"
+  openssl rand -hex "$bytes"
+}
+gen_password_64() {
+  openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 64
+}
+
+# Reads the named var from .env if present (and the value is non-
+# empty), otherwise invokes $generator. Returns the value via the
+# caller's named variable. Updates the global PRESERVED_COUNT /
+# GENERATED_COUNT for the step-4 banner.
+PRESERVED_COUNT=0
+GENERATED_COUNT=0
+load_or_generate() {
+  local var="$1"
+  local generator="$2"
+  local existing=""
+  if [ -f "$SCRIPT_DIR/.env" ]; then
+    existing=$(grep -oP "^${var}=\K.*" "$SCRIPT_DIR/.env" 2>/dev/null || echo "")
+  fi
+  if [ -n "$existing" ]; then
+    printf -v "$var" '%s' "$existing"
+    PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
+  else
+    local generated
+    generated=$(eval "$generator")
+    printf -v "$var" '%s' "$generated"
+    GENERATED_COUNT=$((GENERATED_COUNT + 1))
+  fi
+}
+
 # ── Helper: find first available port starting from a given number ──
 find_available_port() {
   local port="${1:-3000}"
@@ -163,38 +208,53 @@ ok "Admin email: ${ADMIN_EMAIL}"
 ok "App port: ${APP_PORT}"
 
 # ── Step 4: Secret Generation ──────────────────────────────
-step 4 "Generating secrets"
+step 4 "Generating / preserving secrets"
 
-JWT_SECRET=$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 64)
-ENCRYPTION_KEY=$(openssl rand -hex 32)
-DB_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
-# Separate password for the application's runtime DB role (xray_app).
-# xray (DB_USER) stays as the cluster bootstrap superuser for migrations
-# + admin ops; the application server connects as xray_app (NOSUPERUSER
-# NOINHERIT) so RLS policies actually fire on every query.
-DB_APP_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
-STRIPE_WEBHOOK_SECRET=""
-
-# VAPID keys will be generated after Docker launch (step 8b)
-VAPID_PUBLIC_KEY=""
-VAPID_PRIVATE_KEY=""
+# Re-runs MUST NOT rotate passwords. The pg_data volume persists
+# across compose down/up cycles with whatever password the role was
+# created with on first init; if .env drifts, the server crash-loops
+# with 28P01. load_or_generate keeps the value already in .env when
+# it's there and generates fresh only when the key is missing.
+# Operators who want to rotate a secret delete it from .env (or
+# delete .env entirely) before re-running.
+load_or_generate JWT_SECRET           gen_password_64
+load_or_generate ENCRYPTION_KEY      'gen_hex 32'
+load_or_generate DB_PASSWORD          gen_password
+load_or_generate DB_APP_PASSWORD      gen_password
 
 # Pipeline JWT keypair (RS256). Platform-wide; signs the data-access
 # token destined for the future pipeline DB. Stored as single-line
-# base64 so .env parsing stays simple; server decodes at boot. Matches
-# migration of Model J in .claude/pipeline-hardening-notes.md.
-PIPELINE_JWT_DIR=$(mktemp -d)
-openssl genrsa -out "$PIPELINE_JWT_DIR/private.pem" 2048 >/dev/null 2>&1
-openssl rsa -in "$PIPELINE_JWT_DIR/private.pem" -pubout -out "$PIPELINE_JWT_DIR/public.pem" >/dev/null 2>&1
-PIPELINE_JWT_PRIVATE_KEY=$(base64 -w0 < "$PIPELINE_JWT_DIR/private.pem")
-PIPELINE_JWT_PUBLIC_KEY=$(base64 -w0 < "$PIPELINE_JWT_DIR/public.pem")
-rm -rf "$PIPELINE_JWT_DIR"
+# base64 so .env parsing stays simple; server decodes at boot. We
+# treat the keypair atomically — if either half is missing we
+# regenerate both, since a mismatched pair is worse than a fresh one.
+PIPELINE_JWT_PRIVATE_KEY=$(grep -oP '^XRAY_PIPELINE_JWT_PRIVATE_KEY=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "")
+PIPELINE_JWT_PUBLIC_KEY=$(grep -oP '^XRAY_PIPELINE_JWT_PUBLIC_KEY=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "")
+if [ -n "$PIPELINE_JWT_PRIVATE_KEY" ] && [ -n "$PIPELINE_JWT_PUBLIC_KEY" ]; then
+  PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
+else
+  PIPELINE_JWT_DIR=$(mktemp -d)
+  openssl genrsa -out "$PIPELINE_JWT_DIR/private.pem" 2048 >/dev/null 2>&1
+  openssl rsa -in "$PIPELINE_JWT_DIR/private.pem" -pubout -out "$PIPELINE_JWT_DIR/public.pem" >/dev/null 2>&1
+  PIPELINE_JWT_PRIVATE_KEY=$(base64 -w0 < "$PIPELINE_JWT_DIR/private.pem")
+  PIPELINE_JWT_PUBLIC_KEY=$(base64 -w0 < "$PIPELINE_JWT_DIR/public.pem")
+  rm -rf "$PIPELINE_JWT_DIR"
+  GENERATED_COUNT=$((GENERATED_COUNT + 1))
+fi
 
-ok "JWT secret generated (64 chars)"
-ok "Encryption key generated (256-bit hex)"
-ok "Database password generated (32 chars)"
-ok "Application DB role password generated (32 chars)"
-ok "Pipeline JWT RS256 keypair generated (2048-bit)"
+# Preserve VAPID + Stripe secrets across the .env rewrite in step 5.
+# These are appended later in step 8b (VAPID) or seeded by the admin
+# via the UI (Stripe), so a re-run shouldn't drop them on the floor.
+VAPID_PUBLIC_KEY=$(grep -oP '^VAPID_PUBLIC_KEY=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "")
+VAPID_PRIVATE_KEY=$(grep -oP '^VAPID_PRIVATE_KEY=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "")
+VAPID_SUBJECT=$(grep -oP '^VAPID_SUBJECT=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "")
+STRIPE_WEBHOOK_SECRET=$(grep -oP '^STRIPE_WEBHOOK_SECRET=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "")
+
+if [ "$PRESERVED_COUNT" -gt 0 ]; then
+  ok "Reused $PRESERVED_COUNT existing secret(s) from .env (delete .env to regenerate)"
+fi
+if [ "$GENERATED_COUNT" -gt 0 ]; then
+  ok "Generated $GENERATED_COUNT new secret(s)"
+fi
 
 # ── Step 5: .env File ──────────────────────────────────────
 step 5 "Writing .env file"
@@ -270,6 +330,20 @@ SMTP_FROM=
 # ─── Admin ───
 ADMIN_EMAIL=${ADMIN_EMAIL}
 ENVEOF
+
+# Preserve VAPID keys carried across re-runs: if the operator had
+# them in the prior .env, write them back here so step 8b's
+# idempotency check sees them and skips regeneration. On first
+# install both vars are empty and this block writes nothing.
+if [ -n "$VAPID_PUBLIC_KEY" ] && [ -n "$VAPID_PRIVATE_KEY" ]; then
+  cat >> "$SCRIPT_DIR/.env" <<VAPIDPRESERVEEOF
+
+# ─── Web Push (VAPID) — for MEET call mobile notifications ───
+VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}
+VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}
+VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:${ADMIN_EMAIL}}
+VAPIDPRESERVEEOF
+fi
 
 chmod 600 "$SCRIPT_DIR/.env"
 ok ".env written and locked (chmod 600)"
@@ -452,17 +526,36 @@ docker compose up -d --build
 ok "Containers started"
 
 # ── Step 8b: Generate VAPID keys using server container ──
-info "Generating VAPID keys for push notifications..."
-# Wait briefly for server container to be ready
-sleep 2
-SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
-if [ -n "$SERVER_CONTAINER" ]; then
-  VAPID_JSON=$(docker exec "$SERVER_CONTAINER" npx web-push generate-vapid-keys --json 2>/dev/null || echo "")
-  if [ -n "$VAPID_JSON" ]; then
-    VAPID_PUBLIC_KEY=$(echo "$VAPID_JSON" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4)
-    VAPID_PRIVATE_KEY=$(echo "$VAPID_JSON" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4)
+# Three previously-bitey behaviors are corrected here (T.4):
+#   1. Idempotency — re-running install.sh with VAPID already in .env
+#      MUST skip the generator. Skipping by name (grep) makes the step
+#      cheap to repeat and safe even if the server container is mid-
+#      restart.
+#   2. -T on docker compose exec — disables TTY allocation so a
+#      misbehaving child process can't hijack the operator's outer
+#      PTY (the disconnect symptom seen in ProxyPilot terminals).
+#   3. Error capture via `if !` — defeats `set -e`'s "exit on
+#      non-zero", surfaces stderr, and gives the operator the exact
+#      command to retry instead of dropping them at a bare prompt.
+if grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null \
+   && grep -q '^VAPID_PRIVATE_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
+  ok "VAPID keys already present in .env — skipping generation"
+else
+  info "Generating VAPID keys for push notifications..."
+  # Brief wait for the server container to be runnable. We don't poll
+  # health here because the migrations haven't run yet — the container
+  # is "up" but not "healthy" by the API definition; web-push doesn't
+  # need the DB so this is fine.
+  sleep 2
+  if ! VAPID_OUTPUT=$(docker compose exec -T server npx web-push generate-vapid-keys --json 2>&1); then
+    warn "VAPID key generation failed — push notifications will be disabled until configured."
+    printf '%s\n' "$VAPID_OUTPUT" | sed 's/^/    /'
+    warn "Re-run install.sh once the server is healthy, or run manually:"
+    warn "    docker compose exec -T server npx web-push generate-vapid-keys --json"
+  else
+    VAPID_PUBLIC_KEY=$(echo "$VAPID_OUTPUT" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4)
+    VAPID_PRIVATE_KEY=$(echo "$VAPID_OUTPUT" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4)
     if [ -n "$VAPID_PUBLIC_KEY" ] && [ -n "$VAPID_PRIVATE_KEY" ]; then
-      # Append VAPID keys to .env
       cat >> "$SCRIPT_DIR/.env" <<VAPIDEOF
 
 # ─── Web Push (VAPID) — for MEET call mobile notifications ───
@@ -470,17 +563,13 @@ VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}
 VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}
 VAPID_SUBJECT=mailto:${ADMIN_EMAIL}
 VAPIDEOF
-      # Restart server to pick up new env vars
       docker compose restart server >/dev/null 2>&1 || true
       ok "VAPID keys generated and server restarted"
     else
-      warn "Could not parse VAPID keys — configure manually in .env later"
+      warn "VAPID generator returned unparseable output — configure manually in .env later"
+      printf '%s\n' "$VAPID_OUTPUT" | head -3 | sed 's/^/    /'
     fi
-  else
-    warn "Could not generate VAPID keys — configure manually in .env later"
   fi
-else
-  warn "Server container not found — configure VAPID keys manually in .env later"
 fi
 
 # ── Step 9: Run database migrations ──────────────────────
@@ -616,10 +705,34 @@ if [ $ELAPSED -ge $MAX_WAIT ]; then
   echo
   # Dump the last 30 lines so the operator can see what actually went
   # wrong without running a follow-up command.
-  docker compose logs --tail 30 server 2>&1 | sed 's/^/    /'
+  RECENT_LOGS=$(docker compose logs --tail 50 server --no-color 2>&1 || echo "")
+  printf '%s\n' "$RECENT_LOGS" | sed 's/^/    /'
   echo
-  err "Investigate with: docker compose logs -f server"
-  err "Once fixed, re-run ./install.sh — it's idempotent."
+
+  # T.3: detect the canonical "old volume + new password" failure
+  # mode and print the recovery commands in-line. Auto-recovering
+  # would risk wiping data; spelling out the choice is what the
+  # operator actually needs.
+  if printf '%s' "$RECENT_LOGS" | grep -qE 'password authentication failed for user|28P01'; then
+    echo
+    err "Postgres rejected the server's credentials. The most common"
+    err "cause is a stale postgres data volume from a previous install"
+    err "with a different password than the one currently in .env."
+    echo
+    err "Recovery option A — wipe the postgres volume (DESTROYS DATA):"
+    err "    docker compose down -v"
+    err "    docker compose up -d"
+    echo
+    err "Recovery option B — keep the data, reset the role password to"
+    err "match .env:"
+    err "    DB_APP_PWD=\$(grep '^DB_APP_PASSWORD=' .env | cut -d= -f2-)"
+    err "    docker compose exec -T postgres psql -U \"\${DB_USER:-xray}\" -d \"\${DB_NAME:-xray}\" \\"
+    err "      -c \"ALTER USER \${DB_APP_USER:-xray_app} WITH PASSWORD '\$DB_APP_PWD';\""
+    err "    docker compose restart server"
+  else
+    err "Investigate with: docker compose logs -f server"
+    err "Once fixed, re-run ./install.sh — it's idempotent."
+  fi
   exit 1
 fi
 

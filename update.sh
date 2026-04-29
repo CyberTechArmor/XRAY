@@ -342,36 +342,36 @@ fi
 
 # ── Step 5b: Ensure VAPID keys exist in .env ──
 if [ -f "$SCRIPT_DIR/.env" ]; then
-  if ! grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
+  if grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null; then
+    ok "VAPID keys already configured"
+  else
     echo "  [5b] Generating VAPID keys for push notifications..."
-    SERVER_CONTAINER=$(docker compose ps -q server 2>/dev/null || echo "")
-    if [ -n "$SERVER_CONTAINER" ]; then
-      VAPID_JSON=$(docker exec "$SERVER_CONTAINER" npx web-push generate-vapid-keys --json 2>/dev/null || echo "")
-      if [ -n "$VAPID_JSON" ]; then
-        VAPID_PUB=$(echo "$VAPID_JSON" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4)
-        VAPID_PRV=$(echo "$VAPID_JSON" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4)
-        if [ -n "$VAPID_PUB" ] && [ -n "$VAPID_PRV" ]; then
-          ADMIN_EMAIL_VAL=$(grep -oP '^ADMIN_EMAIL=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "admin@localhost")
-          cat >> "$SCRIPT_DIR/.env" <<VAPIDEOF
+    # docker compose exec -T mirrors the install.sh fix — see T.4 in
+    # the install-script PR. Capturing stderr + defeating set -e via
+    # `if !` so a generator error doesn't drop the operator at a bare
+    # prompt.
+    if ! VAPID_OUTPUT=$(docker compose exec -T server npx web-push generate-vapid-keys --json 2>&1); then
+      warn "VAPID key generation failed — push notifications will be disabled until configured."
+      printf '%s\n' "$VAPID_OUTPUT" | sed 's/^/    /'
+    else
+      VAPID_PUB=$(echo "$VAPID_OUTPUT" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4)
+      VAPID_PRV=$(echo "$VAPID_OUTPUT" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4)
+      if [ -n "$VAPID_PUB" ] && [ -n "$VAPID_PRV" ]; then
+        ADMIN_EMAIL_VAL=$(grep -oP '^ADMIN_EMAIL=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "admin@localhost")
+        cat >> "$SCRIPT_DIR/.env" <<VAPIDEOF
 
 # ─── Web Push (VAPID) — for MEET call mobile notifications ───
 VAPID_PUBLIC_KEY=${VAPID_PUB}
 VAPID_PRIVATE_KEY=${VAPID_PRV}
 VAPID_SUBJECT=mailto:${ADMIN_EMAIL_VAL}
 VAPIDEOF
-          ok "VAPID keys added to .env (push notifications enabled)"
-          docker compose restart server >/dev/null 2>&1 && ok "Server restarted with VAPID keys" || true
-        else
-          warn "Could not parse VAPID keys — push notifications will be disabled"
-        fi
+        ok "VAPID keys added to .env (push notifications enabled)"
+        docker compose restart server >/dev/null 2>&1 && ok "Server restarted with VAPID keys" || true
       else
-        warn "Could not generate VAPID keys — push notifications will be disabled"
+        warn "VAPID generator returned unparseable output — configure manually in .env later"
+        printf '%s\n' "$VAPID_OUTPUT" | head -3 | sed 's/^/    /'
       fi
-    else
-      warn "Server container not running — skipping VAPID key generation"
     fi
-  else
-    ok "VAPID keys already configured"
   fi
 fi
 

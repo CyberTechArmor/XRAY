@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   server:
     build:
@@ -108,6 +106,13 @@ services:
       - POSTGRES_DB=${DB_NAME:-xray}
       - POSTGRES_USER=${DB_USER:-xray}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
+      # DB_APP_USER + DB_APP_PASSWORD are consumed by
+      # postgres-init/02-app-role.sh on first volume init to provision
+      # the application's runtime role. Without these in the postgres
+      # service env, the init script can't see them — the server then
+      # crash-loops with 28P01 because xray_app was never created.
+      - DB_APP_USER=${DB_APP_USER:-xray_app}
+      - DB_APP_PASSWORD=${DB_APP_PASSWORD:-${DB_PASSWORD}}
       # Local archive path used by scripts/wal-archive.sh inside the
       # postgres container. The S3 mirror layer (BACKUP_S3_*) runs on
       # the host out-of-band — see scripts/backup-s3-sync.sh — so
@@ -116,7 +121,12 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - pg_backups:/var/lib/postgresql/backups
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      # Init scripts run alphabetically on first-init. 01- is the
+      # schema bootstrap (init.sql at repo root, kept there for
+      # back-compat with anything that references it); 02- creates
+      # the application's runtime role + grants on platform.*.
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./postgres-init/02-app-role.sh:/docker-entrypoint-initdb.d/02-app-role.sh:ro
       - ./scripts/wal-archive.sh:/usr/local/bin/wal-archive.sh:ro
     # WAL archiving + base-backup compatible: archive_mode=on requires
     # wal_level >= replica (Postgres 16 default). The archive_command
