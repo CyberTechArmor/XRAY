@@ -29,6 +29,13 @@ services:
       - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
       - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
       - VAPID_SUBJECT=${VAPID_SUBJECT:-}
+      # ADMIN_EMAIL gates the bootstrap-code login bypass: when SMTP
+      # is unconfigured AND the login email matches this, the
+      # verification code is returned inline in the API response so
+      # the admin can finish logging in on a fresh install. Once SMTP
+      # is configured in Platform Settings the bypass auto-disables.
+      # See auth.service.ts isBootstrapAdminWindow.
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
       # Fallback SMTP for first boot (before admin UI config)
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}
