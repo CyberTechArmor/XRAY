@@ -48,10 +48,27 @@ else
   warn "Not a git repo — using local files"
 fi
 
+# Read PROXY_MODE from .env. Defaults to "local" for back-compat
+# with installs that predate the flag (those have a co-located
+# NGINX and the /var/www/xray webroot). External mode is opt-in
+# at install time, so absent => local is correct.
+PROXY_MODE_VAL="local"
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  PROXY_MODE_VAL=$(grep -oP '^PROXY_MODE=\K.*' "$SCRIPT_DIR/.env" 2>/dev/null || echo "local")
+  PROXY_MODE_VAL="${PROXY_MODE_VAL:-local}"
+fi
+
 # ── Step 2: Deploy frontend files ──
+# In external-proxy mode Express serves the SPA directly from inside
+# the image (Dockerfile COPY frontend). Step 5 rebuilds the image
+# below, so the new SPA ships with that — no /var/www/xray copy
+# required. In local mode NGINX still serves /var/www/xray, so the
+# files get copied there as before.
 echo "  [2/7] Deploying frontend..."
-WEBROOT="/var/www/xray"
-if [ -d "$WEBROOT" ]; then
+if [ "$PROXY_MODE_VAL" = "external" ]; then
+  ok "External proxy mode — SPA ships in the server image (rebuilt in step 5), skipping webroot copy"
+elif [ -d "/var/www/xray" ]; then
+  WEBROOT="/var/www/xray"
   mkdir -p "$WEBROOT/bundles"
   FCOUNT=0
   for f in index.html app.css app.js landing.css landing.js manifest.json sw.js icon.svg icon-192.png icon-512.png share.html; do
@@ -74,13 +91,15 @@ if [ -d "$WEBROOT" ]; then
   done
   chown -R www-data:www-data "$WEBROOT" 2>/dev/null || true
 else
-  warn "Webroot $WEBROOT not found — skipping frontend deploy"
+  warn "Webroot /var/www/xray not found — skipping frontend deploy"
 fi
 
 # ── Step 3: Update nginx config from template ──
 echo "  [3/7] Updating nginx config..."
 NGINX_CONF="/etc/nginx/sites-available/xray.conf"
-if [ -f "$NGINX_CONF" ] && [ -f "$SCRIPT_DIR/nginx/xray.conf.template" ]; then
+if [ "$PROXY_MODE_VAL" = "external" ]; then
+  ok "External proxy mode — skipping nginx config update"
+elif [ -f "$NGINX_CONF" ] && [ -f "$SCRIPT_DIR/nginx/xray.conf.template" ]; then
   # Extract current domain, embed domain, and app port from existing config
   DOMAIN=$(grep -oP 'server_name \K[^ ;]+' "$NGINX_CONF" | head -1)
   EMBED_DOMAIN=$(grep -oP 'server_name [^ ]+ \K[^ ;]+' "$NGINX_CONF" | head -1 || echo "")
@@ -382,7 +401,9 @@ fi
 
 # ── Step 7: Reload nginx ──
 echo "  [7/7] Reloading nginx..."
-if command -v nginx &>/dev/null; then
+if [ "$PROXY_MODE_VAL" = "external" ]; then
+  ok "External proxy mode — nginx not managed by this install, skipping"
+elif command -v nginx &>/dev/null; then
   nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && ok "Nginx reloaded" || warn "Nginx reload failed"
 else
   warn "Nginx not found"

@@ -3,6 +3,7 @@ import http from 'http';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import fs from 'fs';
 import path from 'path';
 import { config } from './config';
 import { errorHandler } from './middleware/error-handler';
@@ -51,6 +52,31 @@ try {
 }
 
 const app = express();
+
+// /healthz — liveness + DB-up probe for external reverse proxies
+// (ProxyPilot, Caddy, etc). Registered BEFORE any app.use(...) so it
+// bypasses helmet, CORS, cookie-parser, body parsers, and CSRF —
+// keeps the hot path cheap when a proxy hits this every few seconds
+// and ensures the probe never depends on session state. Distinct
+// from /api/health (the legacy liveness-only endpoint, kept for
+// backwards compat).
+app.get('/healthz', async (_req, res) => {
+  const pool = getPool();
+  const timeoutMs = 1000;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`db probe exceeded ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    await Promise.race([pool.query('SELECT 1'), timeout]);
+    res.status(200).json({ ok: true, db: 'up' });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(503).json({ ok: false, db: 'down', error: message });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+});
 
 // Security headers
 app.use(helmet({
@@ -143,14 +169,26 @@ app.use('/api/integrations', integrationRoutes);
 app.use('/api/legal', legalRoutes);
 if (uploadRoutes) app.use('/api/uploads', uploadRoutes);
 
-// Serve frontend static files (fallback when nginx is not in front)
-const frontendDir = path.resolve(__dirname, '../../frontend');
+// Serve frontend static files. In external-proxy mode (no NGINX in
+// front) Express is the sole origin for the SPA + API. The Dockerfile
+// copies frontend/ to /app/frontend, so from /app/dist/index.js the
+// in-image path is `../frontend`. For tsx-watch dev (run from the
+// server/ directory, __dirname = server/src) the repo-root path is
+// `../../frontend`. Probe both so the same binary works in either
+// layout without an env var override.
+const frontendCandidates = [
+  path.resolve(__dirname, '../frontend'),     // in-image: /app/frontend
+  path.resolve(__dirname, '../../frontend'),  // dev/source: <repo>/frontend
+];
+const frontendDir = frontendCandidates.find((p) => {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
+}) || frontendCandidates[0];
+const indexHtmlPath = path.join(frontendDir, 'index.html');
 app.use(express.static(frontendDir, { maxAge: 0 }));
 
 // Serve public share page (serves the HTML page for /share/:token)
 app.get('/share/:token', (_req, res) => {
-
-  const sharePage = path.resolve(__dirname, '../../frontend/share.html');
+  const sharePage = path.join(frontendDir, 'share.html');
   res.sendFile(sharePage, (err: Error) => {
     if (err) {
       // Fallback: redirect to API endpoint
@@ -165,27 +203,29 @@ app.get('/share/:token', (_req, res) => {
 // the explicit route makes the surface visible and parallels the
 // /share + /invite handlers above.
 app.get(/^\/legal(\/.*)?$/, (_req, res) => {
-  const indexPage = path.resolve(__dirname, '../../frontend/index.html');
-  res.sendFile(indexPage, (err: Error) => {
+  res.sendFile(indexHtmlPath, (err: Error) => {
     if (err) res.status(404).end();
   });
 });
 
 // Serve invite page (serves the main index.html for /invite/:token)
 app.get('/invite/:token', (_req, res) => {
-
-  const indexPage = path.resolve(__dirname, '../../frontend/index.html');
-  res.sendFile(indexPage, (err: Error) => {
+  res.sendFile(indexHtmlPath, (err: Error) => {
     if (err) {
       res.redirect('/');
     }
   });
 });
 
-// SPA fallback — serve index.html for non-API, non-file routes
-app.get('*', (_req, res) => {
-  const indexPage = path.resolve(__dirname, '../../frontend/index.html');
-  res.sendFile(indexPage, (err: Error) => {
+// SPA fallback — serve index.html for non-API, non-file routes.
+// Guard /api/* so a request for an unmounted API path 404s as JSON
+// instead of falling through and returning the SPA HTML with 200,
+// which would mask real bugs by hiding the missing route.
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ ok: false, error: 'not found' });
+  }
+  res.sendFile(indexHtmlPath, (err: Error) => {
     if (err) res.status(404).end();
   });
 });
