@@ -1516,7 +1516,19 @@
       pendingEmail = email;
       pendingFlow = 'login';
       window.__pendingFlow = 'login';
-      document.getElementById('verify-sub').textContent = 'We sent a 6-digit code to ' + email;
+      // Bootstrap-mode: when SMTP is unconfigured AND the email
+      // matches ADMIN_EMAIL from .env, the server returns the
+      // verification code inline so the admin can finish login on
+      // a fresh install. Auto-fill the code field and replace the
+      // "check your email" message with a clear notice.
+      if (d.data && d.data.bootstrap_code) {
+        document.getElementById('verify-sub').innerHTML =
+          '<strong>SMTP not configured.</strong> Your code is shown below — click Verify to log in. ' +
+          'Configure SMTP in Admin → Platform Settings to switch to email delivery.';
+        document.getElementById('verify-code').value = d.data.bootstrap_code;
+      } else {
+        document.getElementById('verify-sub').textContent = 'We sent a 6-digit code to ' + email;
+      }
       showLandingForm('verify');
     }).catch(function() { showAuthErr('login-err', 'Network error.'); })
       .finally(function() { btn.disabled = false; });
@@ -2022,7 +2034,14 @@
         btn.textContent = 'Sending…';
         api.post('/api/auth/magic-link', { email: email }).then(function(r) {
           if (r && r.ok) {
-            errEl.textContent = 'A new link has been sent to ' + email + '.';
+            // Bootstrap-mode resend: same path as initial login —
+            // re-fill the code field if the server returns one.
+            if (r.data && r.data.bootstrap_code) {
+              document.getElementById('verify-code').value = r.data.bootstrap_code;
+              errEl.textContent = 'New code generated. SMTP is not configured — code shown above.';
+            } else {
+              errEl.textContent = 'A new link has been sent to ' + email + '.';
+            }
           } else {
             btn.disabled = false;
             btn.textContent = 'Send a new link';

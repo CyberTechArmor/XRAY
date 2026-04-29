@@ -540,10 +540,37 @@ export async function initiateSignup(input: {
   return { message: 'Verification email sent. Please check your inbox.' };
 }
 
+// Bootstrap-mode helper. When SMTP is unconfigured AND the requesting
+// email matches the operator's ADMIN_EMAIL from .env, the login flow
+// returns the verification code inline in the API response so the
+// operator can complete login without ever receiving an email. This
+// is the only practical way to log in on a fresh install before SMTP
+// is configured — the alternative would be `docker compose logs server`
+// to grep for the code in stdout.
+//
+// Risk surface: anyone who (a) can reach /api/auth/login/begin,
+// (b) knows the ADMIN_EMAIL, AND (c) catches the install during the
+// pre-SMTP window can log in as platform admin. The window is short
+// and operator-controlled — once the admin saves SMTP settings in
+// the admin UI, this branch silently no-ops on every subsequent call.
+// Each bootstrap code emission is audit-logged.
+async function isBootstrapAdminWindow(email: string): Promise<boolean> {
+  const adminEmail = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
+  if (!adminEmail) return false;
+  if (email.toLowerCase().trim() !== adminEmail) return false;
+
+  // SMTP "configured" mirrors getSmtpConfig: platform_settings row OR
+  // .env fallback. If either has a host, we're past the bootstrap
+  // window and the code stays server-side.
+  const dbHost = await getSetting('smtp_host');
+  const envHost = config.smtp.host;
+  return !dbHost && !envHost;
+}
+
 export async function initiateLogin(
   email: string,
   fingerprint?: MagicLinkFingerprint,
-): Promise<{ message: string }> {
+): Promise<{ message: string; bootstrap_code?: string }> {
   // Check if user exists — find ALL active accounts for this email
   // across every tenant. Admin bypass explicit.
   const users = await withAdminClient(async (client) => {
@@ -571,6 +598,31 @@ export async function initiateLogin(
   }).catch((err) => {
     console.error('Failed to send login email:', err);
   });
+
+  // Bootstrap-mode bypass — see isBootstrapAdminWindow comment for
+  // the security model. The check happens AFTER the magic link is
+  // created so the verify path treats this as a normal login flow,
+  // and AFTER the email send so configured SMTP still gets used.
+  if (await isBootstrapAdminWindow(email)) {
+    auditService.log({
+      tenantId: user.tenant_id,
+      userId: user.id,
+      action: 'auth.bootstrap_code_emitted',
+      resourceType: 'user',
+      resourceId: user.id,
+      metadata: { reason: 'smtp_unconfigured', email },
+    });
+    console.warn('═══════════════════════════════════════════════════════');
+    console.warn(`[bootstrap] SMTP unconfigured. Returning verification`);
+    console.warn(`[bootstrap] code inline for ADMIN_EMAIL=${email}.`);
+    console.warn(`[bootstrap] Configure SMTP in Admin → Platform Settings`);
+    console.warn(`[bootstrap] to disable this fallback.`);
+    console.warn('═══════════════════════════════════════════════════════');
+    return {
+      message: 'SMTP not configured. Use the code below to complete login.',
+      bootstrap_code: code,
+    };
+  }
 
   return { message: 'If an account exists, a login link has been sent.' };
 }
