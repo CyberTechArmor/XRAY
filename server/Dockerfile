@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM node:25-alpine AS builder
 # `apk upgrade --no-cache` pulls in Alpine's latest patched OS-level
 # packages (openssl, busybox, libxml2, musl, etc.) on top of the
 # node:20-alpine base. The base image is rebuilt on Node releases,
@@ -13,7 +13,7 @@ COPY server/tsconfig.json ./
 COPY server/src ./src
 RUN npm run build
 
-FROM node:20-alpine
+FROM node:25-alpine
 RUN apk upgrade --no-cache
 WORKDIR /app
 ENV NODE_ENV=production
