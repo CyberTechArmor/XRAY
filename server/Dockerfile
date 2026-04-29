@@ -34,6 +34,12 @@ COPY --from=builder /app/dist ./dist
 # Migrations live at the repo root. They are read at startup by index.ts
 # to self-heal missing tables (014_ai_integration, 015_ai_pricing_feedback, ...).
 COPY migrations ./migrations
+# Frontend SPA — Express serves it directly when running behind an
+# external reverse proxy (Caddy on Incus LXC, etc.) instead of the
+# bundled NGINX. index.ts probes both /app/frontend (this path) and
+# the repo-root path used in tsx-watch dev, so a single binary works
+# in both layouts. See server/src/index.ts frontendCandidates.
+COPY frontend ./frontend
 # Pipeline-schema templates served read-only by /api/admin/pipeline/*
 # (Admin → Pipeline view). Per-integration .sql files are operator-
 # managed and NOT included here; only globals.sql + future cross-

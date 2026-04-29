@@ -57,6 +57,25 @@ if [ "$(id -u)" -ne 0 ]; then
   fail "This script must be run as root. Use: sudo bash install.sh"
 fi
 
+# ── Detect Incus / LXC container ───────────────────────────
+# In external-proxy mode (Caddy on the LXC host, etc.) we skip the
+# bundled NGINX entirely: Express serves the SPA directly and a
+# different reverse proxy terminates TLS. Auto-default to external
+# when running inside an LXC; the operator can still override at
+# the prompt below.
+detect_lxc() {
+  if command -v systemd-detect-virt &>/dev/null; then
+    local v; v=$(systemd-detect-virt --container 2>/dev/null || true)
+    [ "$v" = "lxc" ] && return 0
+  fi
+  [ -f /run/.containerenv ] && return 0
+  if [ -r /proc/1/environ ] && grep -qa 'container=lxc' /proc/1/environ; then
+    return 0
+  fi
+  return 1
+}
+if detect_lxc; then IS_LXC=true; else IS_LXC=false; fi
+
 # ── Step 1: Docker ─────────────────────────────────────────
 step 1 "Installing Docker"
 
@@ -84,19 +103,43 @@ else
   ok "Docker installed successfully"
 fi
 
-# ── Step 2: Nginx ──────────────────────────────────────────
-step 2 "Installing Nginx"
+# ── Step 2: Reverse proxy mode ─────────────────────────────
+step 2 "Reverse proxy mode"
 
-if command -v nginx &>/dev/null; then
-  ok "Nginx already installed"
+# Two paths:
+#   local    — install + configure the bundled NGINX (default on bare
+#              metal / VM). Express keeps serving the SPA + API on
+#              loopback; NGINX terminates TLS and fronts everything.
+#   external — skip NGINX entirely. Express serves the SPA + API
+#              directly on 0.0.0.0:APP_PORT; an external reverse
+#              proxy (Caddy on the Incus LXC host, Traefik, etc.)
+#              terminates TLS and proxies to the LXC's IP. Used when
+#              ProxyPilot or similar already owns TLS at the host.
+if [ "$IS_LXC" = "true" ]; then
+  info "Detected LXC container — defaulting to external proxy mode"
+  DEFAULT_MODE="E"
 else
-  info "Installing nginx..."
-  apt-get install -y -qq nginx >/dev/null
-  systemctl enable --now nginx
-  ok "Nginx installed"
+  DEFAULT_MODE="L"
 fi
-
-mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+read -rp "  Reverse proxy: [L]ocal NGINX or [E]xternal proxy (Caddy/Traefik) [${DEFAULT_MODE}]: " MODE_RAW
+MODE_RAW="${MODE_RAW:-$DEFAULT_MODE}"
+if [[ "$MODE_RAW" =~ ^[Ee] ]]; then
+  PROXY_MODE="external"
+  APP_BIND="0.0.0.0"
+  ok "External proxy mode selected — skipping NGINX install"
+else
+  PROXY_MODE="local"
+  APP_BIND="127.0.0.1"
+  if command -v nginx &>/dev/null; then
+    ok "Nginx already installed"
+  else
+    info "Installing nginx..."
+    apt-get install -y -qq nginx >/dev/null
+    systemctl enable --now nginx
+    ok "Nginx installed"
+  fi
+  mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+fi
 
 # ── Step 3: Interactive Configuration ──────────────────────
 step 3 "Configuration"
@@ -165,6 +208,15 @@ NODE_ENV=production
 # ─── Network ───
 APP_PORT=${APP_PORT}
 APP_URL=https://${DOMAIN}
+# APP_BIND controls which interface docker-compose publishes APP_PORT
+# on. 127.0.0.1 (default, "local" PROXY_MODE) keeps the API loopback-
+# only so a co-located NGINX can proxy in. 0.0.0.0 ("external"
+# PROXY_MODE) makes the LXC's primary IP reachable so an external
+# proxy (Caddy on the host, Traefik, etc.) can hit it.
+APP_BIND=${APP_BIND}
+# PROXY_MODE = local | external. Read by update.sh on subsequent
+# runs so the operator doesn't get re-prompted.
+PROXY_MODE=${PROXY_MODE}
 
 # ─── Database ───
 # DB_USER is the cluster bootstrap superuser (created by the postgres
@@ -227,6 +279,15 @@ step 6 "Configuring Nginx"
 
 NGINX_CONF="/etc/nginx/sites-available/xray.conf"
 TEMPLATE="$SCRIPT_DIR/nginx/xray.conf.template"
+
+# In external-proxy mode the bundled NGINX is not installed, the
+# /etc/letsencrypt/* path isn't ours, and the SPA is served by Express
+# directly. Skip the whole config block — the external proxy owns TLS
+# + frontend hosting.
+if [ "$PROXY_MODE" = "external" ]; then
+  ok "External proxy mode — skipping NGINX config + frontend deploy"
+  HAS_CERTS=false
+else
 
 if [ ! -f "$TEMPLATE" ]; then
   fail "Nginx template not found at $TEMPLATE"
@@ -338,10 +399,14 @@ chown -R www-data:www-data /var/www/xray
 nginx -t && systemctl reload nginx
 ok "Nginx configured and reloaded"
 
+fi  # close: PROXY_MODE != external
+
 # ── Step 7: TLS with Let's Encrypt ────────────────────────
 step 7 "TLS / HTTPS setup"
 
-if [ "$HAS_CERTS" = true ]; then
+if [ "$PROXY_MODE" = "external" ]; then
+  ok "External proxy mode — TLS handled by your reverse proxy, skipping"
+elif [ "$HAS_CERTS" = true ]; then
   ok "TLS already configured — skipping"
 else
   echo ""
@@ -530,7 +595,7 @@ fi
 # ── Step 10: Health Check ─────────────────────────────────
 step "10" "Waiting for application to become healthy"
 
-HEALTH_URL="http://127.0.0.1:${APP_PORT}/api/health"
+HEALTH_URL="http://127.0.0.1:${APP_PORT}/healthz"
 MAX_WAIT=60
 ELAPSED=0
 
@@ -567,10 +632,28 @@ echo -e "${GREEN}${BOLD}  │           XRay BI Platform — Installed          
 echo -e "${GREEN}${BOLD}  └─────────────────────────────────────────────────┘${NC}"
 echo ""
 
-if [ "$HAS_CERTS" = true ] || [[ "${INSTALL_TLS:-N}" =~ ^[Yy] ]]; then
+if [ "$PROXY_MODE" = "external" ]; then
+  echo -e "  ${BOLD}App URL:${NC}       https://${DOMAIN}  (TLS terminated by your external proxy)"
+elif [ "$HAS_CERTS" = true ] || [[ "${INSTALL_TLS:-N}" =~ ^[Yy] ]]; then
   echo -e "  ${BOLD}App URL:${NC}       https://${DOMAIN}"
 else
   echo -e "  ${BOLD}App URL:${NC}       http://${DOMAIN}"
+fi
+
+if [ "$PROXY_MODE" = "external" ]; then
+  # Pick a likely-reachable address for the operator to point their
+  # external proxy at. `hostname -I` returns the first non-loopback
+  # IPv4 — good enough for the LXC/host-bridged case. Operator can
+  # always swap in the LXC's known IP from `incus list` if this isn't
+  # what they want.
+  LXC_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "<lxc-ip>")
+  echo -e "  ${BOLD}Bound on:${NC}      ${LXC_IP}:${APP_PORT}  (Express serves SPA + API)"
+  echo -e "  ${BOLD}Health:${NC}        http://${LXC_IP}:${APP_PORT}/healthz  (DB-up probe)"
+  echo ""
+  echo -e "  ${BOLD}Caddyfile snippet for your reverse proxy host:${NC}"
+  echo -e "    ${CYAN}${DOMAIN} {${NC}"
+  echo -e "    ${CYAN}    reverse_proxy ${LXC_IP}:${APP_PORT}${NC}"
+  echo -e "    ${CYAN}}${NC}"
 fi
 
 echo -e "  ${BOLD}Admin email:${NC}   ${ADMIN_EMAIL}"
