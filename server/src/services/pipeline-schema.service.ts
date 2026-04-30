@@ -6,10 +6,18 @@ import { getSetting, updateSettings } from './settings.service';
 // (baked in via the Dockerfile COPY) and tracks which version of
 // each one the operator has applied to their pipeline DB.
 //
-// Per-integration files (housecall_pro.sql, quickbooks.sql, …) are
-// NOT in scope here — those are operator-managed and live outside
-// the platform repo. Only cross-integration / global templates
-// (globals.sql) ship with the platform and need version tracking.
+// Two kinds of files are tracked:
+//
+//  - globals.sql                              cross-integration tables
+//                                             (e.g. revenue_goals).
+//  - integrations/<slug>.sql                  per-integration tables
+//                                             (e.g. housecall_pro).
+//
+// Both follow the same drift-tracking pattern: a header line carries
+// the current version, the operator runs the SQL out-of-band against
+// their pipeline DB and clicks "Mark as applied" to record the
+// version in platform_settings. The platform never opens a
+// connection to the pipeline DB.
 
 const SCHEMAS_DIR =
   process.env.PIPELINE_SCHEMAS_DIR || path.join(process.cwd(), 'scripts/pipeline-schemas');
@@ -114,4 +122,91 @@ export async function markInitialSetupApplied(
     userId,
   );
   return { applied_at: appliedAt, db_name: dbName };
+}
+
+// ── Per-integration schema files ────────────────────────────────
+//
+// scripts/pipeline-schemas/integrations/<slug>.sql, one per
+// integration. Each file's header line is `-- <slug>_schema_version: …`
+// (matching the filename so a copy-pasted file with the wrong header
+// can't be silently mis-applied as some other slug). Applied versions
+// are recorded under the namespaced platform_settings key
+// `integration_schema_version_applied:<slug>`.
+
+const INTEGRATIONS_DIR = path.join(SCHEMAS_DIR, 'integrations');
+const INTEGRATION_SLUG_RE = /^[a-z][a-z0-9_]{0,62}$/;
+
+function buildIntegrationVersionHeaderRe(slug: string): RegExp {
+  return new RegExp(`^--\\s*${slug}_schema_version:\\s*(\\S+)\\s*$`, 'm');
+}
+
+function integrationAppliedKey(slug: string): string {
+  return `integration_schema_version_applied:${slug}`;
+}
+
+export interface IntegrationSchemaInfo extends GlobalsSchemaInfo {
+  slug: string;
+}
+
+export async function listIntegrationSlugs(): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(INTEGRATIONS_DIR);
+  } catch (err: any) {
+    if (err && err.code === 'ENOENT') return [];
+    throw err;
+  }
+  return entries
+    .filter((name) => name.endsWith('.sql'))
+    .map((name) => name.slice(0, -4))
+    .filter((slug) => INTEGRATION_SLUG_RE.test(slug))
+    .sort();
+}
+
+async function readIntegrationSql(
+  slug: string,
+): Promise<{ sql: string; version: string | null }> {
+  if (!INTEGRATION_SLUG_RE.test(slug)) {
+    throw new Error(`Invalid integration slug "${slug}"`);
+  }
+  const filePath = path.join(INTEGRATIONS_DIR, `${slug}.sql`);
+  const sql = await fs.readFile(filePath, 'utf8');
+  const match = sql.match(buildIntegrationVersionHeaderRe(slug));
+  return { sql, version: match ? match[1] : null };
+}
+
+export async function getIntegrationSchemaInfo(
+  slug: string,
+): Promise<IntegrationSchemaInfo> {
+  const [{ sql, version }, applied] = await Promise.all([
+    readIntegrationSql(slug),
+    getSetting(integrationAppliedKey(slug)),
+  ]);
+  return {
+    slug,
+    current_version: version,
+    applied_version: applied,
+    needs_update: !!version && applied !== version,
+    sql,
+  };
+}
+
+export async function markIntegrationSchemaApplied(
+  slug: string,
+  version: string,
+  userId: string | null,
+): Promise<{ slug: string; applied_version: string }> {
+  const { version: current } = await readIntegrationSql(slug);
+  if (!current) {
+    throw new Error(
+      `${slug}.sql has no version header — cannot mark applied`,
+    );
+  }
+  if (version !== current) {
+    throw new Error(
+      `Version mismatch: tried to mark "${version}" applied but the current ${slug}.sql is "${current}". Reload the admin view.`,
+    );
+  }
+  await updateSettings({ [integrationAppliedKey(slug)]: version }, userId);
+  return { slug, applied_version: version };
 }
