@@ -1,4 +1,4 @@
--- globals_schema_version: 2026-04-28-1
+-- globals_schema_version: 2026-04-30-1
 --
 -- Pipeline DB — cross-integration / dashboard-template tables.
 -- Lives separately from any specific integration so it can stay
@@ -23,6 +23,22 @@
 -- clicked "Mark as applied" in the admin UI.
 
 BEGIN;
+
+-- Schema + role grants. Owned by this file (not the bootstrap) so
+-- globals.sql can be applied on top of a bare bootstrapped DB
+-- without depending on the bootstrap pre-creating anything
+-- schema-specific.
+CREATE SCHEMA IF NOT EXISTS globals;
+
+GRANT USAGE ON SCHEMA globals TO pipeline_user;
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON ALL TABLES IN SCHEMA globals TO pipeline_user;
+GRANT USAGE, SELECT, UPDATE
+  ON ALL SEQUENCES IN SCHEMA globals TO pipeline_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA globals
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pipeline_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA globals
+  GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO pipeline_user;
 
 -- revenue_goals — per-month revenue target. Source: customer's
 -- existing abch.revenue_goals table. 0-indexed month CHECK

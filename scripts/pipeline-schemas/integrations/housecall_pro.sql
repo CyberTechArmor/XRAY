@@ -1,4 +1,4 @@
--- housecall_pro_schema_version: 2026-04-30-1
+-- housecall_pro_schema_version: 2026-04-30-2
 --
 -- HouseCall Pro per-integration pipeline schema. Operator-applied
 -- to the pipeline DB after the bootstrap (which creates the
@@ -17,6 +17,21 @@
 --   change in that day. e.g. "2026-04-30-1", "2026-04-30-2".
 
 BEGIN;
+
+-- Schema + role grants. Owned by this file (not the bootstrap) so
+-- adding a new integration is a drop-in operation: a fresh n8n
+-- workflow + this file, no re-bootstrap.
+CREATE SCHEMA IF NOT EXISTS housecall_pro;
+
+GRANT USAGE ON SCHEMA housecall_pro TO pipeline_user;
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON ALL TABLES IN SCHEMA housecall_pro TO pipeline_user;
+GRANT USAGE, SELECT, UPDATE
+  ON ALL SEQUENCES IN SCHEMA housecall_pro TO pipeline_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA housecall_pro
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pipeline_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA housecall_pro
+  GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO pipeline_user;
 
 CREATE TABLE IF NOT EXISTS housecall_pro.jobs (
   id                          SERIAL PRIMARY KEY,
