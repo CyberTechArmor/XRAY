@@ -93,4 +93,72 @@ router.post('/initial-applied', async (req, res, next) => {
   }
 });
 
+// ── Per-integration schemas ─────────────────────────────────────
+// One file per integration under scripts/pipeline-schemas/integrations/.
+// Same drift-tracking shape as globals; namespaced under /integrations.
+
+router.get('/integrations', async (_req, res, next) => {
+  try {
+    const slugs = await pipelineSchema.listIntegrationSlugs();
+    res.json({ ok: true, data: { slugs } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+function isMissingIntegration(err: any): boolean {
+  return (
+    (err && err.code === 'ENOENT') ||
+    (err && typeof err.message === 'string' && err.message.startsWith('Invalid integration slug'))
+  );
+}
+
+router.get('/integrations/:slug/sql', async (req, res, next) => {
+  try {
+    const info = await pipelineSchema.getIntegrationSchemaInfo(req.params.slug);
+    res.json({ ok: true, data: info });
+  } catch (err: any) {
+    if (isMissingIntegration(err)) {
+      res.status(404).json({
+        ok: false,
+        error: { code: 'NOT_FOUND', message: 'No such integration schema' },
+      });
+      return;
+    }
+    next(err);
+  }
+});
+
+router.post('/integrations/:slug/applied', async (req, res, next) => {
+  try {
+    const version = req.body && req.body.version;
+    if (typeof version !== 'string' || !version) {
+      res.status(400).json({
+        ok: false,
+        error: { code: 'BAD_REQUEST', message: 'version (string) required' },
+      });
+      return;
+    }
+    const result = await pipelineSchema.markIntegrationSchemaApplied(
+      req.params.slug,
+      version,
+      req.user?.sub ?? null,
+    );
+    res.json({ ok: true, data: result });
+  } catch (err: any) {
+    if (err && typeof err.message === 'string' && err.message.includes('Version mismatch')) {
+      res.status(409).json({ ok: false, error: { code: 'VERSION_MISMATCH', message: err.message } });
+      return;
+    }
+    if (isMissingIntegration(err)) {
+      res.status(404).json({
+        ok: false,
+        error: { code: 'NOT_FOUND', message: 'No such integration schema' },
+      });
+      return;
+    }
+    next(err);
+  }
+});
+
 export default router;

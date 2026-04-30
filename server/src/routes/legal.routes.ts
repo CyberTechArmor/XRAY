@@ -28,6 +28,7 @@ router.get('/', async (req, res, next) => {
     const policies = await policyService.listLatest();
     const enabledRaw = (await getSetting('cookie_banner_enabled')) ?? 'true';
     const essentialOnlyRaw = (await getSetting('cookie_banner_essential_only_default')) ?? 'false';
+    const footerPrivacyRaw = (await getSetting('landing_footer_privacy_enabled')) ?? 'false';
     res.json({
       ok: true,
       data: {
@@ -35,6 +36,7 @@ router.get('/', async (req, res, next) => {
         settings: {
           cookie_banner_enabled: enabledRaw === 'true',
           cookie_banner_essential_only_default: essentialOnlyRaw === 'true',
+          landing_footer_privacy_enabled: footerPrivacyRaw === 'true',
         },
       },
       meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
