@@ -169,7 +169,15 @@ async function readIntegrationSql(
   if (!INTEGRATION_SLUG_RE.test(slug)) {
     throw new Error(`Invalid integration slug "${slug}"`);
   }
-  const filePath = path.join(INTEGRATIONS_DIR, `${slug}.sql`);
+  // Defense-in-depth: INTEGRATION_SLUG_RE already forbids `/`, `..`,
+  // and other path metacharacters, but CodeQL doesn't trace through
+  // regex sanitisation — recompute the absolute path and assert it
+  // sits directly under INTEGRATIONS_DIR before reading.
+  const baseDir = path.resolve(INTEGRATIONS_DIR);
+  const filePath = path.resolve(baseDir, `${slug}.sql`);
+  if (path.dirname(filePath) !== baseDir) {
+    throw new Error(`Invalid integration slug "${slug}"`);
+  }
   const sql = await fs.readFile(filePath, 'utf8');
   const match = sql.match(buildIntegrationVersionHeaderRe(slug));
   return { sql, version: match ? match[1] : null };
