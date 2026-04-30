@@ -1,6 +1,62 @@
 (function() {
   'use strict';
 
+  // ── Layout preferences (density + sidebar) ──
+  // Set on <html> before app shell renders so first paint is correct.
+  (function initLayoutPrefs() {
+    var d = 'cozy';
+    try {
+      var raw = localStorage.getItem('xray_density');
+      if (raw === 'compact' || raw === 'cozy' || raw === 'roomy') d = raw;
+    } catch (e) {}
+    document.documentElement.dataset.density = d;
+
+    var collapsed = false;
+    try { collapsed = localStorage.getItem('xray_sidebar') === '1'; } catch (e) {}
+    if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches) collapsed = true;
+    document.documentElement.dataset.sidebar = collapsed ? 'collapsed' : 'expanded';
+  })();
+
+  // ── Right detail panel API (third grid column on the app shell) ──
+  // Views populate it via __xrayOpenDetail(html); ESC or __xrayCloseDetail()
+  // dismisses it. The 'xray:detail-closed' event lets the active view drop
+  // its selected-card highlight or local panel state.
+  window.__xrayOpenDetail = function(html) {
+    var panel = document.getElementById('detail-panel');
+    if (!panel) return;
+    panel.innerHTML = html || '';
+    document.documentElement.dataset.detail = 'open';
+    panel.setAttribute('aria-hidden', 'false');
+  };
+  window.__xrayCloseDetail = function() {
+    var panel = document.getElementById('detail-panel');
+    if (!panel) return;
+    panel.innerHTML = '';
+    delete document.documentElement.dataset.detail;
+    panel.setAttribute('aria-hidden', 'true');
+    document.dispatchEvent(new CustomEvent('xray:detail-closed'));
+  };
+  window.__xrayIsDetailOpen = function() {
+    return document.documentElement.dataset.detail === 'open';
+  };
+
+  // ESC closes the detail panel.
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && window.__xrayIsDetailOpen()) {
+      window.__xrayCloseDetail();
+      e.stopPropagation();
+    }
+  }, true);
+
+  // Auto-collapse sidebar on small viewports; let users re-expand on resize back.
+  window.addEventListener('resize', function() {
+    if (window.matchMedia('(max-width: 900px)').matches) {
+      document.documentElement.dataset.sidebar = 'collapsed';
+      var sb = document.getElementById('sidebar');
+      if (sb) sb.classList.add('collapsed');
+    }
+  });
+
   // ── State ──
   var accessToken = null;
   var currentUser = null;
@@ -2453,16 +2509,16 @@
     toggleBtn.title = 'Toggle sidebar';
     toggleBtn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>';
     toggleBtn.onclick = function() {
-      sidebar.classList.toggle('collapsed');
-      try { localStorage.setItem('xray_sidebar', sidebar.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
+      var collapsed = !sidebar.classList.contains('collapsed');
+      sidebar.classList.toggle('collapsed', collapsed);
+      document.documentElement.dataset.sidebar = collapsed ? 'collapsed' : 'expanded';
+      try { localStorage.setItem('xray_sidebar', collapsed ? '1' : '0'); } catch(e) {}
     };
     toggleWrap.appendChild(toggleBtn);
     sidebar.appendChild(toggleWrap);
 
-    // Restore collapse state
-    try {
-      if (localStorage.getItem('xray_sidebar') === '1') sidebar.classList.add('collapsed');
-    } catch(e) {}
+    // Restore collapse state from the root data attribute (set pre-paint above).
+    if (document.documentElement.dataset.sidebar === 'collapsed') sidebar.classList.add('collapsed');
 
     bundle.nav.forEach(function(item) {
       if (!isAdmin && item.permission && userPerms.indexOf(item.permission) === -1) return;
@@ -2496,9 +2552,13 @@
         var el = document.createElement('div');
         el.className = 'nav-item';
         el.setAttribute('data-view', item.view);
+        el.setAttribute('data-label', item.label);
+        el.setAttribute('tabindex', '0');
+        el.setAttribute('role', 'link');
         var badgeHtml = item.view === 'inbox' ? '<span class="nav-badge" id="inbox-badge" style="display:none"></span>' : '';
         el.innerHTML = iconSvg(item.icon || 'grid') + '<span>' + item.label + '</span>' + badgeHtml;
         el.onclick = function() { navigateTo(item.view); };
+        el.onkeydown = function(e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigateTo(item.view); } };
         sidebar.appendChild(el);
       });
     });
@@ -2682,6 +2742,10 @@
   // ── Navigate to view ──
   function navigateTo(viewName) {
     if (!bundle) return;
+    // Close the right detail panel when leaving the view that owned it.
+    if (currentView && currentView !== viewName && window.__xrayIsDetailOpen && window.__xrayIsDetailOpen()) {
+      window.__xrayCloseDetail();
+    }
     currentView = viewName;
     // Preserve existing query params in hash if navigating to same view
     if (window.location.hash.split('?')[0].replace('#', '') !== viewName) {
