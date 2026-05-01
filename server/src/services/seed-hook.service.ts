@@ -148,14 +148,21 @@ export async function fireSeedHookForConnection(input: {
   integrationId: string;
   tenantId: string;
   connectionId: string;
-}): Promise<void> {
+  // Default 5_000ms (fire-and-forget callers shouldn't tie up a socket
+  // for long if n8n hangs). Awaiting callers (api-key connect that
+  // wants the body relayed back to the browser) override to ~30s.
+  timeoutMs?: number;
+}): Promise<{ ok: boolean; status: number | null; body: unknown | null }> {
   // All side-effects are wrapped in a try/catch so an HTTP error or
   // network blip on the receiver never propagates back to the caller
   // (which is mid-INSERT of a connection row). The seed hook is
-  // strictly best-effort.
+  // strictly best-effort — but if the receiver returns a JSON body
+  // (e.g. the api-key connect path that wants to display a custom
+  // post-connect HTML payload), we parse + return it so the route
+  // can include it in its own response.
   try {
     const ctx = await loadSeedHookContext(input);
-    if (!ctx) return;
+    if (!ctx) return { ok: false, status: null, body: null };
 
     const envelope: SeedHookEnvelope = {
       event: 'connection.created',
@@ -173,7 +180,6 @@ export async function fireSeedHookForConnection(input: {
         ...envelope,
         sub: input.tenantId,
         jti,
-        // Credential travels only in the JWT — body keeps no secrets.
         access_token: ctx.accessToken,
       },
       ctx.fanOutSecret,
@@ -193,7 +199,7 @@ export async function fireSeedHookForConnection(input: {
     };
 
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => ac.abort(), input.timeoutMs ?? REQUEST_TIMEOUT_MS);
     try {
       const resp = await fetch(ctx.seedUrl, {
         method: 'POST',
@@ -201,11 +207,23 @@ export async function fireSeedHookForConnection(input: {
         body: JSON.stringify(envelope),
         signal: ac.signal,
       });
+      let body: unknown | null = null;
+      // Best-effort JSON parse — the receiver may return text, an
+      // empty body, or HTML; we only relay if it's parseable JSON.
+      try {
+        const ct = resp.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          body = await resp.json();
+        }
+      } catch {
+        body = null;
+      }
       if (!resp.ok) {
         console.warn(
           `[seed-hook] non-2xx response from ${ctx.seedUrl}: ${resp.status} ${resp.statusText}`
         );
       }
+      return { ok: resp.ok, status: resp.status, body };
     } finally {
       clearTimeout(timer);
     }
@@ -214,5 +232,6 @@ export async function fireSeedHookForConnection(input: {
       `[seed-hook] failed to fire seed hook for integration=${input.integrationId} tenant=${input.tenantId}:`,
       err instanceof Error ? err.message : err
     );
+    return { ok: false, status: null, body: null };
   }
 }

@@ -1455,10 +1455,19 @@
         var err = overlay.querySelector('#connect-api-key-err');
         err.style.display = 'none';
         if (!v) { err.textContent = 'API key required'; err.style.display = ''; return; }
+        // Connect awaits the seed-hook so n8n can return a custom HTML
+        // payload; that round-trip can take several seconds. Disable
+        // the button + show a loading label so the operator knows the
+        // click registered.
+        var origLabel = saveApi.textContent;
+        saveApi.disabled = true;
+        saveApi.textContent = 'Connecting…';
         api.post('/api/connections/api-key/' + encodeURIComponent(slug), { apiKey: v }).then(function(r) {
           if (!r.ok) {
             err.textContent = (r.error && r.error.message) || 'Save failed';
             err.style.display = '';
+            saveApi.disabled = false;
+            saveApi.textContent = origLabel;
             return;
           }
           __xrayIntegrationCacheAt = 0; // force refresh on next read
