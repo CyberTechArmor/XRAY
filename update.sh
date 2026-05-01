@@ -122,20 +122,61 @@ fi
 # ── Migration helper ──
 # Applies every *.sql in a given directory with error detection. Shared
 # between the pre-rebuild and post-rebuild stages below.
+#
+# Uses platform.schema_migrations as a ledger so already-applied files
+# are skipped on subsequent runs. Migrations remain idempotent (so a
+# re-run still works), but the ledger short-circuits the docker cp +
+# psql round-trips and turns a 30-50s replay into a no-op when nothing
+# new is queued.
 PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null || echo "")
+
+ensure_migrations_ledger() {
+  [ -n "$PG_CONTAINER" ] || return 0
+  docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -v ON_ERROR_STOP=1 -q -c "
+    CREATE SCHEMA IF NOT EXISTS platform;
+    CREATE TABLE IF NOT EXISTS platform.schema_migrations (
+      filename TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  " >/dev/null 2>&1 || true
+}
+
+migration_already_applied() {
+  local key="$1"
+  local escaped
+  escaped=$(printf '%s' "$key" | sed "s/'/''/g")
+  docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -t -A -c \
+    "SELECT 1 FROM platform.schema_migrations WHERE filename = '$escaped' LIMIT 1" 2>/dev/null | grep -q 1
+}
+
+record_migration_applied() {
+  local key="$1"
+  local escaped
+  escaped=$(printf '%s' "$key" | sed "s/'/''/g")
+  docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -q -c \
+    "INSERT INTO platform.schema_migrations (filename) VALUES ('$escaped') ON CONFLICT DO NOTHING" >/dev/null 2>&1 || true
+}
+
 apply_migrations_from() {
   local dir="$1"; local stage_label="$2"
   [ -d "$dir" ] || return 0
   [ -n "$PG_CONTAINER" ] || { warn "Skipping $stage_label migrations (no postgres container)"; return 0; }
-  local count=0 failed=0
+  ensure_migrations_ledger
+  local count=0 failed=0 skipped=0
   for migration in "$dir"/*.sql; do
     [ -f "$migration" ] || continue
     local mname
     mname=$(basename "$migration")
+    local key="$stage_label/$mname"
+    if migration_already_applied "$key"; then
+      skipped=$((skipped + 1))
+      continue
+    fi
     docker cp "$migration" "$PG_CONTAINER:/tmp/$mname"
     local out
     out=$(docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$mname" 2>&1) && {
       count=$((count + 1))
+      record_migration_applied "$key"
     } || {
       # Benign "already exists" errors are expected when re-applying. Surface
       # anything else so broken migrations don't get swallowed.
@@ -143,16 +184,17 @@ apply_migrations_from() {
       real_errors=$(echo "$out" | grep -iE "(ERROR|FATAL)" | grep -viE "already exists|duplicate" || true)
       if [ -n "$real_errors" ]; then
         failed=$((failed + 1))
-        warn "migration $stage_label/$mname: $(echo "$real_errors" | head -3)"
+        warn "migration $key: $(echo "$real_errors" | head -3)"
       else
         count=$((count + 1))
+        record_migration_applied "$key"
       fi
     }
   done
   if [ "$failed" -gt 0 ]; then
     warn "$failed $stage_label migration(s) had errors — review output above"
   fi
-  ok "$count $stage_label migration(s) applied"
+  ok "$count $stage_label migration(s) applied, $skipped skipped (already in ledger)"
 }
 
 # ── Step 4: Pre-rebuild migrations ──

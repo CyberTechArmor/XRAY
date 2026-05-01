@@ -585,23 +585,62 @@ fi
 step 9 "Running database migrations"
 
 PG_CONTAINER=$(docker compose ps -q postgres 2>/dev/null)
+
+# Ensure the schema_migrations ledger exists. init.sql defines it for
+# fresh installs, but the runner also CREATE TABLE IF NOT EXISTS so
+# upgrades from pre-ledger installs land in a working state on the
+# first deploy that introduces this code.
+ensure_migrations_ledger() {
+  [ -n "$PG_CONTAINER" ] || return 0
+  docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -v ON_ERROR_STOP=1 -q -c "
+    CREATE SCHEMA IF NOT EXISTS platform;
+    CREATE TABLE IF NOT EXISTS platform.schema_migrations (
+      filename TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  " >/dev/null 2>&1 || true
+}
+
+migration_already_applied() {
+  local key="$1"
+  local escaped
+  escaped=$(printf '%s' "$key" | sed "s/'/''/g")
+  docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -t -A -c \
+    "SELECT 1 FROM platform.schema_migrations WHERE filename = '$escaped' LIMIT 1" 2>/dev/null | grep -q 1
+}
+
+record_migration_applied() {
+  local key="$1"
+  local escaped
+  escaped=$(printf '%s' "$key" | sed "s/'/''/g")
+  docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -q -c \
+    "INSERT INTO platform.schema_migrations (filename) VALUES ('$escaped') ON CONFLICT DO NOTHING" >/dev/null 2>&1 || true
+}
+
 run_migrations() {
   local dir="$1"; local label="$2"
   [ -d "$dir" ] || return 0
-  local count=0
+  ensure_migrations_ledger
+  local count=0 skipped=0
   for migration in "$dir"/*.sql; do
     [ -f "$migration" ] || continue
     local mname
     mname=$(basename "$migration")
-    info "Running $label/$mname..."
+    local key="$label/$mname"
+    if migration_already_applied "$key"; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    info "Running $key..."
     docker cp "$migration" "$PG_CONTAINER:/tmp/$mname"
     if docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$mname" >/dev/null 2>&1; then
       count=$((count + 1))
+      record_migration_applied "$key"
     else
-      warn "Migration $label/$mname had errors (may already be applied)"
+      warn "Migration $key had errors (may already be applied)"
     fi
   done
-  ok "$count $label migration(s) applied"
+  ok "$count $label migration(s) applied, $skipped skipped (already in ledger)"
 }
 
 if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then
