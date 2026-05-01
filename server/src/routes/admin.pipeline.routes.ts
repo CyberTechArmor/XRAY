@@ -97,6 +97,9 @@ router.post('/initial-applied', async (req, res, next) => {
 // One file per integration under scripts/pipeline-schemas/integrations/.
 // Same drift-tracking shape as globals; namespaced under /integrations.
 
+// List of integration directories under scripts/pipeline-schemas/integrations/.
+// Each entry carries its `files` array (e.g. ['schema', 'render']) so the
+// admin card can render one row per file without a second roundtrip.
 router.get('/integrations', async (_req, res, next) => {
   try {
     const slugs = await pipelineSchema.listIntegrationSlugs();
@@ -109,19 +112,25 @@ router.get('/integrations', async (_req, res, next) => {
 function isMissingIntegration(err: any): boolean {
   return (
     (err && err.code === 'ENOENT') ||
-    (err && typeof err.message === 'string' && err.message.startsWith('Invalid integration slug'))
+    (err &&
+      typeof err.message === 'string' &&
+      (err.message.startsWith('Invalid integration slug') ||
+        err.message.startsWith('Invalid integration file')))
   );
 }
 
-router.get('/integrations/:slug/sql', async (req, res, next) => {
+router.get('/integrations/:slug/files/:file', async (req, res, next) => {
   try {
-    const info = await pipelineSchema.getIntegrationSchemaInfo(req.params.slug);
+    const info = await pipelineSchema.getIntegrationFileInfo(
+      req.params.slug,
+      req.params.file,
+    );
     res.json({ ok: true, data: info });
   } catch (err: any) {
     if (isMissingIntegration(err)) {
       res.status(404).json({
         ok: false,
-        error: { code: 'NOT_FOUND', message: 'No such integration schema' },
+        error: { code: 'NOT_FOUND', message: 'No such integration schema file' },
       });
       return;
     }
@@ -129,7 +138,7 @@ router.get('/integrations/:slug/sql', async (req, res, next) => {
   }
 });
 
-router.post('/integrations/:slug/applied', async (req, res, next) => {
+router.post('/integrations/:slug/files/:file/applied', async (req, res, next) => {
   try {
     const version = req.body && req.body.version;
     if (typeof version !== 'string' || !version) {
@@ -139,8 +148,9 @@ router.post('/integrations/:slug/applied', async (req, res, next) => {
       });
       return;
     }
-    const result = await pipelineSchema.markIntegrationSchemaApplied(
+    const result = await pipelineSchema.markIntegrationFileApplied(
       req.params.slug,
+      req.params.file,
       version,
       req.user?.sub ?? null,
     );
@@ -153,7 +163,7 @@ router.post('/integrations/:slug/applied', async (req, res, next) => {
     if (isMissingIntegration(err)) {
       res.status(404).json({
         ok: false,
-        error: { code: 'NOT_FOUND', message: 'No such integration schema' },
+        error: { code: 'NOT_FOUND', message: 'No such integration schema file' },
       });
       return;
     }
