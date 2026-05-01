@@ -1464,10 +1464,59 @@
           __xrayIntegrationCacheAt = 0; // force refresh on next read
           toast('Connected to ' + (it.display_name || slug), 'success');
           close();
+          window.__xrayShowConnectionResult(it, r.data);
           if (typeof onConnected === 'function') onConnected();
         });
       };
     });
+  };
+
+  // Post-connect / connection-detail modal.
+  // - If `data.html` is present in the connect response, render it
+  //   verbatim (operator-trusted HTML returned by the backend).
+  // - Otherwise show a generic "current connection settings" panel.
+  // Same width as the integration edit modal so the operator's HTML
+  // payload can use the full surface.
+  window.__xrayShowConnectionResult = function(integration, data) {
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    var title = (integration && integration.display_name) || (integration && integration.slug) || 'Connection';
+    var hasHtml = data && typeof data.html === 'string' && data.html.length > 0;
+    var bodyHtml;
+    if (hasHtml) {
+      bodyHtml = data.html;
+    } else {
+      var rows = [];
+      if (integration && integration.slug) rows.push(['Integration', integration.slug]);
+      if (data && data.auth_method) rows.push(['Auth method', data.auth_method]);
+      if (integration && integration.connection_status) rows.push(['Status', integration.connection_status]);
+      if (integration && integration.connection_id) rows.push(['Connection id', integration.connection_id]);
+      if (integration && integration.oauth_access_token_expires_at) {
+        rows.push(['Token expires', new Date(integration.oauth_access_token_expires_at).toLocaleString()]);
+      }
+      bodyHtml =
+        '<div style="font-size:13px;color:var(--t2);margin-bottom:12px">Connected. The integration didn\'t return a custom payload, so here are the current connection settings.</div>'
+        + '<div style="display:grid;grid-template-columns:160px 1fr;gap:10px 16px;font-size:13px">'
+        + rows.map(function(r) {
+            return '<div style="color:var(--t2)">' + escHtml(r[0]) + '</div><div style="color:var(--t1);font-family:ui-monospace,SFMono-Regular,Menlo,monospace">' + escHtml(r[1]) + '</div>';
+          }).join('')
+        + '</div>';
+    }
+    overlay.innerHTML =
+      '<div class="modal" style="max-width:1080px;width:96vw;display:flex;flex-direction:column;padding:0">'
+      + '<div class="modal-head" style="position:sticky;top:0;background:var(--bg2);z-index:2;border-bottom:1px solid var(--bdr);padding:14px 20px">'
+      + '<div class="modal-title">' + escHtml(title) + ' &middot; connected</div>'
+      + '<button class="modal-close" data-close>&times;</button>'
+      + '</div>'
+      + '<div class="modal-body" style="flex:1 1 auto;overflow:auto;min-height:0;padding:20px">' + bodyHtml + '</div>'
+      + '<div class="modal-foot" style="position:sticky;bottom:0;background:var(--bg2);border-top:1px solid var(--bdr);padding:14px 20px;display:flex;justify-content:flex-end;gap:8px">'
+      + '<button class="btn primary" data-close>Close</button>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(overlay);
+    function close() { overlay.remove(); }
+    overlay.querySelectorAll('[data-close]').forEach(function(b) { b.onclick = close; });
   };
 
   function renderConnectCard(method, integration) {
