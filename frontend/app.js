@@ -1482,20 +1482,55 @@
     overlay.className = 'modal-overlay';
     overlay.style.display = 'flex';
     var title = (integration && integration.display_name) || (integration && integration.slug) || 'Connection';
-    var hasHtml = data && typeof data.html === 'string' && data.html.length > 0;
-    var bodyHtml;
+    // Tolerate either shape from the backend:
+    //   { html, metrics }            (object — what the JS expected)
+    //   [ { html, metrics } ]        (array — n8n-style first-item)
+    var payload = data;
+    if (Array.isArray(payload) && payload.length > 0) payload = payload[0];
+    var hasHtml = payload && typeof payload.html === 'string' && payload.html.length > 0;
+
+    overlay.innerHTML =
+      '<div class="modal" style="max-width:1080px;width:96vw;display:flex;flex-direction:column;padding:0;height:90vh">'
+      + '<div class="modal-head" style="position:sticky;top:0;background:var(--bg2);z-index:2;border-bottom:1px solid var(--bdr);padding:14px 20px">'
+      + '<div class="modal-title">' + escHtml(title) + ' &middot; connected</div>'
+      + '<button class="modal-close" data-close>&times;</button>'
+      + '</div>'
+      + '<div class="modal-body" data-xray-conn-body style="flex:1 1 auto;overflow:auto;min-height:0;padding:0"></div>'
+      + '<div class="modal-foot" style="position:sticky;bottom:0;background:var(--bg2);border-top:1px solid var(--bdr);padding:14px 20px;display:flex;justify-content:flex-end;gap:8px">'
+      + '<button class="btn primary" data-close>Close</button>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(overlay);
+
+    var bodyEl = overlay.querySelector('[data-xray-conn-body]');
     if (hasHtml) {
-      bodyHtml = data.html;
+      // Render the full HTML document inside an iframe so its
+      // <html>/<head>/<body>/<style> all live in their own scope —
+      // setting full-document HTML on a div's innerHTML strips the
+      // doctype + html/head/body tags and the inner <style> rules
+      // would otherwise leak into the rest of the admin UI.
+      // Sandbox the iframe: no scripts, no same-origin. The document
+      // is operator-trusted but we still strip the dangerous default
+      // capabilities. Operators can ask us to relax this if they
+      // need scripts or same-origin XHRs from the post-connect view.
+      var iframe = document.createElement('iframe');
+      iframe.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+      iframe.style.cssText = 'border:0;width:100%;height:100%;display:block;background:#fff';
+      iframe.srcdoc = payload.html;
+      bodyEl.appendChild(iframe);
     } else {
+      // Fallback: integration didn't return HTML, show a generic
+      // current-connection-settings panel.
+      bodyEl.style.padding = '20px';
       var rows = [];
       if (integration && integration.slug) rows.push(['Integration', integration.slug]);
-      if (data && data.auth_method) rows.push(['Auth method', data.auth_method]);
+      if (payload && payload.auth_method) rows.push(['Auth method', payload.auth_method]);
       if (integration && integration.connection_status) rows.push(['Status', integration.connection_status]);
       if (integration && integration.connection_id) rows.push(['Connection id', integration.connection_id]);
       if (integration && integration.oauth_access_token_expires_at) {
         rows.push(['Token expires', new Date(integration.oauth_access_token_expires_at).toLocaleString()]);
       }
-      bodyHtml =
+      bodyEl.innerHTML =
         '<div style="font-size:13px;color:var(--t2);margin-bottom:12px">Connected. The integration didn\'t return a custom payload, so here are the current connection settings.</div>'
         + '<div style="display:grid;grid-template-columns:160px 1fr;gap:10px 16px;font-size:13px">'
         + rows.map(function(r) {
@@ -1503,18 +1538,7 @@
           }).join('')
         + '</div>';
     }
-    overlay.innerHTML =
-      '<div class="modal" style="max-width:1080px;width:96vw;display:flex;flex-direction:column;padding:0">'
-      + '<div class="modal-head" style="position:sticky;top:0;background:var(--bg2);z-index:2;border-bottom:1px solid var(--bdr);padding:14px 20px">'
-      + '<div class="modal-title">' + escHtml(title) + ' &middot; connected</div>'
-      + '<button class="modal-close" data-close>&times;</button>'
-      + '</div>'
-      + '<div class="modal-body" style="flex:1 1 auto;overflow:auto;min-height:0;padding:20px">' + bodyHtml + '</div>'
-      + '<div class="modal-foot" style="position:sticky;bottom:0;background:var(--bg2);border-top:1px solid var(--bdr);padding:14px 20px;display:flex;justify-content:flex-end;gap:8px">'
-      + '<button class="btn primary" data-close>Close</button>'
-      + '</div>'
-      + '</div>';
-    document.body.appendChild(overlay);
+
     function close() { overlay.remove(); }
     overlay.querySelectorAll('[data-close]').forEach(function(b) { b.onclick = close; });
   };
