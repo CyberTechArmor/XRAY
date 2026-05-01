@@ -207,22 +207,42 @@ export async function fireSeedHookForConnection(input: {
         body: JSON.stringify(envelope),
         signal: ac.signal,
       });
+      // Permissive body extraction — n8n's "Respond to Webhook" often
+      // skips setting Content-Type, or sets text/plain even when the
+      // payload is a JSON array. Try in this order:
+      //   1. read as text
+      //   2. JSON.parse it (covers correct + mis-typed JSON)
+      //   3. if parse fails and it looks like HTML, wrap as {html: text}
+      //   4. otherwise null (frontend falls back to settings panel)
       let body: unknown | null = null;
-      // Best-effort JSON parse — the receiver may return text, an
-      // empty body, or HTML; we only relay if it's parseable JSON.
+      let bodyShape = 'empty';
       try {
-        const ct = resp.headers.get('content-type') || '';
-        if (ct.includes('application/json')) {
-          body = await resp.json();
+        const text = await resp.text();
+        if (text) {
+          try {
+            body = JSON.parse(text);
+            bodyShape = Array.isArray(body) ? 'array' : typeof body;
+          } catch {
+            const trimmed = text.trimStart();
+            if (trimmed.startsWith('<')) {
+              body = { html: text };
+              bodyShape = 'html-wrapped';
+            } else {
+              bodyShape = 'unparseable-text';
+            }
+          }
         }
       } catch {
-        body = null;
+        bodyShape = 'read-error';
       }
       if (!resp.ok) {
         console.warn(
           `[seed-hook] non-2xx response from ${ctx.seedUrl}: ${resp.status} ${resp.statusText}`
         );
       }
+      console.log(
+        `[seed-hook] ${ctx.slug} tenant=${input.tenantId} status=${resp.status} content-type=${resp.headers.get('content-type') || '-'} body=${bodyShape}`
+      );
       return { ok: resp.ok, status: resp.status, body };
     } finally {
       clearTimeout(timer);

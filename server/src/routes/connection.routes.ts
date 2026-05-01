@@ -194,14 +194,20 @@ router.post(
           connectionId: newConnectionId,
           timeoutMs: 30_000,
         });
-        // Tolerate either body shape:
-        //   { html, metrics, ... }      (object)
-        //   [ { html, metrics, ... } ]  (array — n8n's first-item shape)
+        // Tolerate four body shapes the receiver may return:
+        //   { html, metrics, ... }       (object — canonical)
+        //   [ { html, metrics, ... } ]   (array — n8n's first-item)
+        //   "<full html string>"         (raw HTML — wrap as {html})
+        //   [ "<full html string>" ]     (array of one HTML string)
         let payload: unknown = seedResult.body;
         if (Array.isArray(payload) && payload.length > 0) payload = payload[0];
+        if (typeof payload === 'string') payload = { html: payload };
         if (payload && typeof payload === 'object') {
           seedExtra = payload as Record<string, unknown>;
         }
+        console.log(
+          `[connect.api-key] ${integration.slug} tenant=${tenantId} seed body keys=${Object.keys(seedExtra).join(',') || '(none)'}`
+        );
       }
 
       try {
