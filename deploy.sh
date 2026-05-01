@@ -38,18 +38,67 @@ echo "=== [2/6] Running pre-rebuild migrations ==="
 # Destructive changes (DROP COLUMN etc) live in migrations/post-rebuild/
 # and run AFTER the rebuild — see step [4/6].
 PG_CONTAINER=$(docker compose ps -q postgres)
+
+# platform.schema_migrations ledger — short-circuits already-applied
+# files so a deploy with no new migrations does no docker-exec round-
+# trips per file (was 50+ before, scaling linearly with migrations/).
+ensure_migrations_ledger() {
+  [ -n "$PG_CONTAINER" ] || return 0
+  docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -v ON_ERROR_STOP=1 -q -c "
+    CREATE SCHEMA IF NOT EXISTS platform;
+    CREATE TABLE IF NOT EXISTS platform.schema_migrations (
+      filename TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  " >/dev/null 2>&1 || true
+}
+
+migration_already_applied() {
+  local key="$1"
+  local escaped
+  escaped=$(printf '%s' "$key" | sed "s/'/''/g")
+  docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -t -A -c \
+    "SELECT 1 FROM platform.schema_migrations WHERE filename = '$escaped' LIMIT 1" 2>/dev/null | grep -q 1
+}
+
+record_migration_applied() {
+  local key="$1"
+  local escaped
+  escaped=$(printf '%s' "$key" | sed "s/'/''/g")
+  docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -q -c \
+    "INSERT INTO platform.schema_migrations (filename) VALUES ('$escaped') ON CONFLICT DO NOTHING" >/dev/null 2>&1 || true
+}
+
 run_migrations_dir() {
   local dir="$1"; local label="$2"
   [ -d "$dir" ] || return 0
   [ -n "$PG_CONTAINER" ] || { echo "  WARNING: postgres container not found, skipping $label"; return 0; }
+  ensure_migrations_ledger
+  local applied=0 skipped=0
   for migration in "$dir"/*.sql; do
     [ -f "$migration" ] || continue
     local mname
     mname=$(basename "$migration")
-    echo "  running $label/$mname..."
+    local key="$label/$mname"
+    if migration_already_applied "$key"; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    echo "  running $key..."
     docker cp "$migration" "$PG_CONTAINER:/tmp/$mname"
-    docker exec "$PG_CONTAINER" psql -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$mname" 2>&1 | grep -E "^(CREATE|ALTER|INSERT|DROP|ERROR)" | head -5
+    local out rc
+    out=$(docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U "${DB_USER:-xray}" -d "${DB_NAME:-xray}" -f "/tmp/$mname" 2>&1)
+    rc=$?
+    echo "$out" | grep -E "^(CREATE|ALTER|INSERT|DROP|ERROR)" | head -5
+    if [ $rc -eq 0 ]; then
+      record_migration_applied "$key"
+      applied=$((applied + 1))
+    else
+      echo "  ERROR running $key — bailing"
+      return 1
+    fi
   done
+  echo "  $label: $applied applied, $skipped skipped (already in ledger)"
 }
 
 if [ -n "$PG_CONTAINER" ] && [ -d "$SCRIPT_DIR/migrations" ]; then

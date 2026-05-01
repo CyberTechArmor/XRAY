@@ -282,6 +282,19 @@ CREATE TABLE platform.platform_settings (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Schema migration ledger.
+-- Bootstrap scripts (install.sh / update.sh / deploy.sh) consult this
+-- before running each *.sql under migrations/ and migrations/post-rebuild/
+-- so already-applied files are skipped on subsequent deploys. Filename
+-- format used by the runners is "<stage_label>/<basename>", e.g.
+-- "pre-rebuild/052_dashboard_sources_connection_set_null.sql".
+-- A successful psql exit recorded by the runner inserts the row;
+-- failures leave the row absent so the next deploy retries.
+CREATE TABLE IF NOT EXISTS platform.schema_migrations (
+    filename    TEXT PRIMARY KEY,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Email Templates
 CREATE TABLE platform.email_templates (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
