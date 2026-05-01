@@ -47,6 +47,11 @@ export interface IntegrationRow {
   // establishes a connection to the integration. Receiver can use it
   // to backfill / seed beyond what the dashboard render path covers.
   seed_url: string | null;
+  // Pipeline table name used by the per-integration select.sql
+  // template (migration 053). Operator-set in the integration edit
+  // modal; substituted client-side into the {{table}} placeholder
+  // at Copy time. Empty string / NULL = unset.
+  select_table: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -105,6 +110,7 @@ export async function listAllIntegrations(): Promise<IntegrationRow[]> {
               scopes, extra_authorize_params,
               api_key_header_name, api_key_instructions,
               fan_out_secret, fan_out_parallelism,
+              seed_url, select_table,
               created_at, updated_at
          FROM platform.integrations
          ORDER BY display_name ASC`
@@ -147,6 +153,8 @@ export interface IntegrationCreateInput {
   fanOutParallelism?: number;
   // Seed URL (migration 048). Optional. Empty string clears the value.
   seedUrl?: string | null;
+  // Pipeline table name (migration 053). Optional. Empty string clears.
+  selectTable?: string | null;
 }
 
 export async function createIntegration(
@@ -160,8 +168,8 @@ export async function createIntegration(
          (slug, display_name, icon_url, status, supports_oauth, supports_api_key,
           auth_url, token_url, client_id, client_secret, scopes, extra_authorize_params,
           api_key_header_name, api_key_instructions,
-          fan_out_secret, fan_out_parallelism, seed_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          fan_out_secret, fan_out_parallelism, seed_url, select_table)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        RETURNING *`,
       [
         input.slug,
@@ -181,6 +189,7 @@ export async function createIntegration(
         encryptSecret(input.fanOutSecret || null),
         input.fanOutParallelism ?? 5,
         input.seedUrl || null,
+        input.selectTable || null,
       ]
     );
     const row = result.rows[0];
@@ -235,6 +244,8 @@ export async function updateIntegration(
     fanOutSecret: updates.fanOutSecret,
     fanOutParallelism: updates.fanOutParallelism ?? existing.fan_out_parallelism,
     seedUrl: updates.seedUrl !== undefined ? updates.seedUrl : existing.seed_url,
+    selectTable:
+      updates.selectTable !== undefined ? updates.selectTable : existing.select_table,
   };
   validateIntegrationConfig(merged);
 
@@ -295,6 +306,13 @@ export async function updateIntegration(
       // Empty string clears the URL (consistent with the client_secret /
       // fan_out_secret contract); undefined leaves the existing value.
       addField('seed_url', updates.seedUrl || null);
+    }
+    if (updates.selectTable !== undefined) {
+      // Free-form table name. Empty string clears, undefined leaves
+      // the existing value. Validation is best-effort here (admin-only
+      // path); Postgres rejects bogus identifiers when the rendered
+      // SQL is finally executed against the pipeline DB.
+      addField('select_table', updates.selectTable || null);
     }
 
     if (fields.length === 0) {
