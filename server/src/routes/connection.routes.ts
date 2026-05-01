@@ -178,17 +178,30 @@ router.post(
         metadata: { integration_slug: integration.slug },
       });
 
-      // Seed hook: fire-and-forget on first-connect only (newConnectionId
-      // is null when this was an UPDATE — token rotation, re-key, etc.).
-      // Loaded dynamically to avoid pulling the import into the hot path
-      // for integrations that don't use seed URLs.
+      // Seed hook: fires on every fresh connection INSERT (disconnect now
+      // DELETEs the row, see migration 052). For the api-key path we
+      // AWAIT the call (timeoutMs bumped) and relay the JSON body so the
+      // receiver can return a custom HTML payload that the post-connect
+      // modal renders. newConnectionId is null when this was an UPDATE
+      // (still possible if the receiver bug or a race re-uses a row);
+      // in that case the hook isn't fired and no body is relayed.
+      let seedExtra: Record<string, unknown> = {};
       if (newConnectionId) {
         const { fireSeedHookForConnection } = await import('../services/seed-hook.service');
-        void fireSeedHookForConnection({
+        const seedResult = await fireSeedHookForConnection({
           integrationId: integration.id,
           tenantId,
           connectionId: newConnectionId,
+          timeoutMs: 30_000,
         });
+        // Tolerate either body shape:
+        //   { html, metrics, ... }      (object)
+        //   [ { html, metrics, ... } ]  (array — n8n's first-item shape)
+        let payload: unknown = seedResult.body;
+        if (Array.isArray(payload) && payload.length > 0) payload = payload[0];
+        if (payload && typeof payload === 'object') {
+          seedExtra = payload as Record<string, unknown>;
+        }
       }
 
       try {
@@ -196,7 +209,14 @@ router.post(
         broadcastToTenant(tenantId, 'integration:connected', { slug: integration.slug });
       } catch {}
 
-      res.json({ ok: true, data: { slug: integration.slug, auth_method: 'api_key' } });
+      res.json({
+        ok: true,
+        data: {
+          slug: integration.slug,
+          auth_method: 'api_key',
+          ...seedExtra,
+        },
+      });
     } catch (err) {
       next(err);
     }
