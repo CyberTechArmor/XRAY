@@ -166,7 +166,7 @@ describe('fan-out.service.deliverEnvelope', () => {
     expect(captured).toHaveLength(1);
     expect(captured[0]!.method).toBe('POST');
     expect(captured[0]!.headers['Content-Type']).toBe('application/json');
-    expect(captured[0]!.headers['X-XRay-FanOut-Token']).toBe('the-jwt');
+    expect(captured[0]!.headers['Authorization']).toBe('Bearer the-jwt');
     expect(captured[0]!.headers['Idempotency-Key']).toBe('idk-hash');
     expect(JSON.parse(captured[0]!.body)).toEqual({ ping: 'pong' });
   });

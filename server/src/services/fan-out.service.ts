@@ -285,7 +285,10 @@ export async function deliverEnvelope(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-XRay-FanOut-Token': token,
+          // Standard Bearer header so n8n's JWT Auth node finds the
+          // token in its default "Authorization" location. Matches the
+          // seed-hook v2 contract (also Bearer + same fan_out_secret).
+          'Authorization': `Bearer ${token}`,
           'Idempotency-Key': idempotencyKey,
         },
         body: JSON.stringify(body),
