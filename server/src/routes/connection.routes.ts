@@ -220,17 +220,14 @@ router.post(
       }
       const tenantId = req.user!.tid;
       await withTenantContext(tenantId, async (client) => {
+        // Drop the row outright. Reconnect therefore goes through the
+        // INSERT branch above, which fires the seed-hook on every
+        // reconnect — n8n is responsible for idempotent backfill.
+        // dashboard_sources.connection_id is ON DELETE SET NULL
+        // (migration 052), so dashboards survive the disconnect with
+        // a null source until the tenant rebinds.
         await client.query(
-          `UPDATE platform.connections
-              SET oauth_refresh_token = NULL,
-                  oauth_access_token = NULL,
-                  oauth_access_token_expires_at = NULL,
-                  oauth_last_refreshed_at = NULL,
-                  oauth_refresh_failed_count = 0,
-                  oauth_last_error = NULL,
-                  api_key = NULL,
-                  status = 'pending',
-                  updated_at = now()
+          `DELETE FROM platform.connections
             WHERE tenant_id = $1 AND integration_id = $2`,
           [tenantId, integration.id]
         );

@@ -330,19 +330,17 @@ export async function deleteIntegration(
   actingUserId: string
 ): Promise<void> {
   await withAdminClient(async (client) => {
-    // Count tenant connections — FK has ON DELETE RESTRICT, but we'd
-    // rather surface a clear error than a raw FK violation.
-    const connRefs = await client.query(
-      'SELECT COUNT(*)::int AS n FROM platform.connections WHERE integration_id = $1',
+    // Cascade-delete tenant connections first. Platform admins can
+    // wipe an integration outright; we drop the dependent rows
+    // ourselves so n8n / receivers see a clean slate, and audit the
+    // count. connection_comments + oauth_state cascade off
+    // connections via existing FKs; dashboard_sources.connection_id
+    // is ON DELETE SET NULL (migration 052) so dashboards survive
+    // with a null source until the tenant rebinds.
+    const dropped = await client.query<{ id: string; tenant_id: string }>(
+      'DELETE FROM platform.connections WHERE integration_id = $1 RETURNING id, tenant_id',
       [id]
     );
-    if (connRefs.rows[0].n > 0) {
-      throw new AppError(
-        409,
-        'INTEGRATION_IN_USE',
-        `This integration has ${connRefs.rows[0].n} tenant connection(s). Disable it (status='disabled') or disconnect tenants before deleting.`
-      );
-    }
     const result = await client.query(
       'DELETE FROM platform.integrations WHERE id = $1 RETURNING slug',
       [id]
@@ -356,7 +354,11 @@ export async function deleteIntegration(
       action: 'integration.delete',
       resourceType: 'integration',
       resourceId: id,
-      metadata: { slug: result.rows[0].slug },
+      metadata: {
+        slug: result.rows[0].slug,
+        connections_deleted: dropped.rowCount ?? 0,
+        tenant_ids: dropped.rows.map((r) => r.tenant_id),
+      },
     });
   });
 }
