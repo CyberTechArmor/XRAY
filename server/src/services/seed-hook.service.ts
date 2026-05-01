@@ -92,6 +92,15 @@ async function loadSeedHookContext(input: {
       row.fan_out_secret,
       `integrations:fan_out_secret:${input.integrationId}`
     );
+    if (!fanOutSecret) {
+      // decryptSecret returns null on empty/missing ciphertext; the
+      // earlier NULL guard already handled the empty-DB-row case, so
+      // a null here means a corrupted envelope — skip the fire.
+      console.warn(
+        `[seed-hook] integration ${row.slug} fan_out_secret failed to decrypt`
+      );
+      return null;
+    }
 
     const tenant = await client.query<{ slug: string | null }>(
       'SELECT slug FROM platform.tenants WHERE id = $1',
