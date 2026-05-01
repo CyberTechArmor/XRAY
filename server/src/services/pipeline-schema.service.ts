@@ -126,32 +126,75 @@ export async function markInitialSetupApplied(
 
 // ── Per-integration schema files ────────────────────────────────
 //
-// scripts/pipeline-schemas/integrations/<slug>.sql, one per
-// integration. Each file's header line is `-- <slug>_schema_version: …`
-// (matching the filename so a copy-pasted file with the wrong header
-// can't be silently mis-applied as some other slug). Applied versions
-// are recorded under the namespaced platform_settings key
-// `integration_schema_version_applied:<slug>`.
+// scripts/pipeline-schemas/integrations/<slug>/<file>.sql, one
+// directory per integration with one or more .sql files inside.
+// Conventional filenames:
+//   - schema.sql   → CREATE SCHEMA + pipeline_user grants stub
+//   - render.sql   → templated SELECT for the dashboard read path
+// Other names are accepted; whatever lands in the directory shows
+// up in Admin → Pipeline as its own version-tracked card.
+//
+// Each file's header line is `-- <slug>_<file>_version: …` (e.g.
+// `housecall_pro_schema_version: 2026-04-30-1`,
+// `housecall_pro_render_version: 2026-04-30-1`). The header has to
+// match the slug + filename so a file copy-pasted from another
+// integration with a stale header can't be silently mis-applied.
+//
+// Applied versions are recorded in platform_settings under
+// `integration_schema_version_applied:<slug>:<file>`.
 
 const INTEGRATIONS_DIR = path.join(SCHEMAS_DIR, 'integrations');
 const INTEGRATION_SLUG_RE = /^[a-z][a-z0-9_]{0,62}$/;
 
-function buildIntegrationVersionHeaderRe(slug: string): RegExp {
-  return new RegExp(`^--\\s*${slug}_schema_version:\\s*(\\S+)\\s*$`, 'm');
+function buildIntegrationVersionHeaderRe(slug: string, file: string): RegExp {
+  return new RegExp(`^--\\s*${slug}_${file}_version:\\s*(\\S+)\\s*$`, 'm');
 }
 
-function integrationAppliedKey(slug: string): string {
-  return `integration_schema_version_applied:${slug}`;
+function integrationAppliedKey(slug: string, file: string): string {
+  return `integration_schema_version_applied:${slug}:${file}`;
 }
 
-export interface IntegrationSchemaInfo extends GlobalsSchemaInfo {
+export interface IntegrationFileInfo extends GlobalsSchemaInfo {
   slug: string;
+  file: string;   // e.g. 'schema', 'render'
 }
 
-export async function listIntegrationSlugs(): Promise<string[]> {
+export interface IntegrationSlugSummary {
+  slug: string;
+  files: string[];   // sorted basenames sans .sql
+}
+
+export async function listIntegrationSlugs(): Promise<IntegrationSlugSummary[]> {
+  let entries: import('fs').Dirent[];
+  try {
+    entries = await fs.readdir(INTEGRATIONS_DIR, { withFileTypes: true });
+  } catch (err: any) {
+    if (err && err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const summaries: IntegrationSlugSummary[] = [];
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    if (!INTEGRATION_SLUG_RE.test(ent.name)) continue;
+    const files = await listIntegrationFiles(ent.name);
+    if (files.length > 0) summaries.push({ slug: ent.name, files });
+  }
+  return summaries.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+export async function listIntegrationFiles(slug: string): Promise<string[]> {
+  if (!INTEGRATION_SLUG_RE.test(slug)) {
+    throw new Error(`Invalid integration slug "${slug}"`);
+  }
+  const dir = path.resolve(INTEGRATIONS_DIR, slug);
+  // Containment check — slug regex already forbids `/`, `..`, etc.,
+  // but be explicit so CodeQL clears the path-injection rule.
+  if (path.dirname(dir) !== path.resolve(INTEGRATIONS_DIR)) {
+    throw new Error(`Invalid integration slug "${slug}"`);
+  }
   let entries: string[];
   try {
-    entries = await fs.readdir(INTEGRATIONS_DIR);
+    entries = await fs.readdir(dir);
   } catch (err: any) {
     if (err && err.code === 'ENOENT') return [];
     throw err;
@@ -159,39 +202,46 @@ export async function listIntegrationSlugs(): Promise<string[]> {
   return entries
     .filter((name) => name.endsWith('.sql'))
     .map((name) => name.slice(0, -4))
-    .filter((slug) => INTEGRATION_SLUG_RE.test(slug))
+    .filter((name) => INTEGRATION_SLUG_RE.test(name))
     .sort();
 }
 
-async function readIntegrationSql(
+async function readIntegrationFile(
   slug: string,
+  file: string,
 ): Promise<{ sql: string; version: string | null }> {
   if (!INTEGRATION_SLUG_RE.test(slug)) {
     throw new Error(`Invalid integration slug "${slug}"`);
   }
-  // Defense-in-depth: INTEGRATION_SLUG_RE already forbids `/`, `..`,
-  // and other path metacharacters, but CodeQL doesn't trace through
-  // regex sanitisation — recompute the absolute path and assert it
-  // sits directly under INTEGRATIONS_DIR before reading.
-  const baseDir = path.resolve(INTEGRATIONS_DIR);
-  const filePath = path.resolve(baseDir, `${slug}.sql`);
-  if (path.dirname(filePath) !== baseDir) {
+  if (!INTEGRATION_SLUG_RE.test(file)) {
+    throw new Error(`Invalid integration file "${file}"`);
+  }
+  // Containment: resolve the full path and assert its parent is
+  // exactly INTEGRATIONS_DIR/<slug> before reading.
+  const slugDir = path.resolve(INTEGRATIONS_DIR, slug);
+  if (path.dirname(slugDir) !== path.resolve(INTEGRATIONS_DIR)) {
     throw new Error(`Invalid integration slug "${slug}"`);
   }
+  const filePath = path.resolve(slugDir, `${file}.sql`);
+  if (path.dirname(filePath) !== slugDir) {
+    throw new Error(`Invalid integration file "${file}"`);
+  }
   const sql = await fs.readFile(filePath, 'utf8');
-  const match = sql.match(buildIntegrationVersionHeaderRe(slug));
+  const match = sql.match(buildIntegrationVersionHeaderRe(slug, file));
   return { sql, version: match ? match[1] : null };
 }
 
-export async function getIntegrationSchemaInfo(
+export async function getIntegrationFileInfo(
   slug: string,
-): Promise<IntegrationSchemaInfo> {
+  file: string,
+): Promise<IntegrationFileInfo> {
   const [{ sql, version }, applied] = await Promise.all([
-    readIntegrationSql(slug),
-    getSetting(integrationAppliedKey(slug)),
+    readIntegrationFile(slug, file),
+    getSetting(integrationAppliedKey(slug, file)),
   ]);
   return {
     slug,
+    file,
     current_version: version,
     applied_version: applied,
     needs_update: !!version && applied !== version,
@@ -199,22 +249,23 @@ export async function getIntegrationSchemaInfo(
   };
 }
 
-export async function markIntegrationSchemaApplied(
+export async function markIntegrationFileApplied(
   slug: string,
+  file: string,
   version: string,
   userId: string | null,
-): Promise<{ slug: string; applied_version: string }> {
-  const { version: current } = await readIntegrationSql(slug);
+): Promise<{ slug: string; file: string; applied_version: string }> {
+  const { version: current } = await readIntegrationFile(slug, file);
   if (!current) {
     throw new Error(
-      `${slug}.sql has no version header — cannot mark applied`,
+      `${slug}/${file}.sql has no version header — cannot mark applied`,
     );
   }
   if (version !== current) {
     throw new Error(
-      `Version mismatch: tried to mark "${version}" applied but the current ${slug}.sql is "${current}". Reload the admin view.`,
+      `Version mismatch: tried to mark "${version}" applied but the current ${slug}/${file}.sql is "${current}". Reload the admin view.`,
     );
   }
-  await updateSettings({ [integrationAppliedKey(slug)]: version }, userId);
-  return { slug, applied_version: version };
+  await updateSettings({ [integrationAppliedKey(slug, file)]: version }, userId);
+  return { slug, file, applied_version: version };
 }
