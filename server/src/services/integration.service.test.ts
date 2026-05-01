@@ -183,6 +183,7 @@ describe('integration.service.decryptIntegrationClientSecret', () => {
       api_key_header_name: null,
       api_key_instructions: null,
       seed_url: null,
+      select_table: null,
       created_at: '',
       updated_at: '',
     });
@@ -210,6 +211,7 @@ describe('integration.service.decryptIntegrationClientSecret', () => {
       api_key_header_name: null,
       api_key_instructions: null,
       seed_url: null,
+      select_table: null,
       created_at: '',
       updated_at: '',
     });

@@ -1,8 +1,9 @@
--- housecall_pro_render_version: 2026-04-30-1
+-- housecall_pro_select_version: 2026-04-30-1
 --
--- Render template for the HouseCall Pro dashboard read path.
--- n8n's render workflow fetches this verbatim and runs it as the
--- per-click query against the pipeline DB.
+-- Templated SELECT for the HouseCall Pro dashboard read path.
+-- The integration's "Pipeline table" admin field substitutes
+-- {{table}} client-side at Copy time — set the table name in
+-- Admin → Integrations → Edit before copying.
 --
 -- ── n8n binding contract ───────────────────────────────────────
 --
@@ -19,13 +20,13 @@
 --          as "" instead of null and dashboard JS ternary
 --          fallbacks misbehave. Required.
 --
--- ── Shape of the wrapper ──────────────────────────────────────
+-- ── Wrapper ────────────────────────────────────────────────────
 --
 -- BEGIN / SET LOCAL / COMMIT bracket the SELECT so the GUC is
 -- transaction-scoped — pooled connections can't leak the tenant
--- context to the next request, and RLS is forced FORCE ROW LEVEL
--- SECURITY on the table so a missing or wrong context returns
--- zero rows rather than cross-tenant data.
+-- context, and FORCE ROW LEVEL SECURITY on the table returns zero
+-- rows on a missing or wrong context rather than cross-tenant
+-- data.
 --
 -- Bump the version header on every change. Same convention as
 -- schema.sql:
@@ -36,6 +37,6 @@
 BEGIN;
 SET LOCAL app.current_tenant = $1;
 
-SELECT * FROM housecall_pro.jobs;
+SELECT * FROM housecall_pro.{{table}};
 
 COMMIT;
