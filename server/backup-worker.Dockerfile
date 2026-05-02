@@ -10,7 +10,7 @@
 # is from a reachable path); image is referenced from
 # docker-compose.yml's backup-worker service.
 
-FROM alpine:3.19
+FROM alpine:3.23
 
 # bash         — the worker script and all the scripts it calls require bash
 # docker-cli   — needed for `docker exec postgres pg_basebackup …`
