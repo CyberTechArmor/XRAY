@@ -6,18 +6,20 @@
   var landing = document.getElementById('landing-screen');
   if (!landing) return;
 
-  /* ── Footer Privacy link toggle ──
-   * Hidden by default; surfaced only when an operator turns on
-   * `landing_footer_privacy_enabled` in Admin → Legal policies.
-   * Uses the same /api/legal payload the cookie banner reads.
+  /* ── Footer policy-links toggle ──
+   * Privacy + Terms links are hidden by default; surfaced only when
+   * an operator turns on `landing_footer_privacy_enabled` in Admin →
+   * Policies. Gates the whole policy-links span (not just Privacy)
+   * so partial / unpublished documents don't leak through. Uses the
+   * same /api/legal payload the cookie banner reads.
    */
-  (function initFooterPrivacy() {
-    var link = document.getElementById('land-foot-privacy');
-    if (!link) return;
+  (function initFooterPolicyLinks() {
+    var wrap = document.getElementById('land-foot-policies');
+    if (!wrap) return;
     fetch('/api/legal').then(function(r) { return r.json(); }).then(function(d) {
       var enabled = d && d.ok && d.data && d.data.settings &&
         d.data.settings.landing_footer_privacy_enabled === true;
-      if (enabled) link.style.display = '';
+      if (enabled) wrap.style.display = '';
     }).catch(function() {
       // /api/legal unreachable — leave hidden, fail-closed.
     });

@@ -1,5 +1,16 @@
+# Default logging caps — keeps any single container's stdout from
+# filling the host disk during a crash-loop. 50 MiB × 5 files = 250 MiB
+# per service; under normal operation that's many days of logs, under
+# a tight crash-loop it bounds the bleed.
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   server:
+    logging: *default-logging
     build:
       # Build context is the repo root so the Dockerfile can COPY both server/
       # and migrations/ (migrations are read at startup for self-healing).
@@ -64,6 +75,7 @@ services:
   # into host compromise). The worker has docker.sock + the scripts
   # volume; nothing else.
   backup-worker:
+    logging: *default-logging
     build:
       context: .
       dockerfile: server/backup-worker.Dockerfile
@@ -108,6 +120,7 @@ services:
         condition: service_healthy
 
   postgres:
+    logging: *default-logging
     image: postgres:16-alpine
     environment:
       - POSTGRES_DB=${DB_NAME:-xray}
@@ -139,8 +152,25 @@ services:
     # wal_level >= replica (Postgres 16 default). The archive_command
     # delegates to the host-mounted shell script so the same logic is
     # versioned in the repo.
+    #
+    # The entrypoint is wrapped so the pg_backups volume is owned by
+    # the postgres user before the official entrypoint drops privs.
+    # Docker creates named volumes root-owned by default, which made
+    # archive_command's `mkdir -p .../backups/wal` fail with EACCES on
+    # every WAL flush — pg_wal then grew unbounded because Postgres
+    # only recycles after a successful archive. The wrapper runs as
+    # root (the official postgres image's pre-gosu phase), chowns the
+    # mount, then exec's the upstream entrypoint with the postgres
+    # config flags. Idempotent on every boot; cheap (chown of a
+    # directory tree) and harmless if perms are already correct.
+    entrypoint:
+      - /bin/sh
+      - -c
+      # `$$@` escapes the dollar sign so compose passes a literal `$@`
+      # to sh, which then expands it to the postgres flags from `command:`.
+      - 'mkdir -p /var/lib/postgresql/backups/wal 2>/dev/null || true; chown -R postgres:postgres /var/lib/postgresql/backups 2>/dev/null || true; exec /usr/local/bin/docker-entrypoint.sh postgres "$$@"'
+      - --
     command:
-      - postgres
       - -c
       - archive_mode=on
       - -c
