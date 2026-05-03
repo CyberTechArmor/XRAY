@@ -46,6 +46,22 @@ const VENDOR_MAPPINGS: VendorMapping[] = [
     pattern: /https?:\/\/(?:cdn\.jsdelivr\.net\/npm|unpkg\.com)\/chart\.js@[^"'/]+\/dist\/chart\.umd(?:\.min)?\.js/g,
     vendorPath: '/vendor/chart.js@4.4.1/chart.umd.min.js',
   },
+  {
+    label: 'Google Fonts',
+    // fonts.googleapis.com/css2?family=…&family=…&display=swap. Stops
+    // at the closing `"`/`'`/`)` so it works in both <link href="…">
+    // and @import url(…) forms (with or without quotes inside the
+    // url() function). Any combination of family/weight params maps
+    // to the same self-hosted bundle (scripts/fetch-vendor-assets.sh
+    // vendors a single CSS that covers every family any current XRay
+    // dashboard requests).
+    //
+    // The vendored CSS body has its src: url(https://fonts.gstatic…)
+    // references rewritten to /vendor/fonts/files/… at fetch time —
+    // the browser never sees gstatic.com when it parses this CSS.
+    pattern: /https?:\/\/fonts\.googleapis\.com\/css2?\?[^"')]+/g,
+    vendorPath: '/vendor/fonts/google-fonts.css',
+  },
 ];
 
 /**
