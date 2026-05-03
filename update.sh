@@ -409,11 +409,13 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
     ok "VAPID keys already configured"
   else
     echo "  [5b] Generating VAPID keys for push notifications..."
-    # docker compose exec -T mirrors the install.sh fix — see T.4 in
-    # the install-script PR. Capturing stderr + defeating set -e via
-    # `if !` so a generator error doesn't drop the operator at a bare
-    # prompt.
-    if ! VAPID_OUTPUT=$(docker compose exec -T server npx web-push generate-vapid-keys --json 2>&1); then
+    # The production server image strips npm + npx in its Dockerfile to
+    # silence Trivy CVE scans, so `compose exec server npx ...` fails
+    # with "npx: not found". Run the generator in a throwaway
+    # node:20-alpine container instead — same base, npx still present.
+    # Capturing stderr + defeating set -e via `if !` so a generator
+    # error doesn't drop the operator at a bare prompt.
+    if ! VAPID_OUTPUT=$(docker run --rm node:20-alpine npx -y web-push generate-vapid-keys --json 2>&1); then
       warn "VAPID key generation failed — push notifications will be disabled until configured."
       printf '%s\n' "$VAPID_OUTPUT" | sed 's/^/    /'
     else

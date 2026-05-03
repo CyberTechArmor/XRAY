@@ -556,16 +556,17 @@ if grep -q '^VAPID_PUBLIC_KEY=.\+' "$SCRIPT_DIR/.env" 2>/dev/null \
   ok "VAPID keys already present in .env — skipping generation"
 else
   info "Generating VAPID keys for push notifications..."
-  # Brief wait for the server container to be runnable. We don't poll
-  # health here because the migrations haven't run yet — the container
-  # is "up" but not "healthy" by the API definition; web-push doesn't
-  # need the DB so this is fine.
-  sleep 2
-  if ! VAPID_OUTPUT=$(docker compose exec -T server npx web-push generate-vapid-keys --json 2>&1); then
+  # The production server image strips npm + npx in its Dockerfile to
+  # silence Trivy CVE scans on npm's bundled deps, so `compose exec
+  # server npx ...` fails with "npx: not found in PATH". Run the key
+  # generator in a throwaway node:20-alpine container instead — same
+  # base image, npx still present, no impact on the runtime image's
+  # CVE posture. No DB access needed; web-push is a pure crypto call.
+  if ! VAPID_OUTPUT=$(docker run --rm node:20-alpine npx -y web-push generate-vapid-keys --json 2>&1); then
     warn "VAPID key generation failed — push notifications will be disabled until configured."
     printf '%s\n' "$VAPID_OUTPUT" | sed 's/^/    /'
-    warn "Re-run install.sh once the server is healthy, or run manually:"
-    warn "    docker compose exec -T server npx web-push generate-vapid-keys --json"
+    warn "Re-run install.sh once Docker can pull node:20-alpine, or run manually:"
+    warn "    docker run --rm node:20-alpine npx -y web-push generate-vapid-keys --json"
   else
     VAPID_PUBLIC_KEY=$(echo "$VAPID_OUTPUT" | grep -o '"publicKey":"[^"]*"' | cut -d'"' -f4)
     VAPID_PRIVATE_KEY=$(echo "$VAPID_OUTPUT" | grep -o '"privateKey":"[^"]*"' | cut -d'"' -f4)
@@ -577,8 +578,7 @@ VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}
 VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}
 VAPID_SUBJECT=mailto:${ADMIN_EMAIL}
 VAPIDEOF
-      docker compose restart server >/dev/null 2>&1 || true
-      ok "VAPID keys generated and server restarted"
+      ok "VAPID keys generated (server will pick them up after step 9c recreate)"
     else
       warn "VAPID generator returned unparseable output — configure manually in .env later"
       printf '%s\n' "$VAPID_OUTPUT" | head -3 | sed 's/^/    /'
