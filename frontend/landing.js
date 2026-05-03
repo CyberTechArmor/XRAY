@@ -49,6 +49,16 @@
   (function initCookieBanner() {
     var STORAGE_KEY = 'xray_cookie_consent';
     var DEFAULT_CATEGORIES = { essential: true, analytics: false, marketing: false };
+    // Only render on the public landing screen. Logged-in users (whose
+    // cookie acceptance is handled at signup + by the re-acceptance
+    // modal in app.js) shouldn't see the banner — it was overlapping
+    // the mobile bottom navbar in the in-app views. We check both the
+    // app-shell visibility now AND right before render, since auth
+    // refresh resolves asynchronously.
+    function isAuthedNow() {
+      var shell = document.getElementById('app-shell');
+      return !!(shell && getComputedStyle(shell).display !== 'none');
+    }
     fetch('/api/legal').then(function(r) { return r.json(); }).then(function(d) {
       if (!d || !d.ok || !d.data) return;
       var settings = d.data.settings || {};
@@ -65,7 +75,13 @@
       if (existing && existing.version === currentVersion) return;
 
       var initialEssentialOnly = !!settings.cookie_banner_essential_only_default;
-      renderBanner(currentVersion, initialEssentialOnly);
+      // Defer the render long enough for app.js's auth refresh to
+      // resolve. If by then the app shell is visible, the user is
+      // logged in and the banner is suppressed.
+      setTimeout(function() {
+        if (isAuthedNow()) return;
+        renderBanner(currentVersion, initialEssentialOnly);
+      }, 400);
     }).catch(function() {
       // /api/legal unreachable: best-effort fallback. Show the
       // banner with version=0 so the localStorage entry is at
@@ -74,7 +90,10 @@
       var existing = null;
       try { existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch (e) {}
       if (existing) return;
-      renderBanner(0, false);
+      setTimeout(function() {
+        if (isAuthedNow()) return;
+        renderBanner(0, false);
+      }, 400);
     });
 
     function renderBanner(version, essentialOnlyDefault) {

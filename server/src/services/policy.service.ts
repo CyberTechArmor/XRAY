@@ -29,6 +29,7 @@ import {
 import { config } from '../config';
 import { AppError } from '../middleware/error-handler';
 import * as auditService from './audit.service';
+import { broadcastToAll } from '../ws';
 
 // Marker substring seeded into v1 of every slug by migration 041.
 // getLatest / listLatest surface an `is_placeholder: true` flag when
@@ -281,6 +282,23 @@ export async function publishVersion(
     },
   });
 
+  // Push to every connected user so their app re-runs the
+  // pending-policy check and the re-acceptance modal surfaces for
+  // anyone whose accepted_version is now behind the new one. The
+  // server-side per-user filter (pendingForUser) decides who actually
+  // sees the modal — the client just polls. Fire-and-forget; a WS
+  // dispatch failure must not roll back the publish.
+  try {
+    broadcastToAll('policy:updated', {
+      slug: result.slug,
+      version: result.version,
+      is_required: result.is_required,
+      reason: 'publish',
+    });
+  } catch {
+    // ws not initialised in some test contexts — swallow
+  }
+
   return result;
 }
 
@@ -353,6 +371,21 @@ export async function setRequired(
       is_required: result.is_required,
     },
   });
+
+  // Toggling is_required from false → true puts the slug into every
+  // user's pending list at their previously-accepted version. Push
+  // the same broadcast as publish so connected users surface the
+  // modal immediately without waiting for the next page load.
+  try {
+    broadcastToAll('policy:updated', {
+      slug: result.slug,
+      version: result.version,
+      is_required: result.is_required,
+      reason: 'set_required',
+    });
+  } catch {
+    // ws not initialised in some test contexts — swallow
+  }
 
   return result;
 }
