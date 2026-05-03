@@ -451,6 +451,43 @@ else
   warn "Nginx not found"
 fi
 
+# ── Step 7b: Prune old docker images ──
+# Each `docker compose build --no-cache` (step 5) leaves the previous
+# image's layers untagged in /var/lib/docker/overlay2. Without a prune,
+# overlay2 grows by hundreds of MB to a few GB per update — the silent
+# offender behind the May 2026 disk-full incident. `docker image prune`
+# (no -a) only drops dangling images, never images currently referenced
+# by a running container, so it can't harm the deploy that just shipped.
+echo "  [7b] Pruning dangling images..."
+if command -v docker >/dev/null 2>&1; then
+  PRUNE_OUT=$(docker image prune -f 2>&1 || true)
+  RECLAIMED=$(echo "$PRUNE_OUT" | grep -i 'Total reclaimed space:' | sed 's/^.*: *//' || true)
+  if [ -n "$RECLAIMED" ] && [ "$RECLAIMED" != "0B" ]; then
+    ok "Pruned dangling images (${RECLAIMED})"
+  else
+    ok "No dangling images to prune"
+  fi
+  # Container-level prune drops stopped containers from earlier deploys
+  # (e.g. failed --force-recreate attempts). Their writable overlay
+  # layers also live on disk until pruned.
+  CPRUNE_OUT=$(docker container prune -f 2>&1 || true)
+  CRECLAIMED=$(echo "$CPRUNE_OUT" | grep -i 'Total reclaimed space:' | sed 's/^.*: *//' || true)
+  if [ -n "$CRECLAIMED" ] && [ "$CRECLAIMED" != "0B" ]; then
+    ok "Pruned stopped containers (${CRECLAIMED})"
+  fi
+  # Build-cache prune. `--no-cache` builds still populate the buildkit
+  # cache; over many updates this becomes the biggest offender. Bound
+  # to 24h so the next same-day re-run still benefits from any cached
+  # layers in flight.
+  BPRUNE_OUT=$(docker builder prune -f --filter "until=24h" 2>&1 || true)
+  BRECLAIMED=$(echo "$BPRUNE_OUT" | grep -i 'Total:' | sed 's/^.*: *//' || true)
+  if [ -n "$BRECLAIMED" ] && [ "$BRECLAIMED" != "0B" ]; then
+    ok "Pruned build cache older than 24h (${BRECLAIMED})"
+  fi
+else
+  warn "docker not on PATH — skipping image prune"
+fi
+
 # ── Step 8: Self-verify the role-split deploy ──
 # Catches the failure mode that prompted PR #283's hotfix: .env got
 # DB_APP_USER, the role got created, but the server kept connecting
