@@ -123,4 +123,101 @@ if [ "$failed" -gt 0 ]; then
   exit 1
 fi
 
+# ── Google Fonts bundle ────────────────────────────────────────
+# Special handling because Google Fonts has TWO layers:
+#   1. A CSS file at fonts.googleapis.com/css2?family=...
+#   2. woff2 binaries at fonts.gstatic.com/s/...woff2 — referenced
+#      from inside the CSS via `src: url(...)`.
+#
+# Rewriting just the <link> href to a same-origin URL doesn't help —
+# the browser still goes off-origin to fetch each woff2 when it parses
+# the CSS body. So we vendor BOTH layers: download the CSS, extract
+# every gstatic URL, download each woff2, rewrite the CSS body in
+# place to point at /vendor/fonts/files/<path>, and serve the whole
+# bundle from /vendor/fonts/google-fonts.css.
+#
+# The bundle URL below covers every family + weight any current
+# XRay dashboard pulls in (DM Sans + JetBrains Mono per the
+# housecall_pro / finops console dashboards). To add a family,
+# extend the URL with another `&family=...` segment and re-run
+# update.sh — the CSS + woff2s refresh in place.
+#
+# UA matters: googleapis returns DIFFERENT CSS based on User-Agent.
+# An old / generic UA gets TTF references; modern Chrome UA gets
+# woff2 (smaller, faster). Force a recent Chrome UA so woff2 is
+# what we vendor.
+GOOGLE_FONTS_URL="${GOOGLE_FONTS_URL:-https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap}"
+GOOGLE_FONTS_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+FONTS_DIR="${VENDOR_DIR}/fonts"
+FONTS_FILES_DIR="${FONTS_DIR}/files"
+FONTS_CSS="${FONTS_DIR}/google-fonts.css"
+mkdir -p "${FONTS_FILES_DIR}"
+
+fetch_google_fonts_bundle() {
+  local css_tmp
+  css_tmp="$(mktemp)"
+  if ! curl -fsSL -A "$GOOGLE_FONTS_UA" --connect-timeout 30 --max-time 120 \
+       -o "$css_tmp" "$GOOGLE_FONTS_URL"; then
+    err "Google Fonts CSS download failed from ${GOOGLE_FONTS_URL}"
+    rm -f "$css_tmp"
+    return 1
+  fi
+
+  # Extract every gstatic.com URL referenced inside the CSS body.
+  # Format inside the CSS is `src: url(https://fonts.gstatic.com/s/.../<hash>.woff2)`.
+  # Sort -u in case the same woff2 appears in multiple unicode-range
+  # blocks (it doesn't typically, but defensive).
+  local gstatic_urls
+  gstatic_urls=$(grep -oE 'https://fonts\.gstatic\.com/s/[^)]+\.woff2' "$css_tmp" | sort -u)
+
+  if [ -z "$gstatic_urls" ]; then
+    warn "Google Fonts CSS contained no woff2 references — vendoring CSS as-is (browser may still fetch off-origin)"
+    mv "$css_tmp" "$FONTS_CSS"
+    return 0
+  fi
+
+  local woff_count=0
+  local woff_failed=0
+  while IFS= read -r url; do
+    # Strip the host so we can preserve the original path inside
+    # /vendor/fonts/files/ — keeps the CSS rewrite simple (single
+    # find/replace per URL) and avoids name collisions across
+    # families.
+    local rel_path="${url#https://fonts.gstatic.com/s/}"
+    local local_target="${FONTS_FILES_DIR}/${rel_path}"
+    mkdir -p "$(dirname "$local_target")"
+    if [ ! -f "$local_target" ]; then
+      if ! curl -fsSL -A "$GOOGLE_FONTS_UA" --connect-timeout 30 --max-time 60 \
+           -o "$local_target" "$url"; then
+        warn "Google Fonts woff2 fetch failed: ${url}"
+        woff_failed=$((woff_failed + 1))
+        continue
+      fi
+    fi
+    woff_count=$((woff_count + 1))
+    # Rewrite this URL inside the CSS to the same-origin path. `|`
+    # delimiter avoids escaping the slashes in the URL. The replaced
+    # path is absolute (starts with /vendor/...) so it works
+    # regardless of where the CSS file ends up being served from.
+    local replacement="/vendor/fonts/files/${rel_path}"
+    sed -i "s|${url}|${replacement}|g" "$css_tmp"
+  done <<< "$gstatic_urls"
+
+  # Move the rewritten CSS into place atomically.
+  mv "$css_tmp" "$FONTS_CSS"
+
+  if [ "$woff_failed" -gt 0 ]; then
+    warn "Google Fonts: ${woff_count} woff2(s) vendored, ${woff_failed} failed — affected glyphs will fall back to system fonts"
+  else
+    ok "Google Fonts: ${woff_count} woff2 file(s) vendored, CSS rewritten to same-origin"
+  fi
+  return 0
+}
+
+if fetch_google_fonts_bundle; then
+  : # success messages already printed
+else
+  warn "Google Fonts bundle skipped — dashboards using it will fall through to the public CDN"
+fi
+
 ok "Vendor assets ready: ${fetched} fetched, ${verified} already current"
