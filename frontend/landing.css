@@ -167,7 +167,7 @@
 .land-modal .auth-info{background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--acc);margin-bottom:14px;display:none}
 
 /* ── Step 11: cookie consent banner ── */
-.cookie-banner{position:fixed;left:0;right:0;bottom:0;z-index:9200;background:rgba(15,17,23,0.97);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-top:1px solid rgba(255,255,255,0.08);box-shadow:0 -8px 24px rgba(0,0,0,0.35);font-family:var(--font);color:var(--t1)}
+.cookie-banner{position:fixed;left:0;right:0;bottom:0;z-index:9200;background:rgba(15,17,23,0.97);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-top:1px solid rgba(255,255,255,0.08);box-shadow:0 -8px 24px rgba(0,0,0,0.35);font-family:var(--font);color:var(--t1);padding-bottom:env(safe-area-inset-bottom,0px)}
 .cookie-banner-inner{max-width:1200px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
 .cookie-banner-text{flex:1;min-width:240px;font-size:13px;line-height:1.5;color:var(--t2)}
 .cookie-banner-text a{color:var(--acc);text-decoration:none}

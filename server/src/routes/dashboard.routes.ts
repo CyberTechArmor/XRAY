@@ -11,6 +11,7 @@ import * as auditService from '../services/audit.service';
 import * as integrationService from '../services/integration.service';
 import { getSetting } from '../services/settings.service';
 import { config } from '../config';
+import { rewriteVendorCdns } from '../lib/rewrite-vendor-cdns';
 
 // Builds the AI bootstrap for a dashboard render response. Returns BOTH a
 // prefix (runs before any dashboard markup) and a suffix (loads the SDK
@@ -243,10 +244,11 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     // substitution — keyed on the cache table already.
     if (!dashboard.fetch_url) {
       const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+      const rewritten = rewriteVendorCdns(dashboard.view_html || '', config.webauthn.origin);
       return res.json({
         ok: true,
         data: {
-          html: (boot?.htmlPrefix || '') + (dashboard.view_html || '') + (boot?.htmlSuffix || ''),
+          html: (boot?.htmlPrefix || '') + rewritten.html + (boot?.htmlSuffix || ''),
           css: dashboard.view_css || '',
           js: dashboard.view_js || '',
           ai: boot?.ai || { available: false },
@@ -474,9 +476,16 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
 
         // Inject AI SDK bootstrap if AI is enabled for (user, dashboard)
         const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+        // Rewrite known third-party CDN URLs (Chart.js etc.) to
+        // same-origin /vendor/ paths. Browser Tracking Prevention
+        // periodically blocks the jsdelivr load when the dashboard is
+        // rendered inside our authenticated DOM; same-origin assets
+        // are immune. Operators don't have to touch n8n templates —
+        // the rewrite runs once here for every dashboard at once.
+        const rewritten = rewriteVendorCdns(data.html || '', config.webauthn.origin);
         const augmented = {
           ...data,
-          html: (boot?.htmlPrefix || '') + (data.html || '') + (boot?.htmlSuffix || ''),
+          html: (boot?.htmlPrefix || '') + rewritten.html + (boot?.htmlSuffix || ''),
           ai: boot?.ai || { available: false },
         };
         return res.json({ ok: true, data: augmented });
@@ -525,10 +534,15 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     const fallbackJs = cached?.view_js || (dashboard.scope === 'tenant' ? dashboard.view_js : null);
     if (fallbackHtml) {
       const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+      // Same vendor-CDN rewrite as the live path. Cached HTML may
+      // pre-date the rewrite landing in the codebase, so applying
+      // it here too means existing cached rows benefit on next read
+      // without a forced re-render.
+      const rewritten = rewriteVendorCdns(fallbackHtml, config.webauthn.origin);
       return res.json({
         ok: true,
         data: {
-          html: (boot?.htmlPrefix || '') + fallbackHtml + (boot?.htmlSuffix || ''),
+          html: (boot?.htmlPrefix || '') + rewritten.html + (boot?.htmlSuffix || ''),
           css: fallbackCss || '',
           js: fallbackJs || '',
           ai: boot?.ai || { available: false },

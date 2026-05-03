@@ -64,7 +64,20 @@ fi
 # below, so the new SPA ships with that — no /var/www/xray copy
 # required. In local mode NGINX still serves /var/www/xray, so the
 # files get copied there as before.
+#
+# Vendor assets (Chart.js etc.) are fetched first so they ship in
+# both modes. Self-hosting these on the XRay origin makes them
+# immune to browser Tracking Prevention, which periodically blocks
+# the jsdelivr CDN load when dashboards (n8n-rendered HTML) try to
+# load Chart.js from a third-party origin.
 echo "  [2/7] Deploying frontend..."
+if [ -x "$SCRIPT_DIR/scripts/fetch-vendor-assets.sh" ]; then
+  if "$SCRIPT_DIR/scripts/fetch-vendor-assets.sh"; then
+    : # success messages already printed by the script
+  else
+    warn "Vendor asset fetch had errors — dashboards may fall back to CDN until resolved"
+  fi
+fi
 if [ "$PROXY_MODE_VAL" = "external" ]; then
   ok "External proxy mode — SPA ships in the server image (rebuilt in step 5), skipping webroot copy"
 elif [ -d "/var/www/xray" ]; then
@@ -89,6 +102,14 @@ elif [ -d "/var/www/xray" ]; then
       ok "$d/ updated ($(ls "$SCRIPT_DIR/frontend/$d/" | wc -l) files)"
     fi
   done
+  # Vendor assets — Chart.js etc. Must be served same-origin or
+  # browser Tracking Prevention will keep blocking the CDN load.
+  if [ -d "$SCRIPT_DIR/frontend/vendor" ]; then
+    mkdir -p "$WEBROOT/vendor"
+    cp -r "$SCRIPT_DIR/frontend/vendor/"* "$WEBROOT/vendor/" 2>/dev/null || true
+    VCOUNT=$(find "$SCRIPT_DIR/frontend/vendor" -type f | wc -l)
+    ok "vendor/ updated ($VCOUNT file$([ "$VCOUNT" -eq 1 ] || echo s))"
+  fi
   chown -R www-data:www-data "$WEBROOT" 2>/dev/null || true
 else
   warn "Webroot /var/www/xray not found — skipping frontend deploy"
@@ -451,6 +472,50 @@ else
   warn "Nginx not found"
 fi
 
+# ── Step 7b: Prune old docker images ──
+# Each `docker compose build --no-cache` (step 5) leaves the previous
+# image's layers untagged in /var/lib/docker/overlay2. Without a prune,
+# overlay2 grows by hundreds of MB to a few GB per update — the silent
+# offender behind the May 2026 disk-full incident. `docker image prune`
+# (no -a) only drops dangling images, never images currently referenced
+# by a running container, so it can't harm the deploy that just shipped.
+echo "  [7b] Pruning dangling images..."
+if command -v docker >/dev/null 2>&1; then
+  PRUNE_OUT=$(docker image prune -f 2>&1 || true)
+  RECLAIMED=$(echo "$PRUNE_OUT" | grep -i 'Total reclaimed space:' | sed 's/^.*: *//' || true)
+  if [ -n "$RECLAIMED" ] && [ "$RECLAIMED" != "0B" ]; then
+    ok "Pruned dangling images (${RECLAIMED})"
+  else
+    ok "No dangling images to prune"
+  fi
+  # Container-level prune drops stopped containers from earlier deploys
+  # (e.g. failed --force-recreate attempts). Their writable overlay
+  # layers also live on disk until pruned.
+  echo "  [7b] Pruning stopped containers..."
+  CPRUNE_OUT=$(docker container prune -f 2>&1 || true)
+  CRECLAIMED=$(echo "$CPRUNE_OUT" | grep -i 'Total reclaimed space:' | sed 's/^.*: *//' || true)
+  if [ -n "$CRECLAIMED" ] && [ "$CRECLAIMED" != "0B" ]; then
+    ok "Pruned stopped containers (${CRECLAIMED})"
+  else
+    ok "No stopped containers to prune"
+  fi
+  # Build-cache prune. `--no-cache` builds still populate the buildkit
+  # cache; over many updates this becomes the biggest offender. Bound
+  # to 24h so the next same-day re-run still benefits from any cached
+  # layers in flight. NOTE: first run after a long-uncleaned host can
+  # take a few minutes — buildkit walks every cached layer.
+  echo "  [7b] Pruning build cache older than 24h (may take a moment)..."
+  BPRUNE_OUT=$(docker builder prune -f --filter "until=24h" 2>&1 || true)
+  BRECLAIMED=$(echo "$BPRUNE_OUT" | grep -iE 'Total:|Total reclaimed space:' | head -1 | sed 's/^.*: *//' || true)
+  if [ -n "$BRECLAIMED" ] && [ "$BRECLAIMED" != "0B" ]; then
+    ok "Pruned build cache older than 24h (${BRECLAIMED})"
+  else
+    ok "No build cache older than 24h"
+  fi
+else
+  warn "docker not on PATH — skipping image prune"
+fi
+
 # ── Step 8: Self-verify the role-split deploy ──
 # Catches the failure mode that prompted PR #283's hotfix: .env got
 # DB_APP_USER, the role got created, but the server kept connecting
@@ -470,4 +535,21 @@ fi
 
 echo ""
 ok "Update complete!"
+echo ""
+
+# ── Disk-space report ──
+# Surfaces the host's current disk usage so the operator can see at
+# a glance whether step 7b reclaimed space (or whether something is
+# still eating it). Plain `df -h /` for the root filesystem; if
+# /var/lib/docker is on a different mount, show that too.
+echo "  Disk usage:"
+df -h / | sed 's/^/    /'
+DOCKER_ROOT="/var/lib/docker"
+if [ -d "$DOCKER_ROOT" ]; then
+  ROOT_DEV=$(df / 2>/dev/null | awk 'NR==2 {print $1}')
+  DOCKER_DEV=$(df "$DOCKER_ROOT" 2>/dev/null | awk 'NR==2 {print $1}')
+  if [ -n "$DOCKER_DEV" ] && [ "$ROOT_DEV" != "$DOCKER_DEV" ]; then
+    df -h "$DOCKER_ROOT" | tail -n +2 | sed 's/^/    /'
+  fi
+fi
 echo ""
