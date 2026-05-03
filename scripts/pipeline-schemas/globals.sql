@@ -1,4 +1,4 @@
--- globals_schema_version: 2026-04-30-1
+-- globals_schema_version: 2026-05-02-1
 --
 -- Pipeline DB — cross-integration / dashboard-template tables.
 -- Lives separately from any specific integration so it can stay
@@ -71,5 +71,46 @@ DO $$ BEGIN
     USING      (tenant_id = public.current_tenant_id())
     WITH CHECK (tenant_id = public.current_tenant_id());
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ── Read accessor: revenue_goals_for_tenant(uuid) ───────────────
+--
+-- SECURITY DEFINER function that returns the calling tenant's
+-- rows. Solves a real problem in n8n's Postgres node where the
+-- usual `SET LOCAL app.current_tenant = $1` + read-back pattern
+-- fails: parameterised CTEs that set the GUC are evaluated in
+-- parallel with the table scan, so RLS USING runs against an
+-- unset GUC and filters every row.
+--
+-- The function side-steps that entirely:
+--   * Owned by the bootstrap superuser (whoever applies globals.sql).
+--   * SECURITY DEFINER → executes with the owner's privileges.
+--   * Superusers bypass RLS, so the inner SELECT sees every row in
+--     the table.
+--   * The function then applies its own WHERE tenant_id = $1
+--     filter, so the caller can only ever see one tenant's rows
+--     per call.
+--   * pipeline_user only has EXECUTE on this function — no direct
+--     SELECT/INSERT/UPDATE/DELETE on the table is needed for
+--     reads (writes still go through the standard CTE+set_config
+--     path with WITH CHECK enforcement).
+--
+-- search_path is locked to pg_catalog,public so a malicious
+-- per-session search_path can't redirect the function body to a
+-- shadow table — standard SECURITY DEFINER hardening.
+CREATE OR REPLACE FUNCTION public.revenue_goals_for_tenant(p_tenant_id uuid)
+  RETURNS SETOF globals.revenue_goals
+  LANGUAGE sql
+  SECURITY DEFINER
+  STABLE
+  SET search_path = pg_catalog, public
+AS $$
+  SELECT *
+    FROM globals.revenue_goals
+    WHERE tenant_id = p_tenant_id
+    ORDER BY year, month;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.revenue_goals_for_tenant(uuid) FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION public.revenue_goals_for_tenant(uuid) TO pipeline_user;
 
 COMMIT;
