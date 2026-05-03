@@ -64,7 +64,20 @@ fi
 # below, so the new SPA ships with that — no /var/www/xray copy
 # required. In local mode NGINX still serves /var/www/xray, so the
 # files get copied there as before.
+#
+# Vendor assets (Chart.js etc.) are fetched first so they ship in
+# both modes. Self-hosting these on the XRay origin makes them
+# immune to browser Tracking Prevention, which periodically blocks
+# the jsdelivr CDN load when dashboards (n8n-rendered HTML) try to
+# load Chart.js from a third-party origin.
 echo "  [2/7] Deploying frontend..."
+if [ -x "$SCRIPT_DIR/scripts/fetch-vendor-assets.sh" ]; then
+  if "$SCRIPT_DIR/scripts/fetch-vendor-assets.sh"; then
+    : # success messages already printed by the script
+  else
+    warn "Vendor asset fetch had errors — dashboards may fall back to CDN until resolved"
+  fi
+fi
 if [ "$PROXY_MODE_VAL" = "external" ]; then
   ok "External proxy mode — SPA ships in the server image (rebuilt in step 5), skipping webroot copy"
 elif [ -d "/var/www/xray" ]; then
@@ -89,6 +102,14 @@ elif [ -d "/var/www/xray" ]; then
       ok "$d/ updated ($(ls "$SCRIPT_DIR/frontend/$d/" | wc -l) files)"
     fi
   done
+  # Vendor assets — Chart.js etc. Must be served same-origin or
+  # browser Tracking Prevention will keep blocking the CDN load.
+  if [ -d "$SCRIPT_DIR/frontend/vendor" ]; then
+    mkdir -p "$WEBROOT/vendor"
+    cp -r "$SCRIPT_DIR/frontend/vendor/"* "$WEBROOT/vendor/" 2>/dev/null || true
+    VCOUNT=$(find "$SCRIPT_DIR/frontend/vendor" -type f | wc -l)
+    ok "vendor/ updated ($VCOUNT file$([ "$VCOUNT" -eq 1 ] || echo s))"
+  fi
   chown -R www-data:www-data "$WEBROOT" 2>/dev/null || true
 else
   warn "Webroot /var/www/xray not found — skipping frontend deploy"
