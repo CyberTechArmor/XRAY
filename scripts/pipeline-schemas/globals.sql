@@ -1,4 +1,4 @@
--- globals_schema_version: 2026-05-03-1
+-- globals_schema_version: 2026-05-02-1
 --
 -- Pipeline DB — cross-integration / dashboard-template tables.
 -- Lives separately from any specific integration so it can stay
@@ -112,53 +112,5 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION public.revenue_goals_for_tenant(uuid) FROM PUBLIC;
 GRANT  EXECUTE ON FUNCTION public.revenue_goals_for_tenant(uuid) TO pipeline_user;
-
--- ── Usage examples (read these, don't run them) ─────────────────
---
--- The "Postgres" node in n8n binds `$1`, `$2` placeholders to the
--- ordered parameters you list under "Query Parameters". For
--- revenue_goals, always go through the function — direct table
--- access from n8n hits the RLS-vs-CTE planner race the function
--- exists to side-step.
---
---   1. Standard call — read THIS tenant's rows.
---      The tenant id arrives in the inbound request (header,
---      query string, or webhook payload). Bind it as $1:
---
---        SELECT *
---          FROM public.revenue_goals_for_tenant($1::uuid);
---
---      n8n "Query Parameters":
---        $1  = {{ $json.tenant_id }}     -- from the request
---
---   2. NULL handling. The WHERE inside the function is
---      `tenant_id = $1` — and `tenant_id = NULL` is NEVER TRUE
---      in SQL (it evaluates to NULL → filtered). So passing NULL
---      returns ZERO ROWS, not "every tenant". This is intentional:
---      the function is the controlled per-tenant escape hatch;
---      cross-tenant reads are an admin-only path that does NOT
---      go through this function. If you need to handle "no tenant
---      yet" gracefully:
---
---        -- Returns 0 rows when tenant_id is missing, the caller's
---        -- rows otherwise. No conditional needed in n8n.
---        SELECT *
---          FROM public.revenue_goals_for_tenant(
---                 NULLIF($1, '')::uuid
---               );
---
---      `NULLIF($1, '')` collapses an empty-string parameter to
---      NULL so the function returns 0 rows instead of erroring on
---      `''::uuid` (invalid UUID literal). The dashboard then
---      renders an empty state, which is the right UX for
---      "tenant not selected yet".
---
---   3. Admin / cross-tenant read. NOT through this function. The
---      pipeline_user role does not have direct SELECT on
---      globals.revenue_goals (only EXECUTE on the function), so
---      iterating every tenant requires a different role + a
---      `set_config('app.current_tenant', …, true)` per tenant.
---      Don't try to wedge that into the function — it's
---      single-tenant by design and that's the security guarantee.
 
 COMMIT;
