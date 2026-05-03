@@ -470,19 +470,26 @@ if command -v docker >/dev/null 2>&1; then
   # Container-level prune drops stopped containers from earlier deploys
   # (e.g. failed --force-recreate attempts). Their writable overlay
   # layers also live on disk until pruned.
+  echo "  [7b] Pruning stopped containers..."
   CPRUNE_OUT=$(docker container prune -f 2>&1 || true)
   CRECLAIMED=$(echo "$CPRUNE_OUT" | grep -i 'Total reclaimed space:' | sed 's/^.*: *//' || true)
   if [ -n "$CRECLAIMED" ] && [ "$CRECLAIMED" != "0B" ]; then
     ok "Pruned stopped containers (${CRECLAIMED})"
+  else
+    ok "No stopped containers to prune"
   fi
   # Build-cache prune. `--no-cache` builds still populate the buildkit
   # cache; over many updates this becomes the biggest offender. Bound
   # to 24h so the next same-day re-run still benefits from any cached
-  # layers in flight.
+  # layers in flight. NOTE: first run after a long-uncleaned host can
+  # take a few minutes — buildkit walks every cached layer.
+  echo "  [7b] Pruning build cache older than 24h (may take a moment)..."
   BPRUNE_OUT=$(docker builder prune -f --filter "until=24h" 2>&1 || true)
-  BRECLAIMED=$(echo "$BPRUNE_OUT" | grep -i 'Total:' | sed 's/^.*: *//' || true)
+  BRECLAIMED=$(echo "$BPRUNE_OUT" | grep -iE 'Total:|Total reclaimed space:' | head -1 | sed 's/^.*: *//' || true)
   if [ -n "$BRECLAIMED" ] && [ "$BRECLAIMED" != "0B" ]; then
     ok "Pruned build cache older than 24h (${BRECLAIMED})"
+  else
+    ok "No build cache older than 24h"
   fi
 else
   warn "docker not on PATH — skipping image prune"
@@ -507,4 +514,21 @@ fi
 
 echo ""
 ok "Update complete!"
+echo ""
+
+# ── Disk-space report ──
+# Surfaces the host's current disk usage so the operator can see at
+# a glance whether step 7b reclaimed space (or whether something is
+# still eating it). Plain `df -h /` for the root filesystem; if
+# /var/lib/docker is on a different mount, show that too.
+echo "  Disk usage:"
+df -h / | sed 's/^/    /'
+DOCKER_ROOT="/var/lib/docker"
+if [ -d "$DOCKER_ROOT" ]; then
+  ROOT_DEV=$(df / 2>/dev/null | awk 'NR==2 {print $1}')
+  DOCKER_DEV=$(df "$DOCKER_ROOT" 2>/dev/null | awk 'NR==2 {print $1}')
+  if [ -n "$DOCKER_DEV" ] && [ "$ROOT_DEV" != "$DOCKER_DEV" ]; then
+    df -h "$DOCKER_ROOT" | tail -n +2 | sed 's/^/    /'
+  fi
+fi
 echo ""
