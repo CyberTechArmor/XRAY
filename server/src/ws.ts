@@ -252,6 +252,24 @@ export function broadcastToTenant(tenantId: string, event: string, data: Record<
   }
 }
 
+/**
+ * Send a message to every connected authenticated client across every
+ * tenant. Use sparingly — the only legitimate case so far is platform-
+ * wide events that every user must react to (e.g. a legal-policy
+ * publish that triggers re-acceptance for everyone). Skips
+ * unauthenticated share-token sockets.
+ */
+export function broadcastToAll(event: string, data: Record<string, unknown>) {
+  const message = JSON.stringify({ type: event, data, ts: Date.now() });
+  for (const [, sockets] of clients) {
+    for (const ws of sockets) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(message);
+      }
+    }
+  }
+}
+
 // ── Session Replay Handlers ─────────────────────────────────────────────────
 
 /**

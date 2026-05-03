@@ -2145,6 +2145,11 @@
     document.getElementById('landing-screen').style.display = 'none';
     closeModal();
     document.getElementById('app-shell').style.display = 'block';
+    // Cookie banner is for logged-out landing visitors; if it briefly
+    // rendered before auth-refresh resolved, remove it now. Mirrors
+    // the pre-render guard in landing.js initCookieBanner.
+    var preBanner = document.getElementById('cookie-banner');
+    if (preBanner) preBanner.remove();
 
     api.get('/api/users/me').then(function(d) {
       if (!d.ok) { logout(); return; }
@@ -3678,6 +3683,15 @@
         } else if (msg.type === 'replay:events' && msg.data && msg.data.events) {
           // Shadow view: forward events to the shadow player handler
           if (window.__xrayShadowHandler) window.__xrayShadowHandler(msg.data.events);
+        } else if (msg.type === 'policy:updated') {
+          // Admin published a new policy version OR toggled is_required.
+          // Re-run the user's pending check; if anything is now pending
+          // for THIS user, the modal will surface it without a reload.
+          // The server-side filter (per-user pending list) handles the
+          // "only re-prompt people who haven't accepted the new version
+          // yet, plus people who had accepted the previous version of
+          // a now-required slug" logic — the client just polls.
+          checkPolicyStatus();
         }
       } catch(e) {}
     };
