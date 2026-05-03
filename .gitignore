@@ -4,3 +4,10 @@ dist/
 *.log
 pg_data/
 .DS_Store
+
+# Vendored 3rd-party JS (Chart.js etc.) — fetched by
+# scripts/fetch-vendor-assets.sh on every install.sh / update.sh run.
+# Not committed because (1) keeps git small, (2) avoids licensing
+# noise around third-party JS, (3) sha256 in the fetch script is the
+# integrity gate.
+frontend/vendor/

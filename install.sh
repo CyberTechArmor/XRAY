@@ -451,6 +451,15 @@ fi
 ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/xray.conf
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
+# Vendor assets — Chart.js etc. Self-hosted on the XRay origin so
+# browser Tracking Prevention can't block them when dashboards
+# (n8n-rendered HTML) try to load Chart.js. Fetched first so the
+# webroot copy below picks them up.
+if [ -x "$SCRIPT_DIR/scripts/fetch-vendor-assets.sh" ]; then
+  "$SCRIPT_DIR/scripts/fetch-vendor-assets.sh" || \
+    warn "Vendor asset fetch had errors — dashboards may fall back to CDN until resolved"
+fi
+
 # Deploy frontend static files
 mkdir -p /var/www/xray/bundles
 for f in index.html app.css app.js landing.css landing.js manifest.json sw.js icon.svg icon-192.png icon-512.png share.html; do
@@ -468,6 +477,11 @@ for d in ai; do
     cp -r "$SCRIPT_DIR/frontend/$d/"* "/var/www/xray/$d/"
   fi
 done
+# Vendor (same-origin Chart.js etc.) — see fetch-vendor-assets.sh.
+if [ -d "$SCRIPT_DIR/frontend/vendor" ]; then
+  mkdir -p /var/www/xray/vendor
+  cp -r "$SCRIPT_DIR/frontend/vendor/"* /var/www/xray/vendor/ 2>/dev/null || true
+fi
 chown -R www-data:www-data /var/www/xray
 
 nginx -t && systemctl reload nginx
