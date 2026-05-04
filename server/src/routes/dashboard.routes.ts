@@ -403,10 +403,16 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       }
     }
 
-    // Attempt upstream fetch with up to 3 tries (initial + 2 retries)
+    // Attempt upstream fetch with up to 3 tries (initial + 2 retries).
+    // The retry loop covers the upstream call ONLY — once we receive a
+    // 2xx body, post-fetch processing (response parse, AI bootstrap,
+    // CDN rewrite) runs OUTSIDE the loop. Otherwise a transient DB blip
+    // in buildAiBootstrap or a JSON parse hiccup would trigger another
+    // upstream hit, and webhooks see N duplicate calls per click.
     const MAX_ATTEMPTS = 3;
     const RETRY_DELAYS = [1500, 3000]; // ms between retries
     let lastError: string = '';
+    let upstream: Response | null = null;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
@@ -431,13 +437,26 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           break;
         }
 
-        // Success — parse the response
-        const contentType = response.headers.get('content-type') || '';
+        upstream = response;
+        break;
+      } catch (fetchErr) {
+        lastError = 'Connection unreachable';
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 1]));
+          continue;
+        }
+      }
+    }
+
+    if (upstream) {
+      try {
+        // Parse the response.
+        const contentType = upstream.headers.get('content-type') || '';
         let data: { html?: string; css?: string; js?: string };
         if (contentType.includes('application/json')) {
-          data = await response.json();
+          data = await upstream.json();
         } else {
-          const html = await response.text();
+          const html = await upstream.text();
           data = { html, css: '', js: '' };
         }
 
@@ -474,8 +493,16 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           })().catch(() => {}); // fire-and-forget cache write
         }
 
-        // Inject AI SDK bootstrap if AI is enabled for (user, dashboard)
-        const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+        // Inject AI SDK bootstrap if AI is enabled for (user, dashboard).
+        // Failures here must NOT trigger an upstream retry — the user
+        // already got their webhook hit. Fall through to a no-AI render
+        // instead.
+        let boot: Awaited<ReturnType<typeof buildAiBootstrap>> = null;
+        try {
+          boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+        } catch (e) {
+          // Swallow; render without AI rather than re-hitting upstream.
+        }
         // Rewrite known third-party CDN URLs (Chart.js etc.) to
         // same-origin /vendor/ paths. Browser Tracking Prevention
         // periodically blocks the jsdelivr load when the dashboard is
@@ -489,12 +516,11 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           ai: boot?.ai || { available: false },
         };
         return res.json({ ok: true, data: augmented });
-      } catch (fetchErr) {
-        lastError = 'Connection unreachable';
-        if (attempt < MAX_ATTEMPTS) {
-          await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 1]));
-          continue;
-        }
+      } catch (postErr) {
+        // Parsing failed on a 2xx upstream — treat as a soft failure
+        // and fall through to the cache-fallback branch below. Do NOT
+        // re-enter the retry loop.
+        lastError = 'Response parse failed';
       }
     }
 
