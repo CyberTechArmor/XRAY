@@ -43,6 +43,7 @@ import legalRoutes from './routes/legal.routes';
 import { finalizeStaleActiveSessions } from './services/replay.service';
 import { startScheduler as startOauthScheduler } from './lib/oauth-scheduler';
 import { warnIfUnconfigured as warnIfPipelineJwtUnconfigured } from './lib/pipeline-jwt';
+import { serveGoogleFontsCss, serveGoogleFontsFile } from './lib/google-fonts-proxy';
 // Upload routes loaded lazily to avoid crash if multer not installed
 let uploadRoutes: any;
 try {
@@ -184,6 +185,15 @@ const frontendDir = frontendCandidates.find((p) => {
   try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }) || frontendCandidates[0];
 const indexHtmlPath = path.join(frontendDir, 'index.html');
+
+// Google Fonts: runtime proxy so the bundle is self-healing if
+// scripts/fetch-vendor-assets.sh failed to populate frontend/vendor/
+// at deploy time. Mounted BEFORE express.static so the dynamic
+// handler can serve the local file when present and fall through to
+// googleapis.com / gstatic.com when it isn't.
+app.get('/vendor/fonts/google-fonts.css', serveGoogleFontsCss);
+app.get('/vendor/fonts/files/*', serveGoogleFontsFile);
+
 app.use(express.static(frontendDir, { maxAge: 0 }));
 
 // Serve public share page (serves the HTML page for /share/:token)
