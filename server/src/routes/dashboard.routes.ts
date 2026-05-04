@@ -65,11 +65,25 @@ const router = Router();
 router.get('/', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
   try {
     const hasManage = req.user!.permissions.includes('dashboards.manage') || req.user!.is_platform_admin;
-    const result = await dashboardService.listDashboards(req.user!.tid, req.user!.sub, hasManage, req.user!.is_platform_admin);
+    const [result, prewarmEnabledRaw] = await Promise.all([
+      dashboardService.listDashboards(req.user!.tid, req.user!.sub, hasManage, req.user!.is_platform_admin),
+      // In-memory settings cache — adds no DB roundtrip.
+      getSetting('dashboard.prewarm_on_list_enabled'),
+    ]);
     res.json({
       ok: true,
       data: result,
-      meta: { request_id: req.headers['x-request-id'] || '', timestamp: new Date().toISOString() },
+      meta: {
+        request_id: req.headers['x-request-id'] || '',
+        timestamp: new Date().toISOString(),
+        // Frontend reads this to decide whether to fan-out a parallel
+        // POST /:id/render?prewarm=1 for each dashboard. Server-side
+        // toggle is the authoritative gate (the render route also
+        // refuses prewarm when the flag is off), but surfacing it
+        // here means an old client never even fires the calls when
+        // the operator has it disabled.
+        prewarm_enabled: prewarmEnabledRaw === 'true',
+      },
     });
   } catch (err) {
     next(err);
@@ -128,6 +142,27 @@ router.get('/:id', authenticateJWT, requirePermission('dashboards.view'), async 
 // POST /:id/render - fetch dashboard content from n8n connection (JWT, dashboards.view)
 router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
   try {
+    // ?prewarm=1 marks an internal cache-warming call (issued by the
+    // dashboards-list page when dashboard.prewarm_on_list_enabled is on).
+    // It runs the upstream fetch + cache write but skips every
+    // side-effect that would otherwise pollute telemetry as if the
+    // user had actually opened each dashboard:
+    //   - last_viewed_at UPDATE
+    //   - dashboard_views INSERT (per-user view counter)
+    //   - bridge_mint audit log
+    //   - the rendered HTML/CSS/JS in the response body (caller doesn't need it)
+    // The toggle is enforced server-side too: if the setting is off, the
+    // route short-circuits to a tiny "disabled" reply regardless of what
+    // the client sent. That way an old client still kicking off
+    // prewarms can't burn webhooks after an operator flips the toggle.
+    const isPrewarm = String(req.query.prewarm || '') === '1';
+    if (isPrewarm) {
+      const enabled = (await getSetting('dashboard.prewarm_on_list_enabled')) === 'true';
+      if (!enabled) {
+        return res.json({ ok: true, data: { prewarmed: false, reason: 'disabled' } });
+      }
+    }
+
     const { withAdminClient } = await import('../db/connection');
 
     // Separate SELECT then UPDATE to avoid RLS issues with UPDATE...RETURNING.
@@ -176,10 +211,12 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
             values: [req.params.id, req.user!.sub, req.user!.tid],
           };
       const result = await client.query(query);
-      if (result.rows[0]) {
+      if (result.rows[0] && !isPrewarm) {
         // Side-effects: update last_viewed_at and track views. last_viewed_at
         // stays on the dashboard row — it's a single "when was this last
         // touched" signal, not per-tenant. View count stays per-user.
+        // Skipped on prewarm so the dashboards-list cache fan-out doesn't
+        // bump view counts as if the user had opened every tile.
         await client.query(
           `UPDATE platform.dashboards SET last_viewed_at = now() WHERE id = $1`,
           [req.params.id]
@@ -243,6 +280,10 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     // the content itself, but the future might want per-tenant
     // substitution — keyed on the cache table already.
     if (!dashboard.fetch_url) {
+      // Static dashboards have no upstream to warm. Prewarm is a no-op.
+      if (isPrewarm) {
+        return res.json({ ok: true, data: { prewarmed: false, reason: 'no_fetch_url' } });
+      }
       const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
       const rewritten = rewriteVendorCdns(dashboard.view_html || '', config.webauthn.origin);
       return res.json({
@@ -370,7 +411,10 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     // (tenant, user, dashboard). Fire-and-forget, matches the existing
     // audit pattern elsewhere in this file. `via` mirrors the JWT
     // claim so the audit row is self-contained for SOC 2 review.
-    auditService.log({
+    // Skipped on prewarm — that fan-out can hit every dashboard on
+    // every dashboards-list visit, and the resulting audit volume
+    // would drown the genuine "user opened a dashboard" signal.
+    if (!isPrewarm) auditService.log({
       tenantId: renderingTenantId,
       userId: req.user!.sub,
       action: 'dashboard.bridge_mint',
@@ -433,6 +477,10 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           return r.rows[0] || null;
         });
         if (cachedHot && (cachedHot.view_html || cachedHot.view_css || cachedHot.view_js)) {
+          if (isPrewarm) {
+            // Cache is already fresh — nothing to warm. Return tiny ack.
+            return res.json({ ok: true, data: { prewarmed: false, cached: true } });
+          }
           let boot: Awaited<ReturnType<typeof buildAiBootstrap>> = null;
           try {
             boot = await buildAiBootstrap(req.params.id, req.user!.sub);
@@ -546,6 +594,14 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           })().catch(() => {}); // fire-and-forget cache write
         }
 
+        // Prewarm path: cache is now warm. Skip AI bootstrap + rewrite
+        // (the on-read render does both) and return a tiny ack so the
+        // fan-out from the dashboards-list page doesn't have to ship
+        // the full body across the wire N times.
+        if (isPrewarm) {
+          return res.json({ ok: true, data: { prewarmed: true, cached: true } });
+        }
+
         // Inject AI SDK bootstrap if AI is enabled for (user, dashboard).
         // Failures here must NOT trigger an upstream retry — the user
         // already got their webhook hit. Fall through to a no-AI render
@@ -575,6 +631,16 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
         // re-enter the retry loop.
         lastError = 'Response parse failed';
       }
+    }
+
+    // Prewarm doesn't fall back to stale content — its only job is to
+    // refresh the cache, and if upstream failed there's nothing to
+    // refresh. Return a tiny "failed to warm" ack so the caller's
+    // Promise.allSettled records it accurately. The render-failed
+    // audit below would also fire spuriously per dashboard on every
+    // dashboards-list visit, so skip that too.
+    if (isPrewarm) {
+      return res.json({ ok: true, data: { prewarmed: false, reason: lastError || 'fetch_failed' } });
     }
 
     // All attempts failed — fall back to cached static content. Read
