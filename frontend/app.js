@@ -2786,7 +2786,17 @@
     if (sidebar) { sidebar.style.display = ''; if (sidebar.dataset.dashCollapsed) { sidebar.classList.remove('collapsed'); delete sidebar.dataset.dashCollapsed; } }
     // Also explicitly remove active class from dashboard viewer
     var dashViewer = document.querySelector('.dash-fullview.active');
-    if (dashViewer) { dashViewer.classList.remove('active'); dashViewer.innerHTML = ''; delete dashViewer.dataset.dashboardId; }
+    if (dashViewer) {
+      // Run the dashboard_list view's listener-trap cleanup before
+      // wiping the viewer DOM. Otherwise user-authored dashboard scripts
+      // that registered global click/keydown handlers leak past navigation
+      // and throw on now-null elements (e.g. closeSortDropdown reading
+      // classList of a removed menu).
+      if (typeof dashViewer.__dashListenerTrap === 'function') {
+        try { dashViewer.__dashListenerTrap(); } catch (e) {}
+      }
+      dashViewer.classList.remove('active'); dashViewer.innerHTML = ''; delete dashViewer.dataset.dashboardId;
+    }
     // Tear down the AI rail if the user is leaving a dashboard (rail is mounted
     // on document.body by /ai/sdk.js and would otherwise linger on other pages).
     try { if (window.XRayAI && typeof window.XRayAI.dispose === 'function') window.XRayAI.dispose(); } catch (e) {}
