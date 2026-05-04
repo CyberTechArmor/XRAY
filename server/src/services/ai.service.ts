@@ -1,29 +1,34 @@
 import { Response } from 'express';
-import { withAdminClient, getPool } from '../db/connection';
+import { withAdminClient, withUserContext } from '../db/connection';
 import type { PoolClient } from '../db/connection';
 import { getSetting } from './settings.service';
 import { AppError } from '../middleware/error-handler';
 
-// Per-user RLS helper (migration 016): sets BOTH app.current_tenant and
+// Per-user RLS helper. Sets BOTH app.current_tenant and
 // app.current_user_id so the user_scope policies on ai_threads, ai_messages,
 // ai_pins, ai_user_dashboard_prefs, ai_usage_daily, ai_message_feedback
 // match the row's user_id. Everything that touches those tables goes through
 // this helper so the DB enforces isolation even if the app layer forgets a
 // WHERE clause.
+//
+// Implemented as a thin delegate to the canonical withUserContext in
+// connection.ts. The earlier in-file copy used set_config(..., true)
+// (is_local=true) — that scope only persists inside an explicit
+// transaction, so outside one the GUC was set for the implicit
+// single-statement transaction and immediately reset before the next
+// query. With FORCE ROW LEVEL SECURITY (migration 044) and the
+// nullif()-then-::uuid current_user_id() helper, the empty GUC turned
+// into NULL and the WITH CHECK clause on user_scope rejected every
+// INSERT into ai_messages with "new row violates row-level security
+// policy". Delegating to withUserContext (is_local=false + reset to
+// default-deny baseline at checkout) makes both the USING and the
+// WITH CHECK clauses see the right tenant/user on every statement.
 async function withAiUserContext<T>(
   tenantId: string,
   userId: string,
   fn: (client: PoolClient) => Promise<T>
 ): Promise<T> {
-  const client = await getPool().connect();
-  try {
-    await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [tenantId]);
-    await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [userId]);
-    await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
-    return await fn(client);
-  } finally {
-    client.release();
-  }
+  return withUserContext(tenantId, userId, fn);
 }
 
 // Anthropic Messages API. Using native fetch (Node 18+) to avoid a new npm dep.
