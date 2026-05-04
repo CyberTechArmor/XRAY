@@ -81,9 +81,13 @@ interface Dashboard {
   tenant_id: string;
   name: string;
   description: string | null;
-  view_html: string | null;
-  view_css: string | null;
-  view_js: string | null;
+  // The rendered-body columns are only populated by callers that opt
+  // in via { includeBody: true } (currently buildDashboardBundle).
+  // listDashboards drops them by default — they're 100s of KB each
+  // and the dashboard-list grid never reads them.
+  view_html?: string | null;
+  view_css?: string | null;
+  view_js?: string | null;
   fetch_url: string | null;
   fetch_method: string | null;
   fetch_body: unknown;
@@ -117,12 +121,29 @@ interface DashboardSource {
 
 // ─── Core CRUD ──────────────────────────────────────────────────────────────
 
+// Explicit column list for list paths. SELECT d.* used to pull
+// view_html / view_css / view_js too — together those columns
+// make up the bulk of a dashboard row (rendered HTML can be 500 KB+
+// per dashboard) and the list grid never reads them. Keep them
+// available behind the includeBody flag for buildDashboardBundle
+// (the only consumer that actually needs the rendered body in a
+// list payload).
+const DASH_LIST_COLS = `d.id, d.tenant_id, d.name, d.description, d.status, d.scope,
+        d.integration, d.template_id, d.params,
+        d.fetch_url, d.fetch_method, d.fetch_body, d.fetch_query_params,
+        d.tile_image_url, d.is_public, d.public_token,
+        d.bridge_secret, d.created_at, d.updated_at, d.last_viewed_at`;
+const DASH_BODY_COLS = `d.view_html, d.view_css, d.view_js`;
+
 export async function listDashboards(
   tenantId: string,
   userId: string,
   hasManagePermission: boolean,
-  isPlatformAdmin: boolean = false
+  isPlatformAdmin: boolean = false,
+  options?: { includeBody?: boolean }
 ): Promise<Dashboard[]> {
+  const includeBody = options?.includeBody ?? false;
+  const dashCols = includeBody ? `${DASH_LIST_COLS}, ${DASH_BODY_COLS}` : DASH_LIST_COLS;
   return withAdminClient(async (client) => {
     // platform.dashboard_views was originally self-healed via runtime
     // CREATE TABLE IF NOT EXISTS. After the role split (post-step-12)
@@ -180,7 +201,7 @@ export async function listDashboards(
     // every Global (regardless of rendering-tenant eligibility).
     if (isPlatformAdmin) {
       const result = await client.query(
-        `SELECT d.*, t.name as tenant_name, ${viewCountSub}, ${connectorsSub},
+        `SELECT ${dashCols}, t.name as tenant_name, ${viewCountSub}, ${connectorsSub},
                 CASE WHEN d.scope = 'global' THEN s.public_token ELSE d.public_token END AS effective_public_token,
                 CASE WHEN d.scope = 'global' THEN COALESCE(s.is_public, false) ELSE d.is_public END AS effective_is_public
          FROM platform.dashboards d
@@ -196,7 +217,7 @@ export async function listDashboards(
 
     if (hasManagePermission) {
       const result = await client.query(
-        `SELECT d.*, ${viewCountSub}, ${connectorsSub},
+        `SELECT ${dashCols}, ${viewCountSub}, ${connectorsSub},
                 CASE WHEN d.scope = 'global' THEN s.public_token ELSE d.public_token END AS effective_public_token,
                 CASE WHEN d.scope = 'global' THEN COALESCE(s.is_public, false) ELSE d.is_public END AS effective_is_public
          FROM platform.dashboards d
@@ -213,7 +234,7 @@ export async function listDashboards(
     // plus eligible Globals (eligibility is a tenant property, so a
     // manage grant isn't required).
     const result = await client.query(
-      `SELECT d.*, ${viewCountSub}, ${connectorsSub},
+      `SELECT ${dashCols}, ${viewCountSub}, ${connectorsSub},
               CASE WHEN d.scope = 'global' THEN s.public_token ELSE d.public_token END AS effective_public_token,
               CASE WHEN d.scope = 'global' THEN COALESCE(s.is_public, false) ELSE d.is_public END AS effective_is_public
        FROM platform.dashboards d
@@ -401,7 +422,10 @@ export async function buildDashboardBundle(
   userId: string,
   hasManagePermission: boolean
 ): Promise<Record<string, unknown>> {
-  const dashboards = await listDashboards(tenantId, userId, hasManagePermission);
+  // Bundle export needs the rendered body columns (view_html / css / js)
+  // — opt in via includeBody so listDashboards' default lean payload
+  // doesn't break the export.
+  const dashboards = await listDashboards(tenantId, userId, hasManagePermission, false, { includeBody: true });
 
   const sources = await withTenantContext(tenantId, async (client) => {
     if (dashboards.length === 0) return [];
