@@ -65,24 +65,13 @@ const router = Router();
 router.get('/', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
   try {
     const hasManage = req.user!.permissions.includes('dashboards.manage') || req.user!.is_platform_admin;
-    const [result, prewarmEnabledRaw] = await Promise.all([
-      dashboardService.listDashboards(req.user!.tid, req.user!.sub, hasManage, req.user!.is_platform_admin),
-      // In-memory settings cache — adds no DB roundtrip.
-      getSetting('dashboard.prewarm_on_list_enabled'),
-    ]);
+    const result = await dashboardService.listDashboards(req.user!.tid, req.user!.sub, hasManage, req.user!.is_platform_admin);
     res.json({
       ok: true,
       data: result,
       meta: {
         request_id: req.headers['x-request-id'] || '',
         timestamp: new Date().toISOString(),
-        // Frontend reads this to decide whether to fan-out a parallel
-        // POST /:id/render?prewarm=1 for each dashboard. Server-side
-        // toggle is the authoritative gate (the render route also
-        // refuses prewarm when the flag is off), but surfacing it
-        // here means an old client never even fires the calls when
-        // the operator has it disabled.
-        prewarm_enabled: prewarmEnabledRaw === 'true',
       },
     });
   } catch (err) {
@@ -143,25 +132,20 @@ router.get('/:id', authenticateJWT, requirePermission('dashboards.view'), async 
 router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view'), async (req, res, next) => {
   try {
     // ?prewarm=1 marks an internal cache-warming call (issued by the
-    // dashboards-list page when dashboard.prewarm_on_list_enabled is on).
-    // It runs the upstream fetch + cache write but skips every
+    // dashboards-list page for any dashboard whose prewarm_enabled is
+    // true). It runs the upstream fetch + cache write but skips every
     // side-effect that would otherwise pollute telemetry as if the
     // user had actually opened each dashboard:
     //   - last_viewed_at UPDATE
     //   - dashboard_views INSERT (per-user view counter)
     //   - bridge_mint audit log
     //   - the rendered HTML/CSS/JS in the response body (caller doesn't need it)
-    // The toggle is enforced server-side too: if the setting is off, the
-    // route short-circuits to a tiny "disabled" reply regardless of what
-    // the client sent. That way an old client still kicking off
-    // prewarms can't burn webhooks after an operator flips the toggle.
+    // The per-dashboard prewarm_enabled flag is the authoritative gate,
+    // enforced server-side after the SELECT below. An old client still
+    // sending ?prewarm=1 for a dashboard that's been flipped off can't
+    // burn webhooks — the route short-circuits to a tiny "disabled"
+    // reply once the row is loaded.
     const isPrewarm = String(req.query.prewarm || '') === '1';
-    if (isPrewarm) {
-      const enabled = (await getSetting('dashboard.prewarm_on_list_enabled')) === 'true';
-      if (!enabled) {
-        return res.json({ ok: true, data: { prewarmed: false, reason: 'disabled' } });
-      }
-    }
 
     const { withAdminClient } = await import('../db/connection');
 
@@ -189,6 +173,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
                d.fetch_url, d.fetch_method, d.fetch_body, d.fetch_query_params,
                d.view_html, d.view_css, d.view_js, d.template_id, d.integration, d.params,
                d.bridge_secret, d.is_public,
+               d.prewarm_enabled, d.prewarm_stale_after_sec,
                COALESCE(d.tenant_id, $3::uuid) AS rendering_tenant_id,
                t.slug AS tenant_slug, t.name AS tenant_name, t.status AS tenant_status,
                t.warehouse_host,
@@ -233,6 +218,13 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
 
     if (!dashboard) {
       return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Dashboard not found or inactive' } });
+    }
+
+    // Per-dashboard prewarm gate. Authoritative — an old client that
+    // still fires ?prewarm=1 for a dashboard whose flag has since been
+    // turned off gets a tiny ack instead of an upstream hit.
+    if (isPrewarm && !dashboard.prewarm_enabled) {
+      return res.json({ ok: true, data: { prewarmed: false, reason: 'disabled' } });
     }
 
     const isGlobal = dashboard.scope === 'global';
@@ -447,33 +439,81 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       }
     }
 
-    // Hot-path read of platform.dashboard_render_cache. If we have a
-    // recent (within DASHBOARD_RENDER_CACHE_MAX_AGE_SEC) row for this
-    // (dashboard, rendering tenant) and the caller didn't pass
-    // ?fresh=1 to force a refresh, return the cached body and skip the
-    // upstream entirely. The cache is written by every successful
-    // upstream render below (and historically only READ from on the
-    // upstream-failure fallback further down). Repeat opens of the
-    // same dashboard within the freshness window thus avoid the
-    // ~1s n8n webhook hop.
-    //
-    // Bypass triggers: ?fresh=1 (explicit refresh), max-age=0
-    // (operator disabled the hot-path read globally).
-    const cacheMaxAgeSec = config.dashboardRender.cacheMaxAgeSec;
-    const bypassCache = String(req.query.fresh || '') === '1' || cacheMaxAgeSec <= 0;
+    // Hot-path read of platform.dashboard_render_cache. The freshness
+    // window is per-dashboard now:
+    //   - prewarm_enabled=false → global env DASHBOARD_RENDER_CACHE_MAX_AGE_SEC
+    //   - prewarm_enabled=true, prewarm_stale_after_sec=N → N seconds
+    //   - prewarm_enabled=true, prewarm_stale_after_sec=NULL → "On Click":
+    //       cache hit serves any age, but the row is BUSTED on the way
+    //       out so the next non-prewarm render fetches fresh. The next
+    //       prewarm fan-out (when the user reopens the dashboards page)
+    //       repopulates it.
+    // Bypass triggers: ?fresh=1 (explicit refresh).
+    const onClickMode =
+      !!dashboard.prewarm_enabled && dashboard.prewarm_stale_after_sec === null;
+    const perDashStaleSec: number | null =
+      dashboard.prewarm_enabled
+        ? (dashboard.prewarm_stale_after_sec ?? null) // null = On Click
+        : null;
+    const globalMaxAgeSec = config.dashboardRender.cacheMaxAgeSec;
+    // Effective freshness window. -1 = "skip cache entirely" (global
+    // disabled and no per-dashboard override). null = "any age"
+    // (On Click mode). Positive integer = seconds.
+    const cacheWindow: number | null | -1 =
+      onClickMode
+        ? null
+        : perDashStaleSec !== null
+          ? perDashStaleSec
+          : globalMaxAgeSec > 0
+            ? globalMaxAgeSec
+            : -1;
+    const bypassCache =
+      String(req.query.fresh || '') === '1' ||
+      (cacheWindow === -1) ||
+      (typeof cacheWindow === 'number' && cacheWindow === 0);
+    // Schedule the cache bust for On Click + non-prewarm — runs after
+    // the response is queued so it never blocks the round-trip. Both
+    // the cache-hit and the upstream-success branches funnel through
+    // res.json(), so a single res.on('finish') handler covers both.
+    if (onClickMode && !isPrewarm) {
+      res.on('finish', () => {
+        // Fire-and-forget. RLS-aware tenant context.
+        (async () => {
+          const { withTenantContext: withTenantContextBust } = await import('../db/connection');
+          await withTenantContextBust(renderingTenantId, (c) =>
+            c.query(
+              `DELETE FROM platform.dashboard_render_cache
+                WHERE dashboard_id = $1 AND tenant_id = $2`,
+              [dashboard.id, renderingTenantId]
+            )
+          );
+        })().catch(() => {});
+      });
+    }
     if (!bypassCache) {
       try {
         const { withTenantContext: withTenantContextRead } = await import('../db/connection');
         const cachedHot = await withTenantContextRead(renderingTenantId, async (client) => {
-          const r = await client.query(
-            `SELECT view_html, view_css, view_js
-               FROM platform.dashboard_render_cache
-              WHERE dashboard_id = $1
-                AND tenant_id = $2
-                AND rendered_at > now() - ($3 || ' seconds')::interval
-              LIMIT 1`,
-            [dashboard.id, renderingTenantId, String(cacheMaxAgeSec)]
-          );
+          // null cacheWindow = serve any age (On Click mode).
+          // number = serve only within window.
+          const r = cacheWindow === null
+            ? await client.query(
+                `SELECT view_html, view_css, view_js
+                   FROM platform.dashboard_render_cache
+                  WHERE dashboard_id = $1
+                    AND tenant_id = $2
+                  LIMIT 1`,
+                [dashboard.id, renderingTenantId]
+              )
+            : await client.query(
+                `SELECT view_html, view_css, view_js
+                   FROM platform.dashboard_render_cache
+                  WHERE dashboard_id = $1
+                    AND tenant_id = $2
+                    AND rendered_at > now() - ($3 || ' seconds')::interval
+                  LIMIT 1`,
+                [dashboard.id, renderingTenantId, String(cacheWindow)]
+              );
           return r.rows[0] || null;
         });
         if (cachedHot && (cachedHot.view_html || cachedHot.view_css || cachedHot.view_js)) {

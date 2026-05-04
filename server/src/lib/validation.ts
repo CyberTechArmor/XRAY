@@ -91,6 +91,13 @@ export const dashboardCreateSchema = z.object({
   // every existing create-dashboard caller. 'global' is admin-only and
   // requires tenant_id = null (enforced at the service layer).
   scope: z.enum(['tenant', 'global']).optional(),
+  // Mass-prewarm controls (migration 054). prewarmEnabled opts the
+  // dashboard into the dashboards-list fan-out. prewarmStaleAfterSec
+  // is the cache freshness window in seconds; null means "On Click"
+  // (bust on every render). Both are ignored when prewarmEnabled is
+  // false — global env applies.
+  prewarmEnabled: z.boolean().optional(),
+  prewarmStaleAfterSec: z.number().int().min(0).max(86_400).optional().nullable(),
 });
 
 export const dashboardUpdateSchema = z.object({
@@ -116,6 +123,8 @@ export const dashboardUpdateSchema = z.object({
   bridgeSecret: z.string().max(2000).optional().nullable(),
   // Scope mutation post-create is out of scope for 4b — would require
   // cache + grant + connection reconciliation. Not exposed on update.
+  prewarmEnabled: z.boolean().optional(),
+  prewarmStaleAfterSec: z.number().int().min(0).max(86_400).optional().nullable(),
 });
 
 export const connectionTemplateCreateSchema = z.object({
