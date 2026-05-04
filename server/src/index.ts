@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import helmet from 'helmet';
 import cors from 'cors';
+import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import fs from 'fs';
 import path from 'path';
@@ -78,6 +79,14 @@ app.get('/healthz', async (_req, res) => {
     if (timer) clearTimeout(timer);
   }
 });
+
+// gzip / brotli the JSON-heavy responses. Dashboard render bodies
+// are ~2.6 MB raw and compress to ~10% of that, which is the single
+// biggest win on the dashboard-open path. Mounted before helmet so
+// the compression check sees the raw response. Skips bodies under
+// 1 KB (default threshold) so tiny health/auth replies aren't
+// charged a needless gzip pass.
+app.use(compression());
 
 // Security headers
 app.use(helmet({
