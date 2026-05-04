@@ -219,20 +219,43 @@ export async function setUserPref(
 /**
  * Decides whether the AI rail should render for this (user, dashboard).
  * Checks: global enabled, per-dashboard enabled, per-user not-disabled.
+ *
+ * Coalesces the three DB-backed checks (current AI settings,
+ * per-dashboard enable flag, per-user pref) into a single roundtrip.
+ * The api-key lookup hits the in-memory settings cache — no DB
+ * roundtrip — so we keep it as a separate call. Net: 1 DB query
+ * instead of 3 on the dashboard-render hot path.
  */
 export async function isAiAvailableForUser(
   userId: string,
   dashboardId: string
 ): Promise<{ available: boolean; reason?: string }> {
-  const settings = await getCurrentSettings();
-  if (!settings.enabled) return { available: false, reason: 'disabled_platform_wide' };
-  const apiKey = await getSetting('ai.anthropic_api_key');
-  if (!apiKey) return { available: false, reason: 'no_api_key' };
-  const dashEnabled = await getDashboardEnabled(dashboardId);
-  if (!dashEnabled) return { available: false, reason: 'disabled_for_dashboard' };
-  const userPref = await getUserPref(userId, dashboardId);
-  if (!userPref) return { available: false, reason: 'disabled_by_user' };
-  return { available: true };
+  const apiKey = await getSetting('ai.anthropic_api_key'); // in-memory; no DB
+  return withAdminClient(async (client) => {
+    const r = await client.query(
+      `SELECT
+         (SELECT enabled
+            FROM platform.ai_settings_versions
+            ORDER BY effective_at DESC LIMIT 1) AS settings_enabled,
+         COALESCE(
+           (SELECT enabled FROM platform.ai_dashboard_settings
+             WHERE dashboard_id = $1),
+           false
+         ) AS dash_enabled,
+         COALESCE(
+           (SELECT enabled FROM platform.ai_user_dashboard_prefs
+             WHERE user_id = $2 AND dashboard_id = $1),
+           true
+         ) AS user_enabled`,
+      [dashboardId, userId]
+    );
+    const row = r.rows[0];
+    if (!row || row.settings_enabled !== true) return { available: false, reason: 'disabled_platform_wide' };
+    if (!apiKey) return { available: false, reason: 'no_api_key' };
+    if (row.dash_enabled !== true) return { available: false, reason: 'disabled_for_dashboard' };
+    if (row.user_enabled !== true) return { available: false, reason: 'disabled_by_user' };
+    return { available: true };
+  });
 }
 
 // ─── Threads + Messages ─────────────────────────────────────────────────────

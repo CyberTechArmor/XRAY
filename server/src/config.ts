@@ -114,4 +114,14 @@ export const config = {
     privateKey: getEnv('VAPID_PRIVATE_KEY'),
     subject: getEnv('VAPID_SUBJECT', 'mailto:admin@xray.fractionate.ai'),
   },
+  dashboardRender: {
+    // Hot-path read of platform.dashboard_render_cache: serve a cached
+    // body if it's younger than this many seconds, otherwise re-fetch
+    // upstream. 0 disables the hot-path read (every render hits n8n,
+    // matching pre-perf-pass behavior). Default 30s — fast enough for
+    // repeat opens to feel instant, short enough that "live" reporting
+    // dashboards don't lag noticeably. The render route also accepts
+    // ?fresh=1 to bypass the cache for an explicit refresh gesture.
+    cacheMaxAgeSec: getEnvInt('DASHBOARD_RENDER_CACHE_MAX_AGE_SEC', 30),
+  },
 };
