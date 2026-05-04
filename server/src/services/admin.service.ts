@@ -368,6 +368,8 @@ export async function createDashboard(
     templateId?: string | null; integration?: string | null; params?: Record<string, unknown> | null;
     bridgeSecret?: string | null;
     scope?: 'tenant' | 'global';
+    prewarmEnabled?: boolean;
+    prewarmStaleAfterSec?: number | null;
   },
   ctx?: { isPlatformAdmin?: boolean }
 ) {
@@ -402,8 +404,8 @@ export async function createDashboard(
   }
   return withAdminClient(async (client) => {
     const result = await client.query(
-      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_body, fetch_query_params, tile_image_url, template_id, integration, params, bridge_secret, scope)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
+      `INSERT INTO platform.dashboards (tenant_id, name, description, status, view_html, view_css, view_js, fetch_url, fetch_method, fetch_body, fetch_query_params, tile_image_url, template_id, integration, params, bridge_secret, scope, prewarm_enabled, prewarm_stale_after_sec)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING *`,
       [
         effectiveTenantId, input.name, input.description || null,
         input.status || 'draft',
@@ -417,6 +419,8 @@ export async function createDashboard(
         JSON.stringify(input.params || {}),
         encryptSecret(input.bridgeSecret || null),
         scope,
+        !!input.prewarmEnabled,
+        input.prewarmStaleAfterSec === undefined ? null : input.prewarmStaleAfterSec,
       ]
     );
     const dash = result.rows[0];
@@ -480,6 +484,8 @@ export async function updateDashboard(dashboardId: string, updates: Record<strin
       tileImageUrl: 'tile_image_url',
       templateId: 'template_id', integration: 'integration', params: 'params',
       bridgeSecret: 'bridge_secret',
+      prewarmEnabled: 'prewarm_enabled',
+      prewarmStaleAfterSec: 'prewarm_stale_after_sec',
     };
     for (const [key, value] of Object.entries(updates)) {
       const col = allowedKeys[key];

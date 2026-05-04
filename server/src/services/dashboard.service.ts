@@ -132,7 +132,8 @@ const DASH_LIST_COLS = `d.id, d.tenant_id, d.name, d.description, d.status, d.sc
         d.integration, d.template_id, d.params,
         d.fetch_url, d.fetch_method, d.fetch_body, d.fetch_query_params,
         d.tile_image_url, d.is_public, d.public_token,
-        d.bridge_secret, d.created_at, d.updated_at, d.last_viewed_at`;
+        d.bridge_secret, d.created_at, d.updated_at, d.last_viewed_at,
+        d.prewarm_enabled, d.prewarm_stale_after_sec`;
 const DASH_BODY_COLS = `d.view_html, d.view_css, d.view_js`;
 
 export async function listDashboards(

@@ -2860,7 +2860,6 @@
       admin_bundles: 'if(typeof initAdminBundles==="function")initAdminBundles(container,api,user);',
       admin_stripe: 'if(typeof initAdminStripe==="function")initAdminStripe(container,api,user);',
       admin_builder: 'if(typeof initBuilder==="function")initBuilder(container,api,user);',
-      admin_settings: 'if(typeof initSettings==="function")initSettings(container,api,user);',
       admin_apikeys: 'if(typeof initApiKeys==="function")initApiKeys(container,api,user);',
       admin_meet: 'if(typeof initAdminMeet==="function")initAdminMeet(container,api,user);',
       admin_webhooks: 'if(typeof initWebhooks==="function")initWebhooks(container,api,user);',
