@@ -403,6 +403,59 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       }
     }
 
+    // Hot-path read of platform.dashboard_render_cache. If we have a
+    // recent (within DASHBOARD_RENDER_CACHE_MAX_AGE_SEC) row for this
+    // (dashboard, rendering tenant) and the caller didn't pass
+    // ?fresh=1 to force a refresh, return the cached body and skip the
+    // upstream entirely. The cache is written by every successful
+    // upstream render below (and historically only READ from on the
+    // upstream-failure fallback further down). Repeat opens of the
+    // same dashboard within the freshness window thus avoid the
+    // ~1s n8n webhook hop.
+    //
+    // Bypass triggers: ?fresh=1 (explicit refresh), max-age=0
+    // (operator disabled the hot-path read globally).
+    const cacheMaxAgeSec = config.dashboardRender.cacheMaxAgeSec;
+    const bypassCache = String(req.query.fresh || '') === '1' || cacheMaxAgeSec <= 0;
+    if (!bypassCache) {
+      try {
+        const { withTenantContext: withTenantContextRead } = await import('../db/connection');
+        const cachedHot = await withTenantContextRead(renderingTenantId, async (client) => {
+          const r = await client.query(
+            `SELECT view_html, view_css, view_js
+               FROM platform.dashboard_render_cache
+              WHERE dashboard_id = $1
+                AND tenant_id = $2
+                AND rendered_at > now() - ($3 || ' seconds')::interval
+              LIMIT 1`,
+            [dashboard.id, renderingTenantId, String(cacheMaxAgeSec)]
+          );
+          return r.rows[0] || null;
+        });
+        if (cachedHot && (cachedHot.view_html || cachedHot.view_css || cachedHot.view_js)) {
+          let boot: Awaited<ReturnType<typeof buildAiBootstrap>> = null;
+          try {
+            boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+          } catch {
+            // No-AI render is fine; never block on the rail.
+          }
+          const rewritten = rewriteVendorCdns(cachedHot.view_html || '', config.webauthn.origin);
+          return res.json({
+            ok: true,
+            data: {
+              html: (boot?.htmlPrefix || '') + rewritten.html + (boot?.htmlSuffix || ''),
+              css: cachedHot.view_css || '',
+              js: cachedHot.view_js || '',
+              ai: boot?.ai || { available: false },
+            },
+          });
+        }
+      } catch {
+        // Cache read is opportunistic — any failure (RLS context, DB
+        // hiccup) silently falls through to the upstream fetch below.
+      }
+    }
+
     // Attempt upstream fetch with up to 3 tries (initial + 2 retries).
     // The retry loop covers the upstream call ONLY — once we receive a
     // 2xx body, post-fetch processing (response parse, AI bootstrap,
