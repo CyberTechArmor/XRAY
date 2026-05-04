@@ -93,12 +93,24 @@
   var usage = null;           // { count, cap, remaining }
 
   function register(config) {
-    if (!config || !config.id) {
-      console.warn('[XRayAI] register() requires { id }');
-      return;
+    config = config || {};
+    // The platform's dashboard UUID is the authoritative identity.
+    // Authors can omit `id` entirely now — we fill it in from the
+    // bootstrap. If they DID pass one (e.g. a hand-picked slug like
+    // "field-operations"), it gets overwritten with the platform UUID
+    // so server calls and tool-binding stay coherent. Surface a one-
+    // line info so the author can drop the id from their snippet.
+    if (config.id && config.id !== dashboardId) {
+      console.info(
+        '[XRayAI] register({id:"' + config.id + '"}) — overwriting with the platform dashboard id "' +
+        dashboardId + '". You can drop `id` from the snippet; the platform fills it in.'
+      );
     }
-    if (config.id !== dashboardId) {
-      console.warn('[XRayAI] register id does not match bootstrap dashboard id', config.id, dashboardId);
+    config.id = dashboardId;
+    // Same for title — if absent, fall back to the platform-supplied
+    // dashboard name (server-injected as window.__xrayCurrentDashboardName).
+    if (!config.title && typeof window.__xrayCurrentDashboardName === 'string' && window.__xrayCurrentDashboardName) {
+      config.title = window.__xrayCurrentDashboardName;
     }
     registered = config;
     if (mounted) refreshAll();
@@ -195,6 +207,19 @@
       if (!currentContext || !currentContext.available) {
         rail.style.display = 'none';
         overlay.style.display = 'none';
+        // Print the reason so a developer who pastes the bootstrap
+        // script and doesn't see the rail can diagnose without
+        // squinting at the network tab. Each reason maps to a fix.
+        var reason = (currentContext && currentContext.reason) || 'unknown';
+        var hints = {
+          disabled_platform_wide: 'Toggle Platform settings → AI → Enabled.',
+          no_api_key:             'Add the Anthropic API key on Platform settings → AI.',
+          disabled_for_dashboard: 'Flip this dashboard on at Platform settings → AI → Dashboards (it is opt-out — only set to disabled here when you mean it).',
+          disabled_by_user:       'Re-enable AI for this dashboard from your account preferences.'
+        };
+        console.info(
+          '[XRayAI] AI rail hidden (reason: ' + reason + '). ' + (hints[reason] || '')
+        );
         return;
       }
       injectEntryButtons();
