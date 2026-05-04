@@ -177,9 +177,13 @@ export async function listDashboardSettings(): Promise<
   Array<{ dashboard_id: string; dashboard_name: string; tenant_name: string; enabled: boolean; updated_at: string | null }>
 > {
   return withAdminClient(async (client) => {
+    // Mirrors the opt-OUT default in isAiAvailableForUser — a missing
+    // row means "inherit platform-wide enabled". The admin AI page
+    // shows the toggle as on for these rows so the displayed state
+    // matches what users actually see.
     const result = await client.query(
       `SELECT d.id as dashboard_id, d.name as dashboard_name, t.name as tenant_name,
-              COALESCE(ads.enabled, false) as enabled, ads.updated_at
+              COALESCE(ads.enabled, true) as enabled, ads.updated_at
        FROM platform.dashboards d
        JOIN platform.tenants t ON t.id = d.tenant_id
        LEFT JOIN platform.ai_dashboard_settings ads ON ads.dashboard_id = d.id
@@ -232,6 +236,13 @@ export async function isAiAvailableForUser(
 ): Promise<{ available: boolean; reason?: string }> {
   const apiKey = await getSetting('ai.anthropic_api_key'); // in-memory; no DB
   return withAdminClient(async (client) => {
+    // dash_enabled defaults to TRUE when no ai_dashboard_settings row
+    // exists. The per-dashboard table is now opt-OUT — admins flip
+    // specific dashboards off from Platform → AI when needed; otherwise
+    // every dashboard inherits the platform-wide enabled state. Earlier
+    // opt-in default meant a dashboard with the AI bootstrap script
+    // could silently render without the rail until an admin manually
+    // enabled it per row, which was confusing.
     const r = await client.query(
       `SELECT
          (SELECT enabled
@@ -240,7 +251,7 @@ export async function isAiAvailableForUser(
          COALESCE(
            (SELECT enabled FROM platform.ai_dashboard_settings
              WHERE dashboard_id = $1),
-           false
+           true
          ) AS dash_enabled,
          COALESCE(
            (SELECT enabled FROM platform.ai_user_dashboard_prefs

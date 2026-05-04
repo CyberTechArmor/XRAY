@@ -28,7 +28,8 @@ import { rewriteVendorCdns } from '../lib/rewrite-vendor-cdns';
 // bails with `if (!window.XRayAI) return;`).
 async function buildAiBootstrap(
   dashboardId: string,
-  userId: string
+  userId: string,
+  dashboardName?: string | null
 ): Promise<{ ai: Record<string, unknown>; htmlPrefix: string; htmlSuffix: string } | null> {
   try {
     const avail = await aiService.isAiAvailableForUser(userId, dashboardId);
@@ -37,9 +38,15 @@ async function buildAiBootstrap(
     }
     // Dashboard ids are UUIDs but sanitize for defense in depth.
     const safeId = String(dashboardId).replace(/[^a-zA-Z0-9_-]/g, '');
+    // Surface the dashboard's display name to the SDK so the dashboard
+    // author can omit `title` from XRayAI.register({...}); the rail
+    // header falls back to this. JSON.stringify gives us the safely
+    // escaped string literal.
+    const safeName = dashboardName ? String(dashboardName) : '';
     const htmlPrefix =
       `\n<script>` +
       `window.__xrayCurrentDashboardId=${JSON.stringify(safeId)};` +
+      `window.__xrayCurrentDashboardName=${JSON.stringify(safeName)};` +
       // Stub: register(cfg) queues onto _pending until the real SDK loads
       // and drains it. If the real SDK is already loaded (e.g. user navigates
       // between two dashboards), leave it alone.
@@ -276,7 +283,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       if (isPrewarm) {
         return res.json({ ok: true, data: { prewarmed: false, reason: 'no_fetch_url' } });
       }
-      const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+      const boot = await buildAiBootstrap(req.params.id, req.user!.sub, dashboard.dashboard_name);
       const rewritten = rewriteVendorCdns(dashboard.view_html || '', config.webauthn.origin);
       return res.json({
         ok: true,
@@ -523,7 +530,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
           }
           let boot: Awaited<ReturnType<typeof buildAiBootstrap>> = null;
           try {
-            boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+            boot = await buildAiBootstrap(req.params.id, req.user!.sub, dashboard.dashboard_name);
           } catch {
             // No-AI render is fine; never block on the rail.
           }
@@ -648,7 +655,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
         // instead.
         let boot: Awaited<ReturnType<typeof buildAiBootstrap>> = null;
         try {
-          boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+          boot = await buildAiBootstrap(req.params.id, req.user!.sub, dashboard.dashboard_name);
         } catch (e) {
           // Swallow; render without AI rather than re-hitting upstream.
         }
@@ -718,7 +725,7 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
     const fallbackCss = cached?.view_css || (dashboard.scope === 'tenant' ? dashboard.view_css : null);
     const fallbackJs = cached?.view_js || (dashboard.scope === 'tenant' ? dashboard.view_js : null);
     if (fallbackHtml) {
-      const boot = await buildAiBootstrap(req.params.id, req.user!.sub);
+      const boot = await buildAiBootstrap(req.params.id, req.user!.sub, dashboard.dashboard_name);
       // Same vendor-CDN rewrite as the live path. Cached HTML may
       // pre-date the rewrite landing in the codebase, so applying
       // it here too means existing cached rows benefit on next read
