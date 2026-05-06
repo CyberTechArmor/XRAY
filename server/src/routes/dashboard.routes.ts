@@ -66,6 +66,42 @@ async function buildAiBootstrap(
   }
 }
 
+// Assembles the final HTML document the browser receives for a render.
+// Same execution order the legacy JSON-envelope client produced: bootstrap
+// prefix → optional <style>(css) → dashboard html → optional <script>(js)
+// → bootstrap suffix (loads /ai/sdk.js + /ai/sdk.css). Sending this as
+// text/html lets us skip JSON.stringify on the server and JSON.parse on
+// the client — both meaningful on multi-MB dashboards.
+function assembleRenderHtml(
+  html: string,
+  css: string,
+  js: string,
+  boot: { htmlPrefix: string; htmlSuffix: string } | null
+): string {
+  const prefix = boot?.htmlPrefix || '';
+  const suffix = boot?.htmlSuffix || '';
+  const cssTag = css ? `\n<style>${css}</style>` : '';
+  // Inline trailing js as a script. The client's reanimation walk picks
+  // up <script> tags via querySelectorAll so this executes in order
+  // alongside any scripts inside the dashboard html.
+  const jsTag = js ? `\n<script>${js}</script>` : '';
+  return prefix + cssTag + (html || '') + jsTag + suffix;
+}
+
+// Content-negotiation: the XRay frontend opts into the HTML response by
+// sending `Accept: text/html`. API-key callers and any client that
+// doesn't set the header keep getting the {ok, data:{html,css,js,ai}}
+// JSON shape they were built against.
+function clientWantsHtml(req: { headers: Record<string, string | string[] | undefined> }): boolean {
+  const accept = req.headers['accept'];
+  if (!accept) return false;
+  const v = Array.isArray(accept) ? accept.join(',') : accept;
+  // Only honor an explicit text/html preference. A wildcard `*/*` (the
+  // default that fetch sends when nothing is set) stays on JSON for
+  // backward compatibility.
+  return /text\/html/i.test(v) && !/application\/json/i.test(v);
+}
+
 const router = Router();
 
 // GET / - list dashboards (JWT, dashboards.view)
@@ -285,6 +321,11 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       }
       const boot = await buildAiBootstrap(req.params.id, req.user!.sub, dashboard.dashboard_name);
       const rewritten = rewriteVendorCdns(dashboard.view_html || '', config.webauthn.origin);
+      if (clientWantsHtml(req)) {
+        return res
+          .type('html')
+          .send(assembleRenderHtml(rewritten.html, dashboard.view_css || '', dashboard.view_js || '', boot));
+      }
       return res.json({
         ok: true,
         data: {
@@ -535,6 +576,11 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
             // No-AI render is fine; never block on the rail.
           }
           const rewritten = rewriteVendorCdns(cachedHot.view_html || '', config.webauthn.origin);
+          if (clientWantsHtml(req)) {
+            return res
+              .type('html')
+              .send(assembleRenderHtml(rewritten.html, cachedHot.view_css || '', cachedHot.view_js || '', boot));
+          }
           return res.json({
             ok: true,
             data: {
@@ -666,6 +712,11 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
         // are immune. Operators don't have to touch n8n templates —
         // the rewrite runs once here for every dashboard at once.
         const rewritten = rewriteVendorCdns(data.html || '', config.webauthn.origin);
+        if (clientWantsHtml(req)) {
+          return res
+            .type('html')
+            .send(assembleRenderHtml(rewritten.html, data.css || '', data.js || '', boot));
+        }
         const augmented = {
           ...data,
           html: (boot?.htmlPrefix || '') + rewritten.html + (boot?.htmlSuffix || ''),
@@ -731,6 +782,12 @@ router.post('/:id/render', authenticateJWT, requirePermission('dashboards.view')
       // it here too means existing cached rows benefit on next read
       // without a forced re-render.
       const rewritten = rewriteVendorCdns(fallbackHtml, config.webauthn.origin);
+      if (clientWantsHtml(req)) {
+        return res
+          .type('html')
+          .set('X-XRay-Fallback', '1')
+          .send(assembleRenderHtml(rewritten.html, fallbackCss || '', fallbackJs || '', boot));
+      }
       return res.json({
         ok: true,
         data: {

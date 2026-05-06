@@ -1200,6 +1200,60 @@
     patch: function(url, body) { return api._fetch('PATCH', url, body); },
     put: function(url, body) { return api._fetch('PUT', url, body); },
     delete: function(url, body) { return api._fetch('DELETE', url, body); },
+    // postHtml: like post() but asks the server for text/html and resolves
+    // to { ok, html, status } instead of { ok, data, error }. Used by the
+    // dashboard render path so we skip JSON.stringify on the server and
+    // JSON.parse on the client for multi-MB dashboard bodies. Falls back
+    // to the standard JSON shape when the response isn't text/html (e.g.
+    // an error response or an old server that ignores the Accept header).
+    postHtml: function(url, body) {
+      var tokenAtCall = accessToken;
+      var opts = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'text/html' },
+        credentials: 'include'
+      };
+      if (accessToken) opts.headers['Authorization'] = 'Bearer ' + accessToken;
+      var csrf = readCsrfCookie();
+      if (csrf) opts.headers['X-CSRF-Token'] = csrf;
+      if (body) opts.body = JSON.stringify(body);
+      function readResponse(r) {
+        var ct = r.headers.get('content-type') || '';
+        if (ct.indexOf('text/html') === 0 || ct.indexOf('text/html;') === 0 || ct.indexOf('text/html ') === 0) {
+          return r.text().then(function(t) { return { ok: r.ok, html: t, status: r.status }; });
+        }
+        // Fallback path — old server or error response in JSON.
+        return r.json().catch(function() { return { ok: r.ok }; }).then(function(j) {
+          j.status = r.status;
+          return j;
+        });
+      }
+      return fetch(url, opts).then(function(r) {
+        if (r.status === 401 && tokenAtCall) {
+          if (accessToken && accessToken !== tokenAtCall) {
+            opts.headers['Authorization'] = 'Bearer ' + accessToken;
+            var csrfRetry = readCsrfCookie();
+            if (csrfRetry) opts.headers['X-CSRF-Token'] = csrfRetry;
+            return fetch(url, opts).then(readResponse);
+          }
+          return api.refresh().then(function(ok) {
+            if (!ok) {
+              if (accessToken && accessToken !== tokenAtCall) {
+                opts.headers['Authorization'] = 'Bearer ' + accessToken;
+                return fetch(url, opts).then(readResponse);
+              }
+              logout();
+              return { ok: false, error: { message: 'Session expired' } };
+            }
+            opts.headers['Authorization'] = 'Bearer ' + accessToken;
+            var csrfRetry2 = readCsrfCookie();
+            if (csrfRetry2) opts.headers['X-CSRF-Token'] = csrfRetry2;
+            return fetch(url, opts).then(readResponse);
+          });
+        }
+        return readResponse(r);
+      });
+    },
     refresh: function() {
       // Mutex: if a refresh is already in flight, return the same promise
       if (_refreshPromise) return _refreshPromise;
