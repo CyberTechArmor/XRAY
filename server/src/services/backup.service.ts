@@ -48,6 +48,17 @@ const DEFAULT_RETAIN_DAYS = 14;
 // the START WAL LOCATION out of the backup's own backup_label.
 const PRUNE_ESTIMATE_MARGIN_MS = 60 * 60 * 1000;
 
+// A daily base backup schedule that has produced nothing in two days
+// is not running. One missed night could be a restart or a long-held
+// lock; two is a fault.
+const STALE_BASE_MS = 48 * 60 * 60 * 1000;
+
+// How far past the retention window the archive may span before it
+// counts as "pruning is not keeping up". Some slack is normal: the
+// oldest base backup is kept until it ages out, and the WAL it needs
+// is pinned for as long as it lives.
+const RETENTION_SLACK = 1.5;
+
 export interface BaseBackupSummary {
   name: string;          // directory name, typically a UTC ISO timestamp
   size_bytes: number;    // sum of contents
@@ -487,6 +498,59 @@ function buildIssues(input: {
         'are the archive directory being unwritable, or scripts/wal-archive.sh hitting its ' +
         'refuse-to-overwrite guard on a segment name that already exists in the archive.',
     });
+  }
+
+  // ── Watchdog: the schedule is on but nothing is landing ──
+  // This is the failure mode that replaces the original one. Once
+  // base backups are scheduled by default, the way to end up back at
+  // an ever-growing archive is for those runs to stop succeeding —
+  // a dead backup-worker, a wrong password, a full disk. None of
+  // those raise anything on their own: the volume just quietly stops
+  // gaining backups while it keeps gaining WAL.
+  if (bases.length > 0 && baseScheduleEnabled) {
+    const latest = bases[0];
+    const ageMs = latest.created_at ? Date.now() - new Date(latest.created_at).getTime() : null;
+    if (ageMs !== null && ageMs > STALE_BASE_MS) {
+      const ageHours = Math.floor(ageMs / 3_600_000);
+      issues.push({
+        id: 'base_backup_stale',
+        severity: 'critical',
+        title: `Latest base backup is ${ageHours}h old but the daily schedule is enabled`,
+        detail:
+          `The newest base backup is "${latest.name}". With the base backup schedule ` +
+          'enabled it should be under a day old, so runs are being skipped or failing. ' +
+          'While that continues there is no fresh recovery point, and because the WAL ' +
+          'prune can only reclaim segments older than the OLDEST base backup kept, the ' +
+          'archive will start growing again.',
+        remedy:
+          'Check the Recent jobs list and the backup-worker container log ' +
+          '(docker compose logs backup-worker) for failing runs. "Backup now" reproduces ' +
+          'the failure with full output.',
+      });
+    }
+  }
+
+  // ── Watchdog: the archive spans more than the retention window ──
+  // Independent of the base-backup check: it catches a prune that is
+  // not running or not reclaiming, whatever the reason.
+  if (bases.length > 0 && wal.oldest_segment_at) {
+    const spanDays = (Date.now() - new Date(wal.oldest_segment_at).getTime()) / 86_400_000;
+    if (spanDays > effectiveRetainDays * RETENTION_SLACK) {
+      issues.push({
+        id: 'wal_retention_exceeded',
+        severity: 'warning',
+        title: `WAL archive spans ${Math.floor(spanDays)} days against a ${effectiveRetainDays}-day retention window`,
+        detail:
+          'The oldest archived segment is well outside the retention window, so pruning ' +
+          'is not keeping up. Either the prune schedule is off, its runs are failing, or ' +
+          'the oldest base backup being kept is itself old enough to hold that much WAL ' +
+          'in place (WAL can only be pruned back to the oldest base retained).',
+        remedy:
+          'Run "Prune WAL" and read the output — it names the anchor segment it pruned ' +
+          'back to. If the anchor is older than expected, delete base backups you no ' +
+          'longer need and prune again.',
+      });
+    }
   }
 
   // ── Reclaimable WAL sitting around ──

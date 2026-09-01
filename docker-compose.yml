@@ -138,6 +138,15 @@ services:
       # the host out-of-band — see scripts/backup-s3-sync.sh — so
       # those env vars don't need to enter the postgres container.
       - BACKUP_ARCHIVE_DIR=/var/lib/postgresql/backups/wal
+      # Gzip archived WAL segments. Postgres pads every segment to a
+      # full 16 MB whatever it holds, and archive_timeout=300 forces a
+      # switch every five minutes of write activity, so a lightly used
+      # install ships many near-empty 16 MB files a day. Compressing
+      # them (measured ~295x on near-empty and on typical row data)
+      # keeps the archive small WITHOUT relaxing archive_timeout, so
+      # the five-minute recovery point objective is preserved.
+      # Set to 0 to archive uncompressed.
+      - BACKUP_WAL_COMPRESS=${BACKUP_WAL_COMPRESS:-1}
     volumes:
       - pg_data:/var/lib/postgresql/data
       - pg_backups:/var/lib/postgresql/backups

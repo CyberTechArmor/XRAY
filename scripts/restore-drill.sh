@@ -142,7 +142,14 @@ docker run --rm \
     fi
     cat >> postgresql.auto.conf <<CFGEOF
 # Restore drill — recovery configuration
-restore_command = 'cp /backups/wal/%f %p'
+#
+# Handles both spellings in the archive. scripts/wal-archive.sh gzips
+# segments (a near-empty 16 MB segment compresses to tens of KB), but
+# an archive written before that change — or a segment gzip could not
+# shrink — holds the plain name. Postgres runs restore_command through
+# /bin/sh, so the conditional works as written; %f/%p are substituted
+# before the shell sees them.
+restore_command = 'if [ -f /backups/wal/%f.gz ]; then gunzip -c /backups/wal/%f.gz > %p; else cp /backups/wal/%f %p; fi'
 CFGEOF
     if [ -n '${TARGET_TIME}' ]; then
       echo \"recovery_target_time = '${TARGET_TIME}'\" >> postgresql.auto.conf
@@ -211,6 +218,7 @@ if [ "$READY" != "true" ]; then
   echo "  - hangs on 'requested WAL segment ... has already been removed'"
   echo "    → WAL archive missing segments needed for consistency;"
   echo "      check /var/lib/postgresql/backups/wal/ on the live host"
+  echo "      (segments are stored gzipped as <segment>.gz by default)"
   exit 1
 fi
 

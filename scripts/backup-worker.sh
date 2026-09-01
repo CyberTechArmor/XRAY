@@ -81,16 +81,23 @@ SQL
 
 # ── Schedules: cron-expression evaluator + auto-enqueue loop ──
 #
-# Three schedules are managed via platform_settings rows (admin
+# Four schedules are managed via platform_settings rows (admin
 # editable in Admin → Backups → Scheduled tasks):
 #
 #   backup_schedule_base          — cron expression, e.g. "0 2 * * *"
 #   backup_schedule_base_enabled  — "true" | "false"
 #   backup_schedule_base_last_run — ISO timestamp; updated every fire
 #
-#   ...and the same triplet for s3sync + drill.
+#   ...and the same triplet for s3sync, drill, and prune.
 #
-# Default-disabled. Operator opts in via the UI. The scheduler loop
+# base + prune default to ENABLED (migration 056) — an install where
+# nobody opted in otherwise ends up with no recovery point and an
+# archive that grows forever, and reports no error because nothing
+# ever failed. s3sync + drill stay opt-in: one needs credentials, the
+# other is a heavyweight verification run.
+#
+# The 'prune' schedule maps to the 'prune_wal' job kind; see
+# enqueue_scheduled_job. The scheduler loop
 # runs alongside the main job-claim loop (background process); when
 # a schedule fires it enqueues a row exactly like a manual click and
 # the main loop picks it up on the next claim cycle.
@@ -166,12 +173,18 @@ set_last_run() {
 }
 
 enqueue_scheduled_job() {
-  # $1 = kind ('base'|'s3sync'|'drill')
+  # $1 = schedule kind ('base'|'s3sync'|'drill'|'prune')
   local k="$1"
   local args="{}"
+  local job_kind="$k"
   if [ "$k" = "s3sync" ]; then args='{"mode":"all"}'; fi
+  # The schedule is named 'prune' (its settings keys are
+  # backup_schedule_prune*), but the queue's kind is 'prune_wal' —
+  # backup_jobs already uses 'prune' as an s3sync MODE, so the job
+  # kind has to stay distinct from it.
+  if [ "$k" = "prune" ]; then job_kind="prune_wal"; fi
   run_psql -c "INSERT INTO platform.backup_jobs (kind, args, requested_by)
-               VALUES ('${k}', '${args}'::jsonb, NULL)" >/dev/null 2>&1 || \
+               VALUES ('${job_kind}', '${args}'::jsonb, NULL)" >/dev/null 2>&1 || \
     echo "[backup-worker] WARN scheduled enqueue failed for kind=${k}" >&2
 }
 
@@ -182,7 +195,7 @@ scheduler_tick() {
   local now_minute
   now_minute=$(date -u +%FT%H:%M)  # minute granularity
   local kind sched enabled cron last_run
-  for kind in base s3sync drill; do
+  for kind in base s3sync drill prune; do
     sched=$(read_schedule "$kind" | tr -d '\n' || true)
     IFS='|' read -r enabled cron last_run <<< "$sched"
     [ "$enabled" = "true" ] || continue

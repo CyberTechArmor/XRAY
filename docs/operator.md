@@ -350,12 +350,28 @@ WAL segments arrive every ~5 minutes (`archive_timeout=300`) or
 sooner if write traffic fills a 16 MB segment. Base backups arrive
 nightly per the operator's cron entry.
 
-> **Every archived segment is a full 16 MB**, padded, whatever it
-> actually holds. `archive_timeout=300` force-switches a segment
-> after five minutes of *any* write activity, so the archive tracks
-> how often the database is touched, not how much data changed. A
-> lightly used install still writes tens of 16 MB files a day.
-> Budget for that when sizing the backup volume.
+Segments are stored **gzipped** as `<segment>.gz`. Postgres writes
+every WAL segment at a fixed 16 MB, zero-padded, whatever it actually
+holds, and `archive_timeout=300` force-switches a segment after five
+minutes of *any* write activity — so a lightly used install ships many
+near-empty 16 MB files a day. Compression collapses those to tens of
+KB (measured ~295x on near-empty segments and on typical row data,
+~2x on dense ones), which keeps the archive small **without**
+relaxing `archive_timeout` and trading away the five-minute recovery
+point objective.
+
+Details:
+
+- Only real WAL segments are compressed. `.backup` and `.history`
+  files stay plain text — they are tiny, and `prune-wal.sh` reads
+  `.backup` files directly.
+- If gzip cannot shrink a segment (encrypted or already-compressed
+  payload), it is stored plain, so compression can never cost disk.
+- Mixed archives are fully supported. `restore-drill.sh` sets a
+  `restore_command` that reads either spelling, and the prune passes
+  `-x .gz` to `pg_archivecleanup`, so segments written before this
+  change restore and prune alongside newer ones with no migration.
+- Set `BACKUP_WAL_COMPRESS=0` in `.env` to archive uncompressed.
 
 ### Why an archive grows without bound (and how to stop it)
 
@@ -400,10 +416,35 @@ operation as **Prune WAL**.
 ```
 
 On an install that has never taken a base backup, that second
-command reclaims very nearly the entire archive. Then enable the
-**Base backup** schedule in Admin → Backups (`0 2 * * *`) so it does
-not recur — schedules ship disabled and take no effect until an
-operator opts in.
+command reclaims very nearly the entire archive.
+
+### Defaults that keep it from recurring
+
+Two schedules ship **enabled** (migration 056), because the original
+failure mode was silent: nothing ran, so nothing failed, so nothing
+was reported.
+
+| Schedule | Default | Why |
+| --- | --- | --- |
+| Base backup | `0 2 * * *`, on | Creates the recovery point. Prunes WAL on its way out. |
+| WAL prune | `30 3 * * *`, on | Prunes independently, so reclaiming disk does not depend on base backups succeeding. |
+| S3 sync | off | Needs credentials. |
+| Restore drill | off | Heavyweight verification run. |
+
+Migration 056 uses `ON CONFLICT DO NOTHING`, so an operator who has
+already set either of these keeps their choice — including an explicit
+`false`. Only installs that never touched the setting are changed.
+
+Admin → Backups watches for the failure modes that replace the
+original one, and reports them on the Diagnosis card:
+
+- **Latest base backup is stale** while the schedule is enabled —
+  runs are being skipped or are failing. Critical.
+- **Archive spans beyond the retention window** — pruning is not
+  keeping up, or an old base backup is pinning WAL in place.
+- **`archive_command` failing** (from `pg_stat_archiver`) — Postgres
+  retries the same segment forever and `pg_wal` grows inside the
+  *data* volume until the disk fills. Critical.
 
 ### 1. Schedule (host cron)
 

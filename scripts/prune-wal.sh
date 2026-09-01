@@ -236,15 +236,20 @@ fi
 # pg_archivecleanup deletes every segment that sorts before ANCHOR,
 # keeps ANCHOR itself, and leaves timeline .history files alone. -n
 # is its native dry-run: it prints the files it would remove.
+#
+# -x .gz makes it recognise the compressed segments written by
+# scripts/wal-archive.sh. It trims the extension before matching, so
+# one pass covers both spellings — compressed segments and the plain
+# ones an archive written before compression still holds.
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "[prune-wal] segments that WOULD be removed:"
-  pg_archivecleanup -n "$WAL_DIR" "$ANCHOR" 2>&1 | tail -n 40
-  would_go=$(pg_archivecleanup -n "$WAL_DIR" "$ANCHOR" 2>/dev/null | wc -l | tr -d ' ')
+  pg_archivecleanup -n -x .gz "$WAL_DIR" "$ANCHOR" 2>&1 | tail -n 40
+  would_go=$(pg_archivecleanup -n -x .gz "$WAL_DIR" "$ANCHOR" 2>/dev/null | wc -l | tr -d ' ')
   echo "[prune-wal] DRY RUN: ${would_go} of ${seg_count_before} segments are prunable"
   exit 0
 fi
 
-pg_archivecleanup -d "$WAL_DIR" "$ANCHOR" 2>&1 | tail -n 40
+pg_archivecleanup -d -x .gz "$WAL_DIR" "$ANCHOR" 2>&1 | tail -n 40
 
 seg_count_after=$(find "$WAL_DIR" -maxdepth 1 -type f -name '0*' | wc -l | tr -d ' ')
 size_after=$(du -sk "$WAL_DIR" 2>/dev/null | awk '{print $1}')

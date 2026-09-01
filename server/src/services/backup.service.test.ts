@@ -781,3 +781,145 @@ describe('backup.service — diagnosis', () => {
     expect(status.effective_retain_days).toBe(14);
   });
 });
+
+// ── Watchdogs ────────────────────────────────────────────────────
+//
+// Base backup + WAL prune now ship enabled (migration 056), so the
+// original failure — nothing ever ran, nothing ever complained — is
+// gone. What replaces it is runs that are scheduled but stop
+// succeeding, which is equally silent unless something watches for
+// it. These cover that watch.
+describe('backup.service — watchdogs', () => {
+  const SEG = 16 * 1024 * 1024;
+  let originalEnv: string | undefined;
+  const roots: string[] = [];
+
+  // Settings pool that reports the base schedule as enabled, matching
+  // the shipped default.
+  async function settingsWithBaseScheduleEnabled() {
+    const pool = {
+      connect: () =>
+        Promise.resolve({
+          query: (sql: string) => {
+            if (sql.trim().startsWith('SELECT key')) {
+              return Promise.resolve({
+                rows: [
+                  { key: 'backup_schedule_base_enabled', value: 'true', is_secret: false },
+                  { key: 'backup_schedule_base', value: '0 2 * * *', is_secret: false },
+                ],
+                rowCount: 2,
+              });
+            }
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          },
+          release: () => {},
+        }),
+      on: () => {},
+      end: () => Promise.resolve(),
+    } as unknown as import('pg').Pool;
+    const { __setPoolForTest } = await import('../db/connection');
+    __setPoolForTest(pool);
+    const settings = await import('./settings.service');
+    await settings.refreshCache();
+  }
+
+  async function makeRoot(): Promise<string> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xray-backup-watch-'));
+    roots.push(root);
+    await fs.mkdir(path.join(root, 'wal'), { recursive: true });
+    await fs.mkdir(path.join(root, 'base'), { recursive: true });
+    return root;
+  }
+
+  async function writeSegment(root: string, name: string, ageHours: number) {
+    const p = path.join(root, 'wal', name);
+    await fs.writeFile(p, Buffer.alloc(SEG));
+    const when = new Date(Date.now() - ageHours * 3600 * 1000);
+    await fs.utimes(p, when, when);
+  }
+
+  async function writeBase(root: string, name: string, ageHours: number) {
+    const dir = path.join(root, 'base', name);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'base.tar.gz'), Buffer.alloc(4096));
+    const when = new Date(Date.now() - ageHours * 3600 * 1000);
+    await fs.utimes(dir, when, when);
+  }
+
+  beforeAll(async () => {
+    originalEnv = process.env.BACKUPS_ROOT;
+    delete process.env.BACKUP_S3_BUCKET;
+    delete process.env.BACKUP_RETAIN_DAYS;
+    await settingsWithBaseScheduleEnabled();
+  });
+
+  afterAll(async () => {
+    if (originalEnv === undefined) delete process.env.BACKUPS_ROOT;
+    else process.env.BACKUPS_ROOT = originalEnv;
+    for (const r of roots) await fs.rm(r, { recursive: true, force: true });
+  });
+
+  it('flags a stale base backup when the schedule is enabled', async () => {
+    const root = await makeRoot();
+    // Schedule says daily; newest base is four days old → runs are
+    // failing or being skipped.
+    await writeBase(root, '20260828T020000Z', 96);
+    await writeSegment(root, '000000010000000000000009', 1);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    const stale = status.issues.find((i) => i.id === 'base_backup_stale');
+    expect(stale).toBeDefined();
+    expect(stale?.severity).toBe('critical');
+    expect(stale?.detail).toContain('20260828T020000Z');
+    // The schedule IS on, so the opt-in nag must not also fire.
+    expect(status.issues.map((i) => i.id)).not.toContain('base_schedule_disabled');
+  });
+
+  it('stays quiet when a fresh base backup exists', async () => {
+    const root = await makeRoot();
+    await writeBase(root, '20260901T020000Z', 3);
+    await writeSegment(root, '000000010000000000000009', 1);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    const ids = status.issues.map((i) => i.id);
+    expect(ids).not.toContain('base_backup_stale');
+    expect(ids).not.toContain('no_base_backup');
+    expect(status.issues.filter((i) => i.severity === 'critical')).toEqual([]);
+  });
+
+  it('flags an archive spanning far beyond the retention window', async () => {
+    const root = await makeRoot();
+    await writeBase(root, '20260901T020000Z', 3);
+    // 90 days of archive against the 14-day default → pruning is not
+    // keeping up, whatever the reason.
+    await writeSegment(root, '000000010000000000000001', 24 * 90);
+    await writeSegment(root, '000000010000000000000002', 1);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    const over = status.issues.find((i) => i.id === 'wal_retention_exceeded');
+    expect(over).toBeDefined();
+    expect(over?.severity).toBe('warning');
+    expect(over?.title).toMatch(/14-day retention window/);
+  });
+
+  it('does not flag retention when the archive sits inside the window', async () => {
+    const root = await makeRoot();
+    await writeBase(root, '20260901T020000Z', 3);
+    await writeSegment(root, '000000010000000000000001', 24 * 10);
+    await writeSegment(root, '000000010000000000000002', 1);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+    expect(status.issues.map((i) => i.id)).not.toContain('wal_retention_exceeded');
+  });
+});
