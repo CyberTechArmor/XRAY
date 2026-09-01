@@ -439,15 +439,17 @@ function fmtBytes(n: number): string {
 // Ordered most severe first; the view renders them in order.
 function buildIssues(input: {
   bases: BaseBackupSummary[];
+  // Every finding reports against the WAL archive specifically, which
+  // carries its own byte and segment totals — the combined base+wal
+  // volume figure is a display concern for the tiles, not an input to
+  // any of these judgements.
   wal: WalArchiveSummary;
-  volume: VolumeUsage;
   archiver: ArchiverHealth;
   baseScheduleEnabled: boolean;
   retainDays: number | null;
   effectiveRetainDays: number;
 }): BackupIssue[] {
-  const { bases, wal, volume, archiver, baseScheduleEnabled, retainDays, effectiveRetainDays } =
-    input;
+  const { bases, wal, archiver, baseScheduleEnabled, retainDays, effectiveRetainDays } = input;
   const issues: BackupIssue[] = [];
 
   // ── The headline finding on any install that never took a base ──
@@ -703,7 +705,6 @@ export async function getBackupStatus(): Promise<BackupStatus> {
     issues: buildIssues({
       bases,
       wal,
-      volume,
       archiver,
       baseScheduleEnabled: baseSchedule === 'true',
       retainDays: s3.retain_days,
