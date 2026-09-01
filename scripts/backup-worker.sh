@@ -305,6 +305,23 @@ run_job() {
       fi
       "$WORKER_SCRIPTS_DIR/restore-drill.sh" "${drill_args[@]}" >"$output_file" 2>&1 || exit_code=$?
       ;;
+    prune_wal)
+      # Reclaim archived WAL that no retained base backup can need.
+      # Anchored on the oldest base's START WAL LOCATION inside
+      # prune-wal.sh — never on a clock — so a prune can never strand
+      # a base backup without the WAL to bring it to consistency.
+      #
+      # Exists as its own kind because WAL prune used to be reachable
+      # ONLY as the tail of a base backup. Installs that never enabled
+      # the base schedule (the shipped default) therefore never pruned
+      # anything and grew their archive without bound.
+      local prune_args=()
+      if echo "$args" | grep -q '"dry_run"[[:space:]]*:[[:space:]]*true'; then
+        prune_args+=(--dry-run)
+      fi
+      "$WORKER_SCRIPTS_DIR/prune-wal.sh" "${prune_args[@]+"${prune_args[@]}"}" \
+        >"$output_file" 2>&1 || exit_code=$?
+      ;;
     delete_base)
       # Per-row delete from the Backups admin UI. Resolve the postgres
       # container by compose label (same pattern as backup-platform.sh)

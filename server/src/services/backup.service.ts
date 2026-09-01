@@ -27,6 +27,27 @@ function walDir(): string {
 // can't blow past Express's response size for the listing endpoint.
 const DRILL_OUTPUT_PREVIEW_BYTES = 4 * 1024;
 
+// Postgres writes every WAL segment at a fixed 16 MB, padded, no
+// matter how little real change it carries. Combined with
+// archive_timeout=300 (docker-compose.yml) — which force-switches a
+// segment every five minutes of activity — a near-idle deployment
+// still lands dozens of full-size 16 MB files a day in the archive.
+// This is the multiplier behind "why is it so big already".
+const WAL_SEGMENT_BYTES = 16 * 1024 * 1024;
+
+// Default applied by scripts/backup-platform.sh when BACKUP_RETAIN_DAYS
+// is unset. Mirrored here purely so the UI can report the effective
+// value; the scripts remain the source of truth.
+const DEFAULT_RETAIN_DAYS = 14;
+
+// A base backup finishes some time after it starts, and the WAL it
+// needs begins at its START WAL LOCATION. The status view estimates
+// "prunable" from directory mtimes (finish time), so it backs off by
+// this margin to stay on the conservative side of the real cutoff.
+// The authoritative cutoff lives in scripts/prune-wal.sh, which reads
+// the START WAL LOCATION out of the backup's own backup_label.
+const PRUNE_ESTIMATE_MARGIN_MS = 60 * 60 * 1000;
+
 export interface BaseBackupSummary {
   name: string;          // directory name, typically a UTC ISO timestamp
   size_bytes: number;    // sum of contents
@@ -38,7 +59,49 @@ export interface WalArchiveSummary {
   segment_count: number;
   total_size_bytes: number;
   newest_segment_at: string | null;  // mtime of newest .ready file, ISO
+  oldest_segment_at: string | null;  // mtime of oldest segment, ISO
   lag_seconds: number | null;        // now - newest_segment_at; null if no segments
+  // Bytes/day the archive has accrued, averaged over oldest→newest.
+  // null when the archive spans less than an hour (no meaningful rate).
+  est_daily_bytes: number | null;
+  // What a prune would free RIGHT NOW, estimated. null when there is
+  // no base backup at all — in that state nothing is prunable, which
+  // is a different and much worse condition than "nothing to prune".
+  // See buildIssues(). scripts/prune-wal.sh computes the exact cutoff
+  // from the base's backup_label; this is a UI estimate only.
+  prunable_estimate_bytes: number | null;
+  prunable_estimate_segments: number | null;
+}
+
+// pg_stat_archiver, surfaced so the UI can tell apart the two very
+// different reasons the newest archived segment can be hours old:
+//
+//   - the database is simply idle (no WAL to archive) — benign
+//   - archive_command is failing — Postgres retries the same segment
+//     forever and pg_wal inside the DB volume grows until the disk
+//     fills, taking the database down with it
+//
+// The "WAL lag" number alone cannot distinguish those, so on its own
+// it is alarming without being actionable.
+export interface ArchiverHealth {
+  available: boolean;               // false → view unreadable (permissions)
+  archived_count: number | null;
+  last_archived_wal: string | null;
+  last_archived_at: string | null;
+  failed_count: number | null;
+  last_failed_wal: string | null;
+  last_failed_at: string | null;
+  failing: boolean;                 // last failure is newer than last success
+}
+
+// One finding about the state of the backup volume, rendered by the
+// Backups admin view. Ordered most severe first by buildIssues().
+export interface BackupIssue {
+  id: string;
+  severity: 'critical' | 'warning' | 'info';
+  title: string;
+  detail: string;
+  remedy: string;
 }
 
 export interface S3Config {
@@ -69,6 +132,13 @@ export interface BackupStatus {
   volume: VolumeUsage;
   s3: S3Config;
   retain_days: number | null;
+  // Effective retention actually used by the scripts when
+  // BACKUP_RETAIN_DAYS / the platform_settings row is unset. Kept
+  // separate from retain_days so the UI can show "unset (14 default)"
+  // rather than a bare "unset" that reads like "no retention at all".
+  effective_retain_days: number;
+  archiver: ArchiverHealth;
+  issues: BackupIssue[];
 }
 
 export interface DrillRun {
@@ -155,42 +225,137 @@ async function readBaseBackups(): Promise<BaseBackupSummary[]> {
   return summaries;
 }
 
-async function readWalSummary(): Promise<WalArchiveSummary> {
-  const empty: WalArchiveSummary = {
-    segment_count: 0,
-    total_size_bytes: 0,
-    newest_segment_at: null,
-    lag_seconds: null,
-  };
+const EMPTY_WAL_SUMMARY: WalArchiveSummary = {
+  segment_count: 0,
+  total_size_bytes: 0,
+  newest_segment_at: null,
+  oldest_segment_at: null,
+  lag_seconds: null,
+  est_daily_bytes: null,
+  prunable_estimate_bytes: null,
+  prunable_estimate_segments: null,
+};
+
+// Scan the archive once and summarise it.
+//
+// `anchorMs` is the mtime of the OLDEST base backup we still hold, or
+// null when there are none. Segments written before that point can
+// never be replayed onto any base we keep, so they are prunable; the
+// rest may be required to bring the oldest base to consistency and
+// must not be touched. Passing null means "no anchor exists", which
+// leaves prunable_estimate_* null rather than zero — the difference
+// between "nothing to reclaim" and "nothing CAN be reclaimed, because
+// there is no recovery point at all" matters, and the UI says so.
+async function readWalSummary(anchorMs: number | null): Promise<WalArchiveSummary> {
   let entries: Dirent[];
   try {
     entries = await fs.readdir(walDir(), { withFileTypes: true });
   } catch {
-    return empty;
+    return { ...EMPTY_WAL_SUMMARY };
   }
   const segments = entries.filter((e) => e.isFile());
-  if (segments.length === 0) return empty;
+  if (segments.length === 0) return { ...EMPTY_WAL_SUMMARY };
+
+  const cutoffMs = anchorMs === null ? null : anchorMs - PRUNE_ESTIMATE_MARGIN_MS;
 
   let total = 0;
   let newestMs = 0;
-  for (const s of segments) {
+  let oldestMs = Number.POSITIVE_INFINITY;
+  let prunableBytes = 0;
+  let prunableCount = 0;
+  let counted = 0;
+  for (const seg of segments) {
     try {
-      const st = await fs.stat(path.join(walDir(), s.name));
+      const st = await fs.stat(path.join(walDir(), seg.name));
       total += st.size;
+      counted++;
       const mtime = st.mtime.getTime();
       if (mtime > newestMs) newestMs = mtime;
+      if (mtime < oldestMs) oldestMs = mtime;
+      if (cutoffMs !== null && mtime < cutoffMs) {
+        prunableBytes += st.size;
+        prunableCount++;
+      }
     } catch {
       // segment vanished mid-scan; skip.
     }
   }
+  if (counted === 0) return { ...EMPTY_WAL_SUMMARY };
+
   const newestIso = newestMs > 0 ? new Date(newestMs).toISOString() : null;
+  const oldestIso = Number.isFinite(oldestMs) ? new Date(oldestMs).toISOString() : null;
   const lagSec = newestMs > 0 ? Math.max(0, Math.round((Date.now() - newestMs) / 1000)) : null;
+
+  // Growth rate over the span the archive actually covers. Below an
+  // hour of span the divisor is noise, so report null instead of an
+  // extrapolation nobody should act on.
+  const spanMs = newestMs - oldestMs;
+  const estDaily =
+    spanMs >= 60 * 60 * 1000 ? Math.round(total / (spanMs / 86_400_000)) : null;
+
   return {
-    segment_count: segments.length,
+    segment_count: counted,
     total_size_bytes: total,
     newest_segment_at: newestIso,
+    oldest_segment_at: oldestIso,
     lag_seconds: lagSec,
+    est_daily_bytes: estDaily,
+    prunable_estimate_bytes: cutoffMs === null ? null : prunableBytes,
+    prunable_estimate_segments: cutoffMs === null ? null : prunableCount,
   };
+}
+
+// pg_stat_archiver is world-readable in Postgres, but the app connects
+// as a deliberately unprivileged role and the view could be revoked on
+// a hardened install. Any failure degrades to available:false so the
+// Backups page still renders — a diagnostic panel must never be the
+// thing that takes the page down.
+async function readArchiverHealth(): Promise<ArchiverHealth> {
+  const unavailable: ArchiverHealth = {
+    available: false,
+    archived_count: null,
+    last_archived_wal: null,
+    last_archived_at: null,
+    failed_count: null,
+    last_failed_wal: null,
+    last_failed_at: null,
+    failing: false,
+  };
+  try {
+    return await withAdminClient(async (client: PoolClient) => {
+      const r = await client.query<{
+        archived_count: string | null;
+        last_archived_wal: string | null;
+        last_archived_time: Date | null;
+        failed_count: string | null;
+        last_failed_wal: string | null;
+        last_failed_time: Date | null;
+      }>(
+        `SELECT archived_count, last_archived_wal, last_archived_time,
+                failed_count, last_failed_wal, last_failed_time
+           FROM pg_stat_archiver`
+      );
+      if (r.rows.length === 0) return unavailable;
+      const row = r.rows[0];
+      const lastOk = row.last_archived_time ? row.last_archived_time.getTime() : 0;
+      const lastBad = row.last_failed_time ? row.last_failed_time.getTime() : 0;
+      return {
+        available: true,
+        archived_count: row.archived_count === null ? null : Number(row.archived_count),
+        last_archived_wal: row.last_archived_wal,
+        last_archived_at: row.last_archived_time ? row.last_archived_time.toISOString() : null,
+        failed_count: row.failed_count === null ? null : Number(row.failed_count),
+        last_failed_wal: row.last_failed_wal,
+        last_failed_at: row.last_failed_time ? row.last_failed_time.toISOString() : null,
+        // A failure newer than the last success means the archiver is
+        // stuck on a segment right now, not that it hiccuped once
+        // months ago. Only the former is actionable.
+        failing: lastBad > 0 && lastBad > lastOk,
+      };
+    });
+  } catch {
+    return unavailable;
+  }
 }
 
 // S3 config keys in platform_settings (Phase C). DB rows take
@@ -240,6 +405,174 @@ async function readS3Config(): Promise<S3Config> {
   };
 }
 
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n;
+  let i = -1;
+  do {
+    v /= 1024;
+    i++;
+  } while (v >= 1024 && i < units.length - 1);
+  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+}
+
+// Turn the raw numbers into findings an operator can act on.
+//
+// This exists because the status tiles alone were actively
+// misleading: a volume sitting at 24 GB with a red "WAL lag" number
+// and a "Latest base: never" tile shows every symptom of the problem
+// without ever naming the cause or the fix. The cause is structural,
+// not a threshold being crossed, so it needs prose.
+//
+// Ordered most severe first; the view renders them in order.
+function buildIssues(input: {
+  bases: BaseBackupSummary[];
+  wal: WalArchiveSummary;
+  volume: VolumeUsage;
+  archiver: ArchiverHealth;
+  baseScheduleEnabled: boolean;
+  retainDays: number | null;
+  effectiveRetainDays: number;
+}): BackupIssue[] {
+  const { bases, wal, volume, archiver, baseScheduleEnabled, retainDays, effectiveRetainDays } =
+    input;
+  const issues: BackupIssue[] = [];
+
+  // ── The headline finding on any install that never took a base ──
+  // Both halves of this are worth stating plainly: there is no
+  // recovery point, AND that is precisely why the volume only ever
+  // grows. Operators reading the old UI reasonably concluded the WAL
+  // archive was itself a backup. It is not.
+  if (bases.length === 0) {
+    issues.push({
+      id: 'no_base_backup',
+      severity: 'critical',
+      title: 'No base backup exists — this volume cannot restore the database',
+      detail:
+        `The WAL archive holds ${wal.segment_count} segments (${fmtBytes(wal.total_size_bytes)}), ` +
+        'but WAL is only a change log. It restores nothing on its own: it has to be ' +
+        'replayed onto a base backup, and there are none here. ' +
+        'That is also why the volume has grown every day since first boot and never ' +
+        'shrunk — archived WAL can only be pruned relative to a base backup, so with ' +
+        'zero base backups nothing has ever been eligible for deletion. Every segment ' +
+        'Postgres has ever archived is still on disk.',
+      remedy:
+        'Click "Backup now" to create a recovery point, then "Prune WAL" to reclaim ' +
+        'everything archived before it — on an install this old that is very nearly the ' +
+        'whole archive. Then enable the "Base backup" schedule below (0 2 * * *) so it ' +
+        'keeps happening; each run prunes on its way out.',
+    });
+  }
+
+  // ── Archiver stuck ──
+  // Distinct from, and worse than, a large archive: a failing
+  // archive_command makes Postgres retry the same segment forever and
+  // hold every WAL file in pg_wal inside the DATA volume. That fills
+  // the data disk and stops the database.
+  if (archiver.available && archiver.failing) {
+    issues.push({
+      id: 'archiver_failing',
+      severity: 'critical',
+      title: 'WAL archiving is failing — pg_wal is growing inside the data volume',
+      detail:
+        `archive_command last failed on segment ${archiver.last_failed_wal || '(unknown)'}` +
+        (archiver.last_failed_at ? ` at ${archiver.last_failed_at}` : '') +
+        `, after ${archiver.failed_count ?? 0} total failures. Postgres retries a failed ` +
+        'segment indefinitely and will not recycle any WAL until it succeeds, so pg_wal ' +
+        'inside the pg_data volume grows without bound. If that disk fills, the database ' +
+        'stops accepting writes.',
+      remedy:
+        'Check the postgres container log for the archive_command error. The usual causes ' +
+        'are the archive directory being unwritable, or scripts/wal-archive.sh hitting its ' +
+        'refuse-to-overwrite guard on a segment name that already exists in the archive.',
+    });
+  }
+
+  // ── Reclaimable WAL sitting around ──
+  if (
+    bases.length > 0 &&
+    wal.prunable_estimate_bytes !== null &&
+    wal.prunable_estimate_bytes > 0
+  ) {
+    issues.push({
+      id: 'wal_prunable',
+      severity: 'warning',
+      title: `About ${fmtBytes(wal.prunable_estimate_bytes)} of archived WAL is reclaimable`,
+      detail:
+        `Roughly ${wal.prunable_estimate_segments} segments predate the oldest base backup ` +
+        'still held, so no backup on this volume can ever need them. (Estimated from file ' +
+        'timestamps — the prune itself uses the exact START WAL LOCATION recorded in the ' +
+        'base backup, so the real figure may differ slightly.)',
+      remedy: 'Click "Prune WAL". Base backups also prune on their way out.',
+    });
+  }
+
+  // ── The schedule that would prevent recurrence ──
+  if (!baseScheduleEnabled) {
+    issues.push({
+      id: 'base_schedule_disabled',
+      severity: bases.length === 0 ? 'warning' : 'info',
+      title: 'The base backup schedule is disabled',
+      detail:
+        'Schedules ship disabled and this one was never turned on. Nothing creates ' +
+        'recovery points automatically, and since the WAL prune runs at the end of a base ' +
+        'backup, nothing reclaims archive space automatically either. A one-off "Backup ' +
+        'now" fixes today; only the schedule fixes tomorrow.',
+      remedy:
+        'Enable "Base backup" under Scheduled tasks with 0 2 * * * (daily, 02:00 UTC).',
+    });
+  }
+
+  // ── Why the number is as big as it is ──
+  // Growth here is dominated by segment padding, not by data volume,
+  // and that is not obvious from a byte count.
+  if (wal.est_daily_bytes !== null && wal.est_daily_bytes > 0) {
+    const perMonth = wal.est_daily_bytes * 30;
+    const avgSeg = wal.segment_count > 0 ? wal.total_size_bytes / wal.segment_count : 0;
+    const padded = avgSeg > WAL_SEGMENT_BYTES * 0.9;
+    issues.push({
+      id: 'wal_growth_rate',
+      severity: 'info',
+      title: `WAL archive is growing about ${fmtBytes(wal.est_daily_bytes)}/day (~${fmtBytes(perMonth)}/month)`,
+      detail:
+        `Measured across the ${wal.segment_count} segments currently held. ` +
+        (padded
+          ? 'Note that Postgres writes every WAL segment at a fixed 16 MB whether it is ' +
+            'full or nearly empty, and archive_timeout=300 forces a segment switch every ' +
+            'five minutes of activity. So this figure tracks how often the database is ' +
+            'touched, not how much data changed — a lightly used install still writes ' +
+            'many full-size 16 MB files a day. '
+          : '') +
+        'With pruning in place the archive stabilises at roughly one retention window ' +
+        `(${effectiveRetainDays} days) instead of growing forever.`,
+      remedy:
+        'No action needed once base backups and pruning are running — this is the ' +
+        'steady-state cost of point-in-time recovery.',
+    });
+  }
+
+  // ── Retention is implicit ──
+  if (retainDays === null) {
+    issues.push({
+      id: 'retention_unset',
+      severity: 'info',
+      title: `Retention is unset — the scripts default to ${effectiveRetainDays} days`,
+      detail:
+        'BACKUP_RETAIN_DAYS is not set and no platform_settings row overrides it, so ' +
+        `scripts/backup-platform.sh falls back to ${effectiveRetainDays} days. Retention ` +
+        'is applied, just not explicitly chosen.',
+      remedy:
+        'Set "Retention (days)" in the S3 mirror configuration below to make the window ' +
+        'explicit. It governs local base-backup retention too, not only S3.',
+    });
+  }
+
+  const rank = { critical: 0, warning: 1, info: 2 } as const;
+  issues.sort((a, b) => rank[a.severity] - rank[b.severity]);
+  return issues;
+}
+
 export async function getBackupStatus(): Promise<BackupStatus> {
   // Probe the mount root once. If the directory isn't there at all
   // (first deploy before the volume materialised, or operator hasn't
@@ -258,37 +591,60 @@ export async function getBackupStatus(): Promise<BackupStatus> {
       available: false,
       bases: [],
       latest_base: null,
-      wal: {
-        segment_count: 0,
-        total_size_bytes: 0,
-        newest_segment_at: null,
-        lag_seconds: null,
-      },
+      wal: { ...EMPTY_WAL_SUMMARY },
       volume: { total_bytes: 0, base_bytes: 0, wal_bytes: 0 },
       s3,
       retain_days: s3.retain_days,
+      effective_retain_days: s3.retain_days ?? DEFAULT_RETAIN_DAYS,
+      archiver: await readArchiverHealth(),
+      // No mount, no filesystem facts to reason about. The view
+      // already renders its own "mount unavailable" state.
+      issues: [],
     };
   }
 
-  const [bases, wal, baseBytes, walBytes] = await Promise.all([
-    readBaseBackups(),
-    readWalSummary(),
+  // Bases first: the oldest one is the anchor the WAL scan needs to
+  // work out what is prunable.
+  const bases = await readBaseBackups();
+  // bases is sorted newest-first by name, so the oldest is last.
+  const oldestBase = bases.length > 0 ? bases[bases.length - 1] : null;
+  const anchorMs =
+    oldestBase && oldestBase.created_at ? new Date(oldestBase.created_at).getTime() : null;
+
+  const [wal, baseBytes, walBytes, archiver, baseSchedule] = await Promise.all([
+    readWalSummary(anchorMs),
     dirSizeBytes(baseDir()),
     dirSizeBytes(walDir()),
+    readArchiverHealth(),
+    getSetting('backup_schedule_base_enabled').catch(() => null),
   ]);
   const s3 = await readS3Config();
+  const effectiveRetainDays = s3.retain_days ?? DEFAULT_RETAIN_DAYS;
+  const volume = {
+    total_bytes: baseBytes + walBytes,
+    base_bytes: baseBytes,
+    wal_bytes: walBytes,
+  };
+
   return {
     available: true,
     bases,
     latest_base: bases[0] || null,
     wal,
-    volume: {
-      total_bytes: baseBytes + walBytes,
-      base_bytes: baseBytes,
-      wal_bytes: walBytes,
-    },
+    volume,
     s3,
     retain_days: s3.retain_days,
+    effective_retain_days: effectiveRetainDays,
+    archiver,
+    issues: buildIssues({
+      bases,
+      wal,
+      volume,
+      archiver,
+      baseScheduleEnabled: baseSchedule === 'true',
+      retainDays: s3.retain_days,
+      effectiveRetainDays,
+    }),
   };
 }
 
@@ -380,7 +736,7 @@ export async function getDrillRun(id: string): Promise<DrillRun | null> {
 // The server enqueues; the backup-worker sidecar polls, claims, runs,
 // and writes back. Frontend polls GET /jobs/:id for terminal status.
 
-export type BackupJobKind = 'base' | 's3sync' | 'drill' | 'delete_base';
+export type BackupJobKind = 'base' | 's3sync' | 'drill' | 'delete_base' | 'prune_wal';
 export type BackupJobStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export interface BackupJob {

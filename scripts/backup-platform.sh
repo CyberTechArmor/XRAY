@@ -13,7 +13,9 @@
 #
 # Idempotent: each run produces a new timestamped directory; existing
 # directories aren't touched. Retention is enforced by the prune step
-# at the end of the run (default: keep 14 days of base backups).
+# at the end of the run (default: keep 14 days of base backups). WAL
+# retention is NOT time-based — see the prune step, which delegates to
+# scripts/prune-wal.sh and anchors on the oldest retained base.
 #
 # Operator schedules via host cron, e.g. for nightly at 02:30 UTC:
 #
@@ -113,7 +115,7 @@ echo "[backup-platform] base backup complete: ${LOCAL_BASE_DIR}"
 # RETAIN_DAYS=0 doesn't leave us empty-handed. find -mtime is the
 # portable mechanism (busybox `date` in Alpine doesn't accept
 # "N days ago" syntax).
-echo "[backup-platform] pruning base backups + WAL older than ${RETAIN_DAYS} days"
+echo "[backup-platform] pruning base backups older than ${RETAIN_DAYS} days"
 docker exec -i "${PG_ID}" sh -c "
   set -eu
   KEEP_LATEST=\$(ls -1 '${BACKUP_ROOT}/base' 2>/dev/null | sort | tail -n 1 || true)
@@ -123,16 +125,26 @@ docker exec -i "${PG_ID}" sh -c "
       ! -name \"\$KEEP_LATEST\" \
       -print -exec rm -rf -- {} +
   fi
-
-  # WAL pruning by mtime. WAL segment names sort lexicographically by
-  # LSN, but parsing the oldest retained base's start LSN to do
-  # name-based pruning is fragile; mtime-based is approximate but safe
-  # because Postgres only recycles WAL after archive_command succeeds.
-  if [ -d '${BACKUP_ROOT}/wal' ]; then
-    find '${BACKUP_ROOT}/wal' -maxdepth 1 -type f -name '0*' \
-      -mtime +${RETAIN_DAYS} -delete 2>/dev/null || true
-  fi
 "
+
+# WAL prune — delegated to scripts/prune-wal.sh, which anchors on the
+# oldest SURVIVING base backup's START WAL LOCATION (read from that
+# backup's own backup_label) and hands the cutoff to pg_archivecleanup.
+#
+# This deliberately runs AFTER the base-directory prune above, so the
+# anchor reflects what we actually still hold.
+#
+# It replaces an mtime-based `find -delete` that shared BACKUP_RETAIN_DAYS
+# with the base prune. That was unsafe in the exact case this codebase
+# hits: the newest base is kept unconditionally even when it is older
+# than the retention window, so a base could survive while the WAL
+# needed to bring it to consistency was deleted by age — leaving a
+# backup that restores to nothing. WAL retention is a function of the
+# oldest base we keep, never of the clock.
+echo "[backup-platform] pruning WAL against oldest retained base"
+SCRIPT_DIR_PRUNE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"${SCRIPT_DIR_PRUNE}/prune-wal.sh" || \
+  echo "[backup-platform] WARN: WAL prune failed; base backup is still valid"
 
 # S3 mirror — additive, env-var-gated. Local-only deploys never reach
 # this branch. Failures surface in cron output but don't abort the
