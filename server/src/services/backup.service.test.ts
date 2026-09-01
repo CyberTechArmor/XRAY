@@ -572,3 +572,354 @@ describe('backup.service — job queue', () => {
     expect(job).toBeNull();
   });
 });
+
+// ── Diagnosis (why the volume grew, and what is reclaimable) ──────
+//
+// The condition these cover is the one that shipped by default: WAL
+// archiving runs from first boot, but the only code that deleted
+// archived WAL was the tail of a base backup, and the base-backup
+// schedule ships disabled. So a long-lived install accumulates every
+// 16 MB segment Postgres ever wrote and never reclaims one.
+describe('backup.service — diagnosis', () => {
+  const SEG = 16 * 1024 * 1024;
+  let originalEnv: string | undefined;
+  const roots: string[] = [];
+
+  // Neutral settings pool so the schedule/retention reads in these
+  // tests don't inherit rows from an earlier describe block.
+  async function resetSettings() {
+    const emptyPool = {
+      connect: () =>
+        Promise.resolve({
+          query: () => Promise.resolve({ rows: [], rowCount: 0 }),
+          release: () => {},
+        }),
+      on: () => {},
+      end: () => Promise.resolve(),
+    } as unknown as import('pg').Pool;
+    const { __setPoolForTest } = await import('../db/connection');
+    __setPoolForTest(emptyPool);
+    const settings = await import('./settings.service');
+    await settings.refreshCache();
+  }
+
+  async function makeRoot(): Promise<string> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xray-backup-diag-'));
+    roots.push(root);
+    return root;
+  }
+
+  // Write a WAL segment with an explicit mtime so prune-eligibility
+  // (which is a function of age relative to the oldest base) is
+  // deterministic instead of depending on wall-clock timing.
+  async function writeSegment(root: string, name: string, ageHours: number) {
+    const p = path.join(root, 'wal', name);
+    await fs.writeFile(p, Buffer.alloc(SEG));
+    const when = new Date(Date.now() - ageHours * 3600 * 1000);
+    await fs.utimes(p, when, when);
+  }
+
+  async function writeBase(root: string, name: string, ageHours: number) {
+    const dir = path.join(root, 'base', name);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'base.tar.gz'), Buffer.alloc(4096));
+    const when = new Date(Date.now() - ageHours * 3600 * 1000);
+    await fs.utimes(dir, when, when);
+  }
+
+  beforeAll(async () => {
+    originalEnv = process.env.BACKUPS_ROOT;
+    delete process.env.BACKUP_S3_BUCKET;
+    delete process.env.BACKUP_RETAIN_DAYS;
+    await resetSettings();
+  });
+
+  afterAll(async () => {
+    if (originalEnv === undefined) delete process.env.BACKUPS_ROOT;
+    else process.env.BACKUPS_ROOT = originalEnv;
+    for (const r of roots) await fs.rm(r, { recursive: true, force: true });
+  });
+
+  it('flags a WAL archive with no base backup as critical and unprunable', async () => {
+    const root = await makeRoot();
+    await fs.mkdir(path.join(root, 'wal'), { recursive: true });
+    await fs.mkdir(path.join(root, 'base'), { recursive: true });
+    for (let i = 0; i < 5; i++) {
+      await writeSegment(root, `00000001000000000000000${i}`, 200 - i * 24);
+    }
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    expect(status.bases.length).toBe(0);
+    expect(status.wal.segment_count).toBe(5);
+
+    // The distinction that matters: with no base backup nothing is
+    // eligible for pruning, which is NOT the same as "nothing to
+    // prune". null carries that; 0 would not.
+    expect(status.wal.prunable_estimate_bytes).toBeNull();
+    expect(status.wal.prunable_estimate_segments).toBeNull();
+
+    const ids = status.issues.map((i) => i.id);
+    expect(ids).toContain('no_base_backup');
+    const critical = status.issues.find((i) => i.id === 'no_base_backup');
+    expect(critical?.severity).toBe('critical');
+    // The finding has to name the cause and the fix, not just restate
+    // the number the tiles already show.
+    expect(critical?.detail).toMatch(/pruned relative to a base backup/i);
+    expect(critical?.remedy).toMatch(/Backup now/);
+
+    // Most severe first.
+    expect(status.issues[0].severity).toBe('critical');
+  });
+
+  it('counts only pre-base segments as prunable once a base exists', async () => {
+    const root = await makeRoot();
+    await fs.mkdir(path.join(root, 'wal'), { recursive: true });
+    await fs.mkdir(path.join(root, 'base'), { recursive: true });
+
+    // Base taken 48h ago. Three segments predate it comfortably;
+    // two were written after it and may be needed to replay onto it.
+    await writeBase(root, '20260830T000000Z', 48);
+    await writeSegment(root, '000000010000000000000001', 200);
+    await writeSegment(root, '000000010000000000000002', 150);
+    await writeSegment(root, '000000010000000000000003', 100);
+    await writeSegment(root, '000000010000000000000004', 24);
+    await writeSegment(root, '000000010000000000000005', 2);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    expect(status.wal.segment_count).toBe(5);
+    expect(status.wal.prunable_estimate_segments).toBe(3);
+    expect(status.wal.prunable_estimate_bytes).toBe(3 * SEG);
+
+    const prunable = status.issues.find((i) => i.id === 'wal_prunable');
+    expect(prunable).toBeDefined();
+    expect(prunable?.severity).toBe('warning');
+    // Post-base segments are never advertised as reclaimable — that
+    // is what makes the retained base restorable.
+    expect(status.wal.prunable_estimate_bytes).toBeLessThan(status.wal.total_size_bytes);
+    expect(status.issues.map((i) => i.id)).not.toContain('no_base_backup');
+  });
+
+  it('keeps segments inside the margin around the base backup', async () => {
+    const root = await makeRoot();
+    await fs.mkdir(path.join(root, 'wal'), { recursive: true });
+    await fs.mkdir(path.join(root, 'base'), { recursive: true });
+
+    // A base directory's mtime is its FINISH time, but the WAL it
+    // needs starts at its START WAL LOCATION. A segment written just
+    // before the directory timestamp can still be required, so the
+    // estimate backs off an hour rather than claiming it.
+    await writeBase(root, '20260830T000000Z', 10);
+    await writeSegment(root, '000000010000000000000001', 10.5); // inside margin
+    await writeSegment(root, '000000010000000000000002', 40);   // clearly older
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    expect(status.wal.prunable_estimate_segments).toBe(1);
+  });
+
+  it('reports a growth rate and the effective retention default', async () => {
+    const root = await makeRoot();
+    await fs.mkdir(path.join(root, 'wal'), { recursive: true });
+    await fs.mkdir(path.join(root, 'base'), { recursive: true });
+    // 4 segments spanning ~4 days → a non-null bytes/day figure.
+    await writeSegment(root, '000000010000000000000001', 96);
+    await writeSegment(root, '000000010000000000000002', 72);
+    await writeSegment(root, '000000010000000000000003', 48);
+    await writeSegment(root, '000000010000000000000004', 0.5);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    expect(status.wal.est_daily_bytes).not.toBeNull();
+    expect(status.wal.est_daily_bytes as number).toBeGreaterThan(0);
+    expect(status.wal.oldest_segment_at).not.toBeNull();
+
+    // Retention unset must read as "the default applies", not as
+    // "there is no retention" — the old UI showed a bare "unset".
+    expect(status.retain_days).toBeNull();
+    expect(status.effective_retain_days).toBe(14);
+    const retention = status.issues.find((i) => i.id === 'retention_unset');
+    expect(retention?.severity).toBe('info');
+
+    const growth = status.issues.find((i) => i.id === 'wal_growth_rate');
+    expect(growth).toBeDefined();
+    // Segment padding is the thing that makes the total surprising.
+    expect(growth?.detail).toMatch(/16 MB/);
+  });
+
+  it('flags the disabled base backup schedule as the recurrence cause', async () => {
+    const root = await makeRoot();
+    await fs.mkdir(path.join(root, 'wal'), { recursive: true });
+    await fs.mkdir(path.join(root, 'base'), { recursive: true });
+    await writeBase(root, '20260830T000000Z', 5);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    const sched = status.issues.find((i) => i.id === 'base_schedule_disabled');
+    expect(sched).toBeDefined();
+    expect(sched?.remedy).toMatch(/0 2 \* \* \*/);
+  });
+
+  it('degrades to available:false without throwing when the mount is gone', async () => {
+    process.env.BACKUPS_ROOT = path.join(os.tmpdir(), 'xray-backup-diag-absent-' + Date.now());
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+    expect(status.available).toBe(false);
+    expect(status.issues).toEqual([]);
+    expect(status.wal.prunable_estimate_bytes).toBeNull();
+    expect(status.effective_retain_days).toBe(14);
+  });
+});
+
+// ── Watchdogs ────────────────────────────────────────────────────
+//
+// Base backup + WAL prune now ship enabled (migration 056), so the
+// original failure — nothing ever ran, nothing ever complained — is
+// gone. What replaces it is runs that are scheduled but stop
+// succeeding, which is equally silent unless something watches for
+// it. These cover that watch.
+describe('backup.service — watchdogs', () => {
+  const SEG = 16 * 1024 * 1024;
+  let originalEnv: string | undefined;
+  const roots: string[] = [];
+
+  // Settings pool that reports the base schedule as enabled, matching
+  // the shipped default.
+  async function settingsWithBaseScheduleEnabled() {
+    const pool = {
+      connect: () =>
+        Promise.resolve({
+          query: (sql: string) => {
+            if (sql.trim().startsWith('SELECT key')) {
+              return Promise.resolve({
+                rows: [
+                  { key: 'backup_schedule_base_enabled', value: 'true', is_secret: false },
+                  { key: 'backup_schedule_base', value: '0 2 * * *', is_secret: false },
+                ],
+                rowCount: 2,
+              });
+            }
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          },
+          release: () => {},
+        }),
+      on: () => {},
+      end: () => Promise.resolve(),
+    } as unknown as import('pg').Pool;
+    const { __setPoolForTest } = await import('../db/connection');
+    __setPoolForTest(pool);
+    const settings = await import('./settings.service');
+    await settings.refreshCache();
+  }
+
+  async function makeRoot(): Promise<string> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xray-backup-watch-'));
+    roots.push(root);
+    await fs.mkdir(path.join(root, 'wal'), { recursive: true });
+    await fs.mkdir(path.join(root, 'base'), { recursive: true });
+    return root;
+  }
+
+  async function writeSegment(root: string, name: string, ageHours: number) {
+    const p = path.join(root, 'wal', name);
+    await fs.writeFile(p, Buffer.alloc(SEG));
+    const when = new Date(Date.now() - ageHours * 3600 * 1000);
+    await fs.utimes(p, when, when);
+  }
+
+  async function writeBase(root: string, name: string, ageHours: number) {
+    const dir = path.join(root, 'base', name);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'base.tar.gz'), Buffer.alloc(4096));
+    const when = new Date(Date.now() - ageHours * 3600 * 1000);
+    await fs.utimes(dir, when, when);
+  }
+
+  beforeAll(async () => {
+    originalEnv = process.env.BACKUPS_ROOT;
+    delete process.env.BACKUP_S3_BUCKET;
+    delete process.env.BACKUP_RETAIN_DAYS;
+    await settingsWithBaseScheduleEnabled();
+  });
+
+  afterAll(async () => {
+    if (originalEnv === undefined) delete process.env.BACKUPS_ROOT;
+    else process.env.BACKUPS_ROOT = originalEnv;
+    for (const r of roots) await fs.rm(r, { recursive: true, force: true });
+  });
+
+  it('flags a stale base backup when the schedule is enabled', async () => {
+    const root = await makeRoot();
+    // Schedule says daily; newest base is four days old → runs are
+    // failing or being skipped.
+    await writeBase(root, '20260828T020000Z', 96);
+    await writeSegment(root, '000000010000000000000009', 1);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    const stale = status.issues.find((i) => i.id === 'base_backup_stale');
+    expect(stale).toBeDefined();
+    expect(stale?.severity).toBe('critical');
+    expect(stale?.detail).toContain('20260828T020000Z');
+    // The schedule IS on, so the opt-in nag must not also fire.
+    expect(status.issues.map((i) => i.id)).not.toContain('base_schedule_disabled');
+  });
+
+  it('stays quiet when a fresh base backup exists', async () => {
+    const root = await makeRoot();
+    await writeBase(root, '20260901T020000Z', 3);
+    await writeSegment(root, '000000010000000000000009', 1);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    const ids = status.issues.map((i) => i.id);
+    expect(ids).not.toContain('base_backup_stale');
+    expect(ids).not.toContain('no_base_backup');
+    expect(status.issues.filter((i) => i.severity === 'critical')).toEqual([]);
+  });
+
+  it('flags an archive spanning far beyond the retention window', async () => {
+    const root = await makeRoot();
+    await writeBase(root, '20260901T020000Z', 3);
+    // 90 days of archive against the 14-day default → pruning is not
+    // keeping up, whatever the reason.
+    await writeSegment(root, '000000010000000000000001', 24 * 90);
+    await writeSegment(root, '000000010000000000000002', 1);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+
+    const over = status.issues.find((i) => i.id === 'wal_retention_exceeded');
+    expect(over).toBeDefined();
+    expect(over?.severity).toBe('warning');
+    expect(over?.title).toMatch(/14-day retention window/);
+  });
+
+  it('does not flag retention when the archive sits inside the window', async () => {
+    const root = await makeRoot();
+    await writeBase(root, '20260901T020000Z', 3);
+    await writeSegment(root, '000000010000000000000001', 24 * 10);
+    await writeSegment(root, '000000010000000000000002', 1);
+
+    process.env.BACKUPS_ROOT = root;
+    const mod = await import('./backup.service');
+    const status = await mod.getBackupStatus();
+    expect(status.issues.map((i) => i.id)).not.toContain('wal_retention_exceeded');
+  });
+});

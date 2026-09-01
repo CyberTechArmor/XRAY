@@ -20,7 +20,8 @@
 --
 -- Schema:
 --   id            UUID PK
---   kind          'base' | 's3sync' | 'drill'  (CHECK enforced)
+--   kind          'base' | 's3sync' | 'drill' | 'delete_base'
+--                 | 'prune_wal'  (CHECK enforced; widened by 055)
 --   status        'pending' | 'running' | 'completed' | 'failed'
 --                  - pending  → just enqueued
 --                  - running  → worker claimed; started_at set

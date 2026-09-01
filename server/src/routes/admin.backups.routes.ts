@@ -182,6 +182,32 @@ router.post('/drill', async (req, res, next) => {
   }
 });
 
+// ── POST /api/admin/backups/prune-wal ───────────────────────────
+// Body: { dry_run?: boolean }
+// Enqueues a prune_wal job. The worker runs scripts/prune-wal.sh,
+// which anchors on the oldest retained base backup's START WAL
+// LOCATION and hands the cutoff to pg_archivecleanup.
+//
+// Exposed as its own action because WAL pruning used to be reachable
+// only as the tail of a base backup. An install that never enabled
+// the base schedule (the shipped default) therefore never pruned, and
+// its archive grew by every 16 MB segment Postgres ever wrote. The
+// script refuses to delete anything when no base backup exists, so
+// this is safe to click in any state.
+router.post('/prune-wal', async (req, res, next) => {
+  try {
+    const dryRun = !!(req.body && req.body.dry_run);
+    const job = await backupService.enqueueJob({
+      kind: 'prune_wal',
+      args: { dry_run: dryRun },
+      requested_by: req.user?.sub ?? null,
+    });
+    res.json({ ok: true, data: job });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── POST /api/admin/backups/delete-base ─────────────────────────
 // Body: { name: string }  — directory name under pg_backups/base/
 // Enqueues a delete_base job for the worker. Worker rm -rf's the

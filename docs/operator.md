@@ -350,12 +350,109 @@ WAL segments arrive every ~5 minutes (`archive_timeout=300`) or
 sooner if write traffic fills a 16 MB segment. Base backups arrive
 nightly per the operator's cron entry.
 
+Segments are stored **gzipped** as `<segment>.gz`. Postgres writes
+every WAL segment at a fixed 16 MB, zero-padded, whatever it actually
+holds, and `archive_timeout=300` force-switches a segment after five
+minutes of *any* write activity — so a lightly used install ships many
+near-empty 16 MB files a day. Compression collapses those to tens of
+KB (measured ~295x on near-empty segments and on typical row data,
+~2x on dense ones), which keeps the archive small **without**
+relaxing `archive_timeout` and trading away the five-minute recovery
+point objective.
+
+Details:
+
+- Only real WAL segments are compressed. `.backup` and `.history`
+  files stay plain text — they are tiny, and `prune-wal.sh` reads
+  `.backup` files directly.
+- If gzip cannot shrink a segment (encrypted or already-compressed
+  payload), it is stored plain, so compression can never cost disk.
+- Mixed archives are fully supported. `restore-drill.sh` sets a
+  `restore_command` that reads either spelling, and the prune passes
+  `-x .gz` to `pg_archivecleanup`, so segments written before this
+  change restore and prune alongside newer ones with no migration.
+- Set `BACKUP_WAL_COMPRESS=0` in `.env` to archive uncompressed.
+
+### Why an archive grows without bound (and how to stop it)
+
+WAL is only prunable relative to a base backup: a segment written
+before a base backup's `START WAL LOCATION` can never be replayed
+onto it and is dead weight, while a later one may be required to
+bring that base to consistency.
+
+Two consequences that bite in practice:
+
+- **With no base backup, nothing is prunable at all.** Not "nothing
+  to prune" — nothing *can* be pruned, because there is no recovery
+  point to prune relative to. Archiving still runs from first boot,
+  so the volume grows every day and never shrinks. Admin → Backups
+  reports this as a critical finding.
+- **Pruning by age is unsafe.** The most recent base is kept
+  regardless of age, so a clock-based WAL prune can delete the WAL
+  that base needs and leave a backup that restores to nothing. WAL
+  retention is a function of the oldest base you keep, never of the
+  calendar.
+
+`scripts/prune-wal.sh` is the safe prune. It reads the oldest
+retained base backup's own `backup_label`, takes its
+`START WAL LOCATION`, and hands that cutoff to `pg_archivecleanup`.
+With no base backup it deletes nothing and tells you why.
+
+```sh
+./scripts/prune-wal.sh --dry-run   # report what would go
+./scripts/prune-wal.sh             # prune
+```
+
+`scripts/backup-platform.sh` calls it on the way out, so a scheduled
+base backup keeps the archive at roughly one retention window
+without further intervention. Admin → Backups exposes the same
+operation as **Prune WAL**.
+
+**Recovering an archive that has already run away:**
+
+```sh
+./scripts/backup-platform.sh   # establishes a recovery point
+./scripts/prune-wal.sh         # reclaims everything archived before it
+```
+
+On an install that has never taken a base backup, that second
+command reclaims very nearly the entire archive.
+
+### Defaults that keep it from recurring
+
+Two schedules ship **enabled** (migration 056), because the original
+failure mode was silent: nothing ran, so nothing failed, so nothing
+was reported.
+
+| Schedule | Default | Why |
+| --- | --- | --- |
+| Base backup | `0 2 * * *`, on | Creates the recovery point. Prunes WAL on its way out. |
+| WAL prune | `30 3 * * *`, on | Prunes independently, so reclaiming disk does not depend on base backups succeeding. |
+| S3 sync | off | Needs credentials. |
+| Restore drill | off | Heavyweight verification run. |
+
+Migration 056 uses `ON CONFLICT DO NOTHING`, so an operator who has
+already set either of these keeps their choice — including an explicit
+`false`. Only installs that never touched the setting are changed.
+
+Admin → Backups watches for the failure modes that replace the
+original one, and reports them on the Diagnosis card:
+
+- **Latest base backup is stale** while the schedule is enabled —
+  runs are being skipped or are failing. Critical.
+- **Archive spans beyond the retention window** — pruning is not
+  keeping up, or an old base backup is pinning WAL in place.
+- **`archive_command` failing** (from `pg_stat_archiver`) — Postgres
+  retries the same segment forever and `pg_wal` grows inside the
+  *data* volume until the disk fills. Critical.
+
 ### 1. Schedule (host cron)
 
 Add to the host's crontab (`crontab -e`):
 
 ```cron
-# Nightly base backup at 02:30 UTC + retention prune + S3 base sync
+# Nightly base backup at 02:30 UTC + base retention prune + WAL prune
+# (anchored to the oldest retained base) + S3 base sync
 30 2 * * * cd /opt/xray && ./scripts/backup-platform.sh >> /var/log/xray-backup.log 2>&1
 
 # Mirror new WAL segments to S3 every 5 minutes (no-op if BACKUP_S3_BUCKET unset)
@@ -377,8 +474,13 @@ and matches the chosen retention window. Override per-deploy with
 the env var. The most recent base backup is kept regardless of age
 so a misconfigured `RETAIN_DAYS=0` can't leave you empty-handed.
 
-WAL segments older than `BACKUP_RETAIN_DAYS` are pruned at the same
-time. The S3 side intentionally does NOT delete on every WAL sync —
+`BACKUP_RETAIN_DAYS` governs base-backup directories only. WAL
+retention is *not* time-based — see "Why an archive grows without
+bound" above; it is anchored to the oldest base backup still held
+and applied by `scripts/prune-wal.sh`, which
+`scripts/backup-platform.sh` runs after its own base prune.
+
+The S3 side intentionally does NOT delete on every WAL sync —
 remote prune is a separate, operator-driven mode:
 
 ```sh
